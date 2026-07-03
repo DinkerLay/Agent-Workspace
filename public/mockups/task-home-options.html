@@ -1,0 +1,1119 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Task Home Mock Options</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --bg: #f5f7fa;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --surface-blue: #eef6ff;
+        --surface-green: #ecfdf5;
+        --surface-amber: #fff8e7;
+        --surface-red: #fff1f2;
+        --ink: #111827;
+        --muted: #667085;
+        --line: #dbe3ee;
+        --line-strong: #b8c4d6;
+        --blue: #2563eb;
+        --teal: #0f766e;
+        --green: #16803c;
+        --amber: #b45309;
+        --red: #be123c;
+        --purple: #6d28d9;
+        --shadow: 0 22px 60px rgba(15, 23, 42, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        overflow-x: hidden;
+        background:
+          linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent 34%),
+          linear-gradient(315deg, rgba(15, 118, 110, 0.07), transparent 30%),
+          var(--bg);
+        color: var(--ink);
+      }
+
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .mock-shell {
+        display: grid;
+        grid-template-columns: 68px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      .mock-rail {
+        position: sticky;
+        top: 0;
+        display: grid;
+        align-content: start;
+        gap: 14px;
+        height: 100vh;
+        padding: 18px 12px;
+        border-right: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.82);
+        backdrop-filter: blur(18px);
+      }
+
+      .rail-mark,
+      .rail-icon {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #ffffff;
+        color: #475467;
+        font-size: 13px;
+        font-weight: 900;
+      }
+
+      .rail-mark {
+        border-color: #111827;
+        background: #111827;
+        color: #ffffff;
+      }
+
+      .rail-icon.active {
+        border-color: #111827;
+        background: #111827;
+        color: #ffffff;
+      }
+
+      .mock-main {
+        min-width: 0;
+        padding: 24px;
+      }
+
+      .topbar {
+        display: grid;
+        gap: 12px;
+        align-items: start;
+        margin-bottom: 18px;
+      }
+
+      .eyebrow {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        margin-top: 5px;
+        font-size: 34px;
+        line-height: 1.05;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 22px;
+        line-height: 1.18;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        font-size: 16px;
+        line-height: 1.24;
+        letter-spacing: 0;
+      }
+
+      .project-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-start;
+        max-width: 100%;
+      }
+
+      .project-chip,
+      .pill,
+      .agent-chip,
+      .small-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+        min-height: 30px;
+        padding: 5px 9px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #ffffff;
+        color: #344054;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .project-chip strong,
+      .project-chip span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .project-chip.path {
+        max-width: 430px;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-weight: 700;
+      }
+
+      .option-tabs {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 16px;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(16px);
+      }
+
+      .option-tabs button {
+        min-width: 0;
+        min-height: 42px;
+        padding: 8px 10px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: transparent;
+        color: #344054;
+        font-weight: 900;
+      }
+
+      .option-tabs button.active {
+        border-color: #111827;
+        background: #111827;
+        color: #ffffff;
+      }
+
+      .mock-note {
+        margin-bottom: 16px;
+        padding: 10px 12px;
+        border: 1px dashed var(--line-strong);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.64);
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .screen {
+        display: none;
+      }
+
+      .screen.active {
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel {
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: var(--shadow);
+      }
+
+      .panel.tight {
+        box-shadow: none;
+      }
+
+      .panel-head {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        justify-content: space-between;
+        padding: 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .panel-head > div:first-child {
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+
+      .panel-body {
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+      }
+
+      .grid-a {
+        display: grid;
+        grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.7fr);
+        gap: 14px;
+      }
+
+      .grid-b {
+        display: grid;
+        grid-template-columns: minmax(340px, 0.92fr) minmax(0, 1.08fr);
+        gap: 14px;
+      }
+
+      .grid-c {
+        display: grid;
+        grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr);
+        gap: 14px;
+      }
+
+      .brief-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 16px;
+        align-items: start;
+        padding: 18px;
+      }
+
+      .brief-title {
+        display: grid;
+        gap: 9px;
+        min-width: 0;
+      }
+
+      .brief-title p {
+        max-width: 900px;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .brief-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .decision-box {
+        display: grid;
+        gap: 8px;
+        min-width: 220px;
+        padding: 12px;
+        border: 1px solid rgba(180, 83, 9, 0.3);
+        border-radius: 8px;
+        background: var(--surface-amber);
+      }
+
+      .decision-box strong {
+        color: var(--amber);
+      }
+
+      .metric-grid,
+      .brief-field-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .metric,
+      .brief-field,
+      .agent-card,
+      .timeline-item,
+      .report-card,
+      .action-row,
+      .template-card {
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface-soft);
+      }
+
+      .metric,
+      .brief-field {
+        display: grid;
+        gap: 6px;
+        padding: 11px;
+      }
+
+      .metric span,
+      .brief-field span,
+      .agent-card span,
+      .timeline-meta,
+      .muted {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .metric strong,
+      .brief-field strong {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .phase-card {
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+      }
+
+      .phase-status {
+        display: grid;
+        gap: 8px;
+        padding: 14px;
+        border: 1px solid rgba(37, 99, 235, 0.24);
+        border-radius: 8px;
+        background: var(--surface-blue);
+      }
+
+      .phase-status .phase {
+        color: var(--blue);
+        font-size: 26px;
+        font-weight: 950;
+        line-height: 1.08;
+      }
+
+      .progress-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .agent-card {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 9px;
+      }
+
+      .avatar {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        background: #111827;
+        color: #ffffff;
+        font-weight: 950;
+      }
+
+      .avatar.blue { background: var(--blue); }
+      .avatar.teal { background: var(--teal); }
+      .avatar.amber { background: var(--amber); }
+      .avatar.red { background: var(--red); }
+      .avatar.purple { background: var(--purple); }
+
+      .agent-card > div {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .agent-card strong,
+      .agent-card small {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .timeline {
+        display: grid;
+        gap: 10px;
+      }
+
+      .timeline-item {
+        display: grid;
+        grid-template-columns: 88px minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: start;
+        padding: 12px;
+      }
+
+      .timeline-item.current {
+        border-color: rgba(37, 99, 235, 0.42);
+        background: var(--surface-blue);
+      }
+
+      .timeline-item.blocked {
+        border-color: rgba(180, 83, 9, 0.4);
+        background: var(--surface-amber);
+      }
+
+      .timeline-main {
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+
+      .timeline-main p {
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .timeline-main code,
+      .path-code {
+        display: block;
+        min-width: 0;
+        overflow: hidden;
+        color: #344054;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .status {
+        color: #344054;
+        background: #eef2f7;
+      }
+
+      .status.running {
+        border-color: #bfdbfe;
+        background: #dbeafe;
+        color: var(--blue);
+      }
+
+      .status.done {
+        border-color: #bbf7d0;
+        background: #dcfce7;
+        color: var(--green);
+      }
+
+      .status.waiting,
+      .status.decision {
+        border-color: #fde68a;
+        background: #fef3c7;
+        color: var(--amber);
+      }
+
+      .status.review {
+        border-color: #ddd6fe;
+        background: #f5f3ff;
+        color: var(--purple);
+      }
+
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 38px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        color: #111827;
+        font-weight: 850;
+      }
+
+      .button.primary {
+        border-color: #111827;
+        background: #111827;
+        color: #ffffff;
+      }
+
+      .button.warn {
+        border-color: rgba(180, 83, 9, 0.28);
+        background: var(--surface-amber);
+        color: var(--amber);
+      }
+
+      .report-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(260px, 0.72fr);
+        gap: 12px;
+      }
+
+      .report-card {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+      }
+
+      .report-options {
+        display: grid;
+        gap: 8px;
+      }
+
+      .option-card {
+        display: grid;
+        gap: 6px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+      }
+
+      .option-card.recommended {
+        border-color: rgba(15, 118, 110, 0.34);
+        background: var(--surface-green);
+      }
+
+      .split-title {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        min-width: 0;
+      }
+
+      .agent-board {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .ops-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 280px;
+        gap: 12px;
+      }
+
+      .terminal-preview {
+        min-height: 238px;
+        padding: 14px;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        background: #101626;
+        color: #d7fbe8;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .terminal-preview p {
+        margin: 0 0 8px;
+      }
+
+      .task-home-toolbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .task-home-toolbar strong,
+      .task-home-toolbar span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .compact-stack {
+        display: grid;
+        gap: 10px;
+      }
+
+      .compare-footer {
+        margin-top: 14px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .compare-footer strong {
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .compare-footer ul {
+        display: grid;
+        gap: 6px;
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      @media (max-width: 1160px) {
+        .grid-a,
+        .grid-b,
+        .grid-c,
+        .report-layout,
+        .ops-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .metric-grid,
+        .brief-field-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 760px) {
+        .mock-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .mock-rail {
+          position: static;
+          grid-auto-flow: column;
+          height: auto;
+          overflow-x: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .mock-main {
+          padding: 14px;
+        }
+
+        .topbar,
+        .brief-hero,
+        .task-home-toolbar,
+        .timeline-item {
+          grid-template-columns: 1fr;
+        }
+
+        .project-strip {
+          justify-content: flex-start;
+        }
+
+        .option-tabs,
+        .metric-grid,
+        .brief-field-grid,
+        .agent-board {
+          grid-template-columns: 1fr;
+        }
+
+        h1 {
+          font-size: 28px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mock-shell">
+      <aside class="mock-rail" aria-label="Mock navigation">
+        <div class="rail-mark">AW</div>
+        <div class="rail-icon active" title="Task Home">TH</div>
+        <div class="rail-icon" title="IDE">IDE</div>
+        <div class="rail-icon" title="Review">RV</div>
+      </aside>
+
+      <main class="mock-main">
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">Mock only · 不接入主应用路由</div>
+            <h1>Task Home 交互方案</h1>
+          </div>
+          <div class="project-strip">
+            <span class="project-chip"><strong>Agent Workspace</strong></span>
+            <span class="project-chip path">/Users/dinker/CODES/Agent-Workspace</span>
+            <span class="project-chip">Project Cluster · 6 agents</span>
+          </div>
+        </header>
+
+        <nav class="option-tabs" aria-label="Task Home mock options">
+          <button class="active" data-screen="option-a" type="button">A · Conductor 总控</button>
+          <button data-screen="option-b" type="button">B · Task Brief 决策</button>
+          <button data-screen="option-c" type="button">C · Agent 进度</button>
+        </nav>
+
+        <div class="mock-note">
+          这是独立静态 mock 页面，用当前项目里的任务和 Agent 语义做交互判断。按钮只切换 mock，不触发真实任务、PTY 或主应用状态。
+        </div>
+
+        <section class="screen active" id="option-a">
+          <article class="panel">
+            <div class="brief-hero">
+              <div class="brief-title">
+                <div class="brief-meta">
+                  <span class="pill status review">Spec / Plan 任务</span>
+                  <span class="pill status running">Challenge loop #2</span>
+                  <span class="pill">Work mode · Debate + Review</span>
+                </div>
+                <h2>设计真实 PTY session manager 的前端状态</h2>
+                <p>
+                  Conductor 正在把 Planner 的 plan draft、Reviewer 的挑错和 Executor 的实现风险合并，目标是让 plan 达到可实现、可验证、可进入代码修改的状态。
+                </p>
+              </div>
+              <div class="decision-box">
+                <span class="eyebrow">User Decision</span>
+                <strong>暂不需要用户介入</strong>
+                <span class="muted">下一步由 Planner 修订 plan，再交给 Executor 预读。</span>
+              </div>
+            </div>
+          </article>
+
+          <div class="grid-a">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <span class="eyebrow">Conductor Timeline</span>
+                  <h2>任务推进主线</h2>
+                </div>
+                <span class="pill status running">Conductor reviewing</span>
+              </div>
+              <div class="panel-body timeline">
+                <div class="timeline-item">
+                  <span class="timeline-meta">09:20</span>
+                  <div class="timeline-main">
+                    <strong>Conductor -> Planner</strong>
+                    <p>基于当前产品逻辑生成 plan draft，要求列出可验证步骤和实现风险。</p>
+                    <code>input: task-brief.md, decision-log.md</code>
+                  </div>
+                  <span class="pill status done">done</span>
+                </div>
+                <div class="timeline-item">
+                  <span class="timeline-meta">09:42</span>
+                  <div class="timeline-main">
+                    <strong>Planner -> Conductor</strong>
+                    <p>Plan draft 完成，但对 PTY 生命周期、任务级 session key 和 Review gate 还有未决点。</p>
+                    <code>output: docs/superworks/plans/prototype-capability-map.plan.md</code>
+                  </div>
+                  <span class="pill status done">done</span>
+                </div>
+                <div class="timeline-item current">
+                  <span class="timeline-meta">10:05</span>
+                  <div class="timeline-main">
+                    <strong>Conductor -> Reviewer</strong>
+                    <p>挑出 plan 中不可实现、模糊、容易导致 terminal 体验问题的部分。</p>
+                    <code>expected: blocking_issues, non_blocking_suggestions, verdict</code>
+                  </div>
+                  <span class="pill status running">running</span>
+                </div>
+                <div class="timeline-item">
+                  <span class="timeline-meta">Next</span>
+                  <div class="timeline-main">
+                    <strong>Conductor -> Executor</strong>
+                    <p>预读修订后的 plan，判断实现路径、验证命令和风险边界。</p>
+                    <code>gate: no code until plan is reviewable</code>
+                  </div>
+                  <span class="pill status waiting">waiting</span>
+                </div>
+              </div>
+            </section>
+
+            <aside class="panel">
+              <div class="phase-card">
+                <div class="phase-status">
+                  <span class="eyebrow">Conductor Phase</span>
+                  <div class="phase">Challenge loop #2</div>
+                  <p class="muted">正在让 Reviewer 挑错，尚未进入实现阶段。</p>
+                </div>
+                <div class="metric-grid">
+                  <div class="metric">
+                    <span>Next</span>
+                    <strong>Planner 修订 plan</strong>
+                  </div>
+                  <div class="metric">
+                    <span>Risk</span>
+                    <strong>中等</strong>
+                  </div>
+                  <div class="metric">
+                    <span>Report</span>
+                    <strong>未生成</strong>
+                  </div>
+                  <div class="metric">
+                    <span>Review</span>
+                    <strong>未就绪</strong>
+                  </div>
+                </div>
+                <div class="progress-list">
+                  <div class="agent-card">
+                    <span class="avatar purple">C</span>
+                    <div><strong>Conductor</strong><span>推进和收敛判断</span></div>
+                    <span class="pill status running">reviewing</span>
+                  </div>
+                  <div class="agent-card">
+                    <span class="avatar blue">P</span>
+                    <div><strong>Planner</strong><span>Plan draft</span></div>
+                    <span class="pill status done">done</span>
+                  </div>
+                  <div class="agent-card">
+                    <span class="avatar red">R</span>
+                    <div><strong>Reviewer</strong><span>Plan challenge</span></div>
+                    <span class="pill status running">running</span>
+                  </div>
+                  <div class="agent-card">
+                    <span class="avatar teal">E</span>
+                    <div><strong>Executor</strong><span>Feasibility check</span></div>
+                    <span class="pill status waiting">waiting</span>
+                  </div>
+                </div>
+                <div class="button-row">
+                  <button class="button primary" type="button">进入 IDE 工作台</button>
+                  <button class="button" type="button">查看 Task Brief</button>
+                  <button class="button warn" type="button">暂停推进</button>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen" id="option-b">
+          <div class="grid-b">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <span class="eyebrow">Task Brief first</span>
+                  <h2>任务事实和决策上下文</h2>
+                </div>
+                <span class="pill status decision">1 个未决问题</span>
+              </div>
+              <div class="panel-body">
+                <div class="brief-field-grid">
+                  <div class="brief-field">
+                    <span>目标</span>
+                    <strong>确认 Task Home 和 IDE Workbench 的交互关系</strong>
+                  </div>
+                  <div class="brief-field">
+                    <span>当前结论</span>
+                    <strong>任务主页 Conductor-first，工作台 Agent-detail-first</strong>
+                  </div>
+                  <div class="brief-field">
+                    <span>下一步</span>
+                    <strong>产出可写入 spec 的页面交互定义</strong>
+                  </div>
+                  <div class="brief-field">
+                    <span>验收标准</span>
+                    <strong>用户确认后进入 spec</strong>
+                  </div>
+                </div>
+
+                <div class="report-layout">
+                  <article class="report-card">
+                    <div class="split-title">
+                      <strong>Conductor 判断</strong>
+                      <span class="pill status decision">needs decision</span>
+                    </div>
+                    <p class="muted">
+                      Spec 任务是否默认启用 Debate + Red-team，目前 Product 和 Planner 倾向不同。Conductor 无法自动确认默认策略。
+                    </p>
+                    <code class="path-code">decision-report/task-home-work-mode.html</code>
+                  </article>
+                  <div class="report-options">
+                    <div class="option-card recommended">
+                      <strong>推荐 A：Spec 默认 Debate + Review</strong>
+                      <span class="muted">质量更稳，适合产品逻辑和架构定义。</span>
+                    </div>
+                    <div class="option-card">
+                      <strong>B：Spec 默认单 Planner</strong>
+                      <span class="muted">更快，但容易把问题带到实现阶段。</span>
+                    </div>
+                    <div class="option-card">
+                      <strong>C：创建任务时用户选择</strong>
+                      <span class="muted">灵活，但第一版操作成本更高。</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="button-row">
+                  <button class="button primary" type="button">打开 HTML 决策报告</button>
+                  <button class="button" type="button">选择推荐方案</button>
+                  <button class="button" type="button">进入 IDE 看辩论细节</button>
+                </div>
+              </div>
+            </section>
+
+            <aside class="panel">
+              <div class="panel-head">
+                <div>
+                  <span class="eyebrow">Evidence pointers</span>
+                  <h2>上下文指针</h2>
+                </div>
+              </div>
+              <div class="panel-body compact-stack">
+                <div class="template-card panel-body tight">
+                  <strong>已确认决定</strong>
+                  <span class="muted">Task Brief 是 Board 和 Workbench 的共同核心对象。</span>
+                </div>
+                <div class="template-card panel-body tight">
+                  <strong>未决问题</strong>
+                  <span class="muted">Spec/Plan 任务的默认 Work Mode 是否强制 Debate。</span>
+                </div>
+                <div class="template-card panel-body tight">
+                  <strong>上下文文件</strong>
+                  <code class="path-code">docs/research/agentsroom-research-2026-06-24.zh.md</code>
+                  <code class="path-code">docs/superworks/plans/prototype-capability-map.plan.md</code>
+                </div>
+                <div class="timeline">
+                  <div class="timeline-item blocked">
+                    <span class="timeline-meta">Now</span>
+                    <div class="timeline-main">
+                      <strong>Conductor -> User</strong>
+                      <p>需要确认默认 Work Mode，之后才能写 spec。</p>
+                    </div>
+                    <span class="pill status decision">decision</span>
+                  </div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen" id="option-c">
+          <article class="panel">
+            <div class="task-home-toolbar">
+              <div>
+                <span class="eyebrow">Agent progress first</span>
+                <strong>设计真实 PTY session manager 的前端状态</strong>
+                <span class="muted">Task Home 显示多 Agent 执行态；点击 Agent 进入 IDE terminal。</span>
+              </div>
+              <div class="button-row">
+                <button class="button primary" type="button">打开当前 Agent IDE</button>
+                <button class="button" type="button">查看 Conductor Timeline</button>
+              </div>
+            </div>
+          </article>
+
+          <div class="grid-c">
+            <aside class="panel">
+              <div class="panel-head">
+                <div>
+                  <span class="eyebrow">Agent Board</span>
+                  <h2>参与 Agent</h2>
+                </div>
+              </div>
+              <div class="panel-body agent-board">
+                <div class="agent-card">
+                  <span class="avatar purple">C</span>
+                  <div><strong>Conductor</strong><span>Auto continue / route</span></div>
+                  <span class="pill status running">active</span>
+                </div>
+                <div class="agent-card">
+                  <span class="avatar blue">P</span>
+                  <div><strong>Planner</strong><span>Plan revision</span></div>
+                  <span class="pill status running">running</span>
+                </div>
+                <div class="agent-card">
+                  <span class="avatar red">R</span>
+                  <div><strong>Reviewer</strong><span>Challenge output</span></div>
+                  <span class="pill status done">done</span>
+                </div>
+                <div class="agent-card">
+                  <span class="avatar teal">E</span>
+                  <div><strong>Executor</strong><span>Feasibility</span></div>
+                  <span class="pill status waiting">waiting</span>
+                </div>
+                <div class="agent-card">
+                  <span class="avatar amber">Q</span>
+                  <div><strong>QA</strong><span>Verification plan</span></div>
+                  <span class="pill status">not started</span>
+                </div>
+              </div>
+            </aside>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <span class="eyebrow">Execution Detail Preview</span>
+                  <h2>Planner terminal 摘要</h2>
+                </div>
+                <span class="pill status running">PTY running</span>
+              </div>
+              <div class="panel-body ops-layout">
+                <div class="terminal-preview">
+                  <p>$ opencode --model opencode/deepseek-v4-flash-free</p>
+                  <p>Conductor instruction: revise plan after reviewer challenge.</p>
+                  <p>Planner: updating plan step schema, verification gates, and PTY session contract...</p>
+                  <p>Next: request Executor feasibility check.</p>
+                </div>
+                <div class="compact-stack">
+                  <div class="phase-status">
+                    <span class="eyebrow">Current command</span>
+                    <strong>Planner 修订 plan</strong>
+                    <p class="muted">Conductor 已批准继续，不需要用户确认。</p>
+                  </div>
+                  <div class="metric">
+                    <span>Last conductor action</span>
+                    <strong>Continue approved</strong>
+                  </div>
+                  <div class="metric">
+                    <span>Next gate</span>
+                    <strong>Executor feasibility</strong>
+                  </div>
+                  <div class="button-row">
+                    <button class="button primary" type="button">进入 Planner IDE</button>
+                    <button class="button" type="button">切换 Agent</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <span class="eyebrow">Conductor condensed timeline</span>
+                <h2>为什么当前是 Planner 在跑</h2>
+              </div>
+            </div>
+            <div class="panel-body timeline">
+              <div class="timeline-item">
+                <span class="timeline-meta">Review</span>
+                <div class="timeline-main">
+                  <strong>Reviewer -> Conductor</strong>
+                  <p>发现 plan 没有说明 PTY delta cursor 和 task-scoped session key。</p>
+                </div>
+                <span class="pill status done">done</span>
+              </div>
+              <div class="timeline-item current">
+                <span class="timeline-meta">Continue</span>
+                <div class="timeline-main">
+                  <strong>Conductor -> Planner</strong>
+                  <p>该修改在任务范围内，自动批准继续；要求修订 plan 并保留验证命令。</p>
+                </div>
+                <span class="pill status running">running</span>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="compare-footer">
+          <strong>选择提示</strong>
+          <ul>
+            <li>A 更像任务推进中控页，适合默认 Task Home。</li>
+            <li>B 更适合产品逻辑和 spec 决策任务，强调 Task Brief 和用户拍板。</li>
+            <li>C 更适合多 Agent 执行现场，和 IDE Workbench 关系更近。</li>
+          </ul>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const buttons = Array.from(document.querySelectorAll(".option-tabs button"));
+      const screens = Array.from(document.querySelectorAll(".screen"));
+
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => {
+          const target = button.dataset.screen;
+          buttons.forEach((item) => item.classList.toggle("active", item === button));
+          screens.forEach((screen) => screen.classList.toggle("active", screen.id === target));
+        });
+      });
+    </script>
+  </body>
+</html>

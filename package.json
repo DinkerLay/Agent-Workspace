@@ -1,0 +1,41 @@
+{
+  "name": "agent-workspace-prototype",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5188",
+    "desktop:dev": "node desktop/dev.cjs",
+    "desktop:start": "node desktop/start.cjs",
+    "desktop:smoke": "electron desktop/electron-bridge-smoke.cjs",
+    "desktop:layout-smoke": "electron desktop/task-home-layout-smoke.cjs",
+    "desktop:task-draft-native-smoke": "electron desktop/task-draft-native-smoke.cjs",
+    "desktop:task-home-native-smoke": "electron desktop/task-home-native-smoke.cjs",
+    "desktop:conductor-tool-smoke": "node desktop/conductor-tool-flow-smoke.cjs",
+    "simulate:session-dispatch": "electron test_simulte/session-dispatch/call-session-to-worker.e2e.cjs",
+    "simulate:task-home-real-research": "electron test_simulte/task-home-real-research/claude-dynamic-workflow.e2e.cjs",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "preview": "vite preview --host 127.0.0.1 --port 4188"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "electron": "^42.5.0",
+    "jsdom": "^29.1.1",
+    "node-pty": "^1.1.0",
+    "vitest": "^4.1.9"
+  }
+}

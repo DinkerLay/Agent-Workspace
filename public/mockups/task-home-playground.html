@@ -1,0 +1,1493 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>任务主页原型</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --bg: #f4f7fb;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --surface-blue: #eff6ff;
+        --surface-warn: #fff7e6;
+        --surface-green: #ecfdf5;
+        --ink: #101828;
+        --muted: #667085;
+        --line: #d9e2ee;
+        --blue: #2563eb;
+        --teal: #0f766e;
+        --green: #15803d;
+        --amber: #b45309;
+        --red: #be123c;
+        --purple: #6d28d9;
+        --shadow: 0 18px 54px rgba(15, 23, 42, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        overflow-x: hidden;
+        background:
+          radial-gradient(circle at 0 0, rgba(37, 99, 235, 0.08), transparent 28rem),
+          radial-gradient(circle at 100% 18%, rgba(15, 118, 110, 0.08), transparent 24rem),
+          var(--bg);
+        color: var(--ink);
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .page {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 64px minmax(0, 1fr);
+      }
+
+      .rail {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        display: grid;
+        align-content: start;
+        gap: 12px;
+        padding: 16px 10px;
+        border-right: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.88);
+        backdrop-filter: blur(18px);
+      }
+
+      .rail-mark,
+      .rail-button {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: #fff;
+        color: #475467;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .rail-mark,
+      .rail-button.active {
+        border-color: #101828;
+        background: #101828;
+        color: #fff;
+      }
+
+      .main {
+        min-width: 0;
+        padding: 22px;
+      }
+
+      .topbar {
+        display: grid;
+        gap: 14px;
+        margin-bottom: 16px;
+      }
+
+      .title-row,
+      .panel-head,
+      .line-row {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+
+      h1 {
+        font-size: 34px;
+        line-height: 1.05;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 21px;
+        line-height: 1.18;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        font-size: 16px;
+        line-height: 1.24;
+        letter-spacing: 0;
+      }
+
+      .project-strip,
+      .chip-row,
+      .filter-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .chip,
+      .status,
+      .filter-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        min-height: 28px;
+        padding: 4px 9px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+        color: #344054;
+        font-size: 12px;
+        font-weight: 850;
+      }
+
+      .chip.path {
+        max-width: 390px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-weight: 700;
+      }
+
+      .status {
+        border: 0;
+      }
+
+      .status.running,
+      .status.active {
+        background: #dbeafe;
+        color: var(--blue);
+      }
+
+      .status.waiting,
+      .status.decision {
+        background: #fef3c7;
+        color: var(--amber);
+      }
+
+      .status.review {
+        background: #f3e8ff;
+        color: var(--purple);
+      }
+
+      .status.done {
+        background: #dcfce7;
+        color: var(--green);
+      }
+
+      .status.idle {
+        background: #eef2f7;
+        color: #475467;
+      }
+
+      .primary-button,
+      .ghost-button,
+      .plain-button {
+        min-height: 38px;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-weight: 900;
+      }
+
+      .primary-button {
+        border: 1px solid #101828;
+        background: #101828;
+        color: #fff;
+      }
+
+      .ghost-button,
+      .plain-button {
+        border: 1px solid var(--line);
+        background: #fff;
+        color: #101828;
+      }
+
+      .plain-button {
+        min-height: 32px;
+        padding: 5px 9px;
+        color: #475467;
+        font-size: 12px;
+      }
+
+      .filter-button.active {
+        border-color: #101828;
+        background: #101828;
+        color: #fff;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(290px, 0.42fr) minmax(0, 1.58fr);
+        gap: 14px;
+        min-height: calc(100vh - 160px);
+      }
+
+      .panel,
+      .task-card,
+      .conductor-card,
+      .worker-card,
+      .detail-card,
+      .template-card {
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: var(--shadow);
+      }
+
+      .panel-head {
+        padding: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .panel-body {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+      }
+
+      .task-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .task-card {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        text-align: left;
+        color: var(--ink);
+        box-shadow: none;
+      }
+
+      .task-card.active {
+        border-color: #101828;
+        box-shadow: inset 0 0 0 1px #101828;
+      }
+
+      .task-card.waiting {
+        background: var(--surface-warn);
+        border-color: #f6dca8;
+      }
+
+      .task-title {
+        font-size: 15px;
+        font-weight: 950;
+        line-height: 1.28;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .small {
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .task-main {
+        display: grid;
+        gap: 14px;
+      }
+
+      .task-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 0.42fr);
+        gap: 14px;
+        padding: 16px;
+      }
+
+      .task-hero-main,
+      .next-action {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .task-hero h2 {
+        font-size: 26px;
+      }
+
+      .next-action {
+        align-content: start;
+        padding: 13px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface-soft);
+      }
+
+      .next-action.urgent {
+        border-color: #f59e0b;
+        background: var(--surface-warn);
+      }
+
+      .role-grid {
+        display: grid;
+        grid-template-columns: minmax(310px, 0.72fr) minmax(0, 1.28fr);
+        gap: 14px;
+      }
+
+      .terminal-current {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+      }
+
+      .terminal-shell {
+        display: grid;
+        overflow: hidden;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        background: #0f172a;
+      }
+
+      .terminal-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px;
+        border-bottom: 1px solid #243044;
+        background: #111827;
+      }
+
+      .terminal-toolbar .chip {
+        border-color: #334155;
+        background: #182235;
+        color: #dbeafe;
+      }
+
+      .terminal-screen {
+        min-height: 320px;
+        max-height: 420px;
+        display: grid;
+        align-content: start;
+        gap: 10px;
+        overflow: auto;
+        padding: 14px;
+        color: #d1fae5;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .terminal-line {
+        display: grid;
+        grid-template-columns: 96px minmax(0, 1fr);
+        gap: 10px;
+      }
+
+      .terminal-line.user {
+        color: #bfdbfe;
+      }
+
+      .terminal-line.decision {
+        color: #fde68a;
+      }
+
+      .terminal-line.worker {
+        color: #c4b5fd;
+      }
+
+      .terminal-source {
+        color: #94a3b8;
+        font-weight: 900;
+      }
+
+      .terminal-text {
+        min-width: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .terminal-compose {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        padding: 10px;
+        border-top: 1px solid var(--line);
+        background: #fff;
+      }
+
+      #conductorInput {
+        width: 100%;
+        min-height: 46px;
+        max-height: 120px;
+        resize: vertical;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 11px;
+        color: var(--ink);
+        background: #fff;
+      }
+
+      .worker-grid {
+        display: grid;
+        gap: 10px;
+      }
+
+      .worker-card {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 11px;
+        box-shadow: none;
+      }
+
+      .avatar {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        color: #fff;
+        font-weight: 950;
+      }
+
+      .avatar.c {
+        background: var(--purple);
+      }
+
+      .avatar.p {
+        background: var(--blue);
+      }
+
+      .avatar.r {
+        background: var(--red);
+      }
+
+      .avatar.e {
+        background: var(--teal);
+      }
+
+      .avatar.q {
+        background: #b45309;
+      }
+
+      .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .meta-box,
+      .detail-card {
+        display: grid;
+        gap: 5px;
+        padding: 10px;
+        box-shadow: none;
+      }
+
+      code {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .timeline {
+        display: grid;
+        gap: 9px;
+      }
+
+      .timeline-item {
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .timeline-item.active {
+        border-color: #93c5fd;
+        background: var(--surface-blue);
+      }
+
+      .timeline-index {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        background: #eef2f7;
+        color: #475467;
+        font-weight: 950;
+      }
+
+      .timeline-item.done .timeline-index {
+        background: #16a34a;
+        color: #fff;
+      }
+
+      .timeline-item.active .timeline-index {
+        background: var(--blue);
+        color: #fff;
+      }
+
+      details {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.88);
+        box-shadow: var(--shadow);
+      }
+
+      summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 48px;
+        padding: 12px 14px;
+        font-weight: 950;
+        list-style: none;
+        cursor: pointer;
+      }
+
+      summary::-webkit-details-marker {
+        display: none;
+      }
+
+      summary::after {
+        content: "展开";
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      details[open] summary {
+        border-bottom: 1px solid var(--line);
+      }
+
+      details[open] summary::after {
+        content: "收起";
+      }
+
+      .details-body {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+      }
+
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: none;
+        place-items: center;
+        padding: 24px;
+        background: rgba(15, 23, 42, 0.28);
+      }
+
+      .modal-backdrop.open {
+        display: grid;
+      }
+
+      .modal {
+        width: min(1080px, 100%);
+        max-height: min(820px, calc(100vh - 48px));
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 28px 80px rgba(15, 23, 42, 0.22);
+      }
+
+      .modal-head,
+      .modal-foot {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .modal-foot {
+        border-top: 1px solid var(--line);
+        border-bottom: 0;
+      }
+
+      .modal-body {
+        display: grid;
+        gap: 14px;
+        overflow: auto;
+        padding: 16px;
+      }
+
+      .template-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .template-card {
+        display: grid;
+        gap: 8px;
+        min-height: 140px;
+        padding: 12px;
+        text-align: left;
+        color: var(--ink);
+        box-shadow: none;
+      }
+
+      .template-card.active {
+        border-color: #101828;
+        box-shadow: inset 0 0 0 1px #101828;
+      }
+
+      .config-grid {
+        display: grid;
+        grid-template-columns: minmax(300px, 0.42fr) minmax(0, 0.58fr);
+        gap: 12px;
+      }
+
+      .form-grid,
+      .session-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field label {
+        color: #344054;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .field input,
+      .field select,
+      .field textarea {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: #fff;
+        color: var(--ink);
+      }
+
+      .field textarea {
+        min-height: 78px;
+        resize: vertical;
+      }
+
+      .session-card {
+        display: grid;
+        grid-template-columns: 90px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      @media (max-width: 1180px) {
+        .workspace,
+        .task-hero,
+        .role-grid,
+        .config-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .template-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 760px) {
+        .page {
+          grid-template-columns: 1fr;
+        }
+
+        .rail {
+          position: static;
+          height: auto;
+          grid-auto-flow: column;
+          grid-auto-columns: max-content;
+          overflow-x: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .main {
+          padding: 14px;
+        }
+
+        .title-row,
+        .line-row,
+        .terminal-toolbar,
+        .terminal-line,
+        .terminal-compose,
+        .worker-card,
+        .session-card {
+          display: grid;
+        }
+
+        .terminal-screen {
+          min-height: 260px;
+        }
+
+        .terminal-line,
+        .terminal-compose {
+          grid-template-columns: 1fr;
+        }
+
+        h1 {
+          font-size: 28px;
+        }
+
+        .meta-grid,
+        .template-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <aside class="rail" aria-label="Primary navigation">
+        <div class="rail-mark">AW</div>
+        <button class="rail-button active" type="button" title="home">TH</button>
+        <button class="rail-button" type="button" title="IDE">IDE</button>
+        <button class="rail-button" type="button" title="Review">RV</button>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="title-row">
+            <h1>任务主页</h1>
+            <button class="primary-button" type="button" data-open-intake>新建任务</button>
+          </div>
+          <div class="project-strip">
+            <span class="chip"><strong>Project</strong> Agent Workspace</span>
+            <span class="chip path">/Users/dinker/CODES/Agent-Workspace</span>
+            <span class="chip" id="activeLoopCount">2 active loops</span>
+          </div>
+          <nav class="filter-row" aria-label="Task filters" id="filterRow"></nav>
+        </header>
+
+        <section class="workspace" aria-label="Task home">
+          <aside class="panel">
+            <div class="panel-head">
+              <h2>任务</h2>
+              <button class="plain-button" type="button" data-open-intake>+</button>
+            </div>
+            <div class="panel-body">
+              <div class="task-list" id="taskList"></div>
+            </div>
+          </aside>
+
+          <section class="task-main">
+            <article class="panel">
+              <div class="task-hero">
+                <div class="task-hero-main">
+                  <div class="chip-row">
+                    <span class="status" id="taskStatus">running</span>
+                    <span class="chip" id="taskType">Spec / Plan</span>
+                    <span class="chip" id="taskLoop">Plan loop</span>
+                  </div>
+                  <h2 id="taskTitle">Task title</h2>
+                  <p class="muted" id="taskSummary">Task summary</p>
+                  <div class="chip-row" id="taskChips"></div>
+                </div>
+                <div class="next-action" id="nextActionCard">
+                  <span class="small muted">下一步</span>
+                  <h3 id="nextActionTitle">Next action</h3>
+                  <p class="small muted" id="nextActionText">Next action text</p>
+                  <div class="line-row">
+                    <button class="primary-button" type="button" id="nextActionButton">进入 IDE</button>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div class="terminal-current">
+                  <h2>Conductor Terminal</h2>
+                  <strong id="conductorStage">Stage</strong>
+                  <p class="small muted" id="conductorNext">Next</p>
+                </div>
+                <span class="status" id="conductorStatus">running</span>
+              </div>
+              <div class="panel-body">
+                <div class="terminal-shell">
+                  <div class="terminal-toolbar">
+                    <div class="chip-row">
+                      <span class="chip"><strong id="conductorRuntime">opencode</strong></span>
+                      <span class="chip"><strong id="conductorModel">model</strong></span>
+                      <span class="chip"><code id="conductorRun">run-id</code></span>
+                      <span class="chip"><code id="conductorTerminal">vterm-id</code></span>
+                    </div>
+                    <button class="plain-button" type="button" data-route-page="ide">放大到 IDE</button>
+                  </div>
+                  <div class="terminal-screen" id="conductorTerminalLog" aria-label="Conductor terminal output"></div>
+                  <div class="terminal-compose">
+                    <textarea id="conductorInput" placeholder="发送给 Conductor。Enter 发送，Shift + Enter 换行"></textarea>
+                    <button class="primary-button" type="button" id="sendConductorButton">发送</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="role-grid">
+              <section class="panel">
+                <div class="panel-head">
+                  <h2>Worker Agents</h2>
+                  <span class="chip" id="workerCount">0 workers</span>
+                </div>
+                <div class="panel-body">
+                  <div class="worker-grid" id="workerGrid"></div>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h2>Conductor 进展</h2>
+                  <span class="status" id="loopState">running</span>
+                </div>
+                <div class="panel-body">
+                  <div class="timeline" id="timeline"></div>
+                </div>
+              </section>
+            </div>
+
+            <details>
+              <summary>任务上下文</summary>
+              <div class="details-body" id="contextList"></div>
+            </details>
+
+            <details>
+              <summary>证据</summary>
+              <div class="details-body" id="evidenceList"></div>
+            </details>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="intakeModal" role="dialog" aria-modal="true" aria-label="新建任务">
+      <div class="modal">
+        <div class="modal-head">
+          <h2>新建任务</h2>
+          <button class="plain-button" type="button" data-close-intake>关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="template-grid" id="templateGrid"></div>
+          <div class="config-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h3>任务配置</h3>
+              </div>
+              <div class="panel-body form-grid">
+                <div class="field">
+                  <label for="taskNameInput">任务标题</label>
+                  <input id="taskNameInput" value="修改 plan：支持并发 loop 与任务级 Conductor" />
+                </div>
+                <div class="field">
+                  <label for="taskGoalInput">任务目标</label>
+                  <textarea id="taskGoalInput">定义任务级 Conductor、Worker Agents、runtime 配置、terminal session 绑定和并发 loop 展示。</textarea>
+                </div>
+                <div class="field">
+                  <label for="runtimeSelect">Conductor 运行时</label>
+                  <select id="runtimeSelect">
+                    <option value="opencode">opencode</option>
+                    <option value="codex">codex</option>
+                    <option value="claude">claude code</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="modelSelect">Conductor 模型</label>
+                  <select id="modelSelect">
+                    <option value="opencode/deepseek-v4-flash-free">opencode/deepseek-v4-flash-free</option>
+                    <option value="gpt-5-codex">gpt-5-codex</option>
+                    <option value="claude-sonnet-4">claude-sonnet-4</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="commandInput">启动命令</label>
+                  <input id="commandInput" value="opencode --model opencode/deepseek-v4-flash-free" />
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Session 绑定</h3>
+                <span class="chip">task scoped terminals</span>
+              </div>
+              <div class="panel-body">
+                <div class="session-list" id="sessionPreview"></div>
+              </div>
+            </section>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="muted small">创建后进入 Queued，不自动启动 terminal。</span>
+          <button class="primary-button" type="button" data-close-intake>创建任务</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const filters = [
+        ["all", "全部"],
+        ["running", "运行中"],
+        ["waiting", "等待我处理"],
+        ["review", "Review"],
+        ["queued", "Queued"],
+      ];
+
+      const tasks = [
+        {
+          id: "task-plan-conductor",
+          title: "Plan 修改：任务级 Conductor 与并发 loop",
+          type: "Spec / Plan",
+          summary: "新的 plan 修改需求正在由任务级 Conductor 推进，Planner 和 Reviewer 轮流挑战方案。",
+          status: "running",
+          statusLabel: "running",
+          filter: "running",
+          loopLabel: "Plan loop",
+          loopState: "running",
+          chips: ["Task Conductor", "2 workers active", "no code write"],
+          next: {
+            title: "进入 IDE 查看 plan loop",
+            text: "Conductor 正在等待 Reviewer 输出后继续发给 Planner。",
+            route: "ide",
+            label: "进入 IDE",
+            urgent: false,
+          },
+          conductor: {
+            status: "running",
+            stage: "Plan challenge loop #2",
+            next: "读取 Reviewer 挑战，给 Planner 发送修订指令。",
+            runtime: "opencode",
+            model: "opencode/deepseek-v4-flash-free",
+            runId: "run-plan-loop-042",
+            terminalId: "vterm:task-plan-conductor:conductor",
+          },
+          terminal: [
+            ["system", "$ opencode --model opencode/deepseek-v4-flash-free", ""],
+            ["Conductor", "已创建任务 run-plan-loop-042。当前任务目标：把 Task Home 调整为任务级 Conductor 主导。", ""],
+            ["Conductor", "发送给 Planner：补齐并发 loop、terminal 绑定和任务主页边界。", "worker"],
+            ["Planner", "第一版 plan 已返回。", "worker"],
+            ["Conductor", "发送给 Reviewer：挑战方案是否把 IDE 和 Task Home 的职责混在一起。", "worker"],
+            ["Reviewer", "问题：Task Home 缺少主 agent terminal，用户无法看到任务推进。", "decision"],
+            ["Conductor", "下一步：要求 Planner 把 Conductor Terminal 提升为任务主页核心区域。", ""],
+          ],
+          workers: [
+            ["Planner", "P", "running", "opencode", "deepseek-v4-flash-free", "vterm:task-plan-conductor:planner"],
+            ["Reviewer", "R", "waiting", "codex", "gpt-5-codex", "vterm:task-plan-conductor:reviewer"],
+            ["Executor", "E", "idle", "opencode", "deepseek-v4-flash-free", "vterm:task-plan-conductor:executor"],
+          ],
+          timeline: [
+            ["done", "需求进入 Queued", "记录 plan 修改目标和上下文。"],
+            ["done", "Conductor 启动", "创建任务级 run 和 conductor terminal。"],
+            ["done", "Planner 产出草案", "生成第一版 spec/plan 修改。"],
+            ["active", "Reviewer 挑战", "检查并发 loop、terminal 绑定和 Review 边界。"],
+            ["idle", "Planner 修订", "等待 Conductor 下发下一轮指令。"],
+          ],
+          context: ["Project path", "docs/superworks/spec/product-interaction-map.md", "docs/superworks/plans/prototype-capability-map.plan.md"],
+          evidence: [
+            ".agent-workspace/tasks/task-plan-conductor/events.jsonl",
+            ".agent-workspace/runs/run-plan-loop-042/conductor.json",
+            ".agent-workspace/runs/run-plan-loop-042/transcripts/",
+          ],
+        },
+        {
+          id: "task-code-pty",
+          title: "代码实现：PTY session manager 接入",
+          type: "Code",
+          summary: "旧的代码实现任务仍在运行，Executor 和 QA 拥有独立 terminal session。",
+          status: "running",
+          statusLabel: "running",
+          filter: "running",
+          loopLabel: "Code loop",
+          loopState: "running",
+          chips: ["worktree: pty-manager", "2 workers active", "Review required"],
+          next: {
+            title: "进入 IDE 查看代码 loop",
+            text: "Executor 正在修改，QA 等待验证。",
+            route: "ide",
+            label: "进入 IDE",
+            urgent: false,
+          },
+          conductor: {
+            status: "running",
+            stage: "Implementation loop #1",
+            next: "等待 Executor 返回 diff，再请求 QA 验证。",
+            runtime: "codex",
+            model: "gpt-5-codex",
+            runId: "run-code-pty-017",
+            terminalId: "vterm:task-code-pty:conductor",
+          },
+          terminal: [
+            ["system", "$ codex --model gpt-5-codex", ""],
+            ["Conductor", "代码实现任务已启动。Executor 使用 vterm:task-code-pty:executor，QA 使用 vterm:task-code-pty:qa。", ""],
+            ["Conductor", "发送给 Executor：接入 PTY session manager，保留 task-scoped terminal id。", "worker"],
+            ["Executor", "正在修改 desktop/pty-manager.cjs 和前端 bridge。", "worker"],
+            ["Conductor", "等待 diff 返回后，调度 QA 运行验证。", ""],
+          ],
+          workers: [
+            ["Executor", "E", "running", "codex", "gpt-5-codex", "vterm:task-code-pty:executor"],
+            ["QA", "Q", "waiting", "opencode", "deepseek-v4-flash-free", "vterm:task-code-pty:qa"],
+            ["Reviewer", "R", "idle", "codex", "gpt-5-codex", "vterm:task-code-pty:reviewer"],
+          ],
+          timeline: [
+            ["done", "实现任务启动", "创建 worktree 和 baseline。"],
+            ["active", "Executor 修改", "PTY manager 代码正在变更。"],
+            ["idle", "QA 验证", "等待 Executor 完成后运行验证。"],
+            ["idle", "Review Gate", "验证后进入 Review。"],
+          ],
+          context: ["src/runtime/nativeBridge.ts", "desktop/pty-manager.cjs", "src/pages/Workbench.tsx"],
+          evidence: [".agent-workspace/runs/run-code-pty-017/worktree.json", ".agent-workspace/runs/run-code-pty-017/terminal-events.jsonl"],
+        },
+        {
+          id: "task-home-decision",
+          title: "确认任务主页默认结构",
+          type: "Product Logic",
+          summary: "Conductor 已整理方案，需要用户进入 IDE 确认页面结构。",
+          status: "waiting",
+          statusLabel: "waiting",
+          filter: "waiting",
+          loopLabel: "Decision loop",
+          loopState: "waiting",
+          chips: ["needs user", "report ready"],
+          next: {
+            title: "进入 IDE 处理决策",
+            text: "查看 Conductor report，确认默认结构。",
+            route: "ide",
+            label: "进入 IDE 处理",
+            urgent: true,
+          },
+          conductor: {
+            status: "waiting",
+            stage: "Decision report ready",
+            next: "等待用户确认。",
+            runtime: "opencode",
+            model: "opencode/deepseek-v4-flash-free",
+            runId: "run-task-home-decision-008",
+            terminalId: "vterm:task-home-decision:conductor",
+          },
+          terminal: [
+            ["system", "$ opencode --model opencode/deepseek-v4-flash-free", ""],
+            ["Conductor", "任务主页默认结构方案已整理。", ""],
+            ["Conductor", "关键决策：Task Home 展示 Conductor 主 terminal；IDE 展示完整操作工作台。", "decision"],
+            ["Conductor", "等待用户确认后继续生成 spec。", ""],
+          ],
+          workers: [
+            ["Planner", "P", "done", "opencode", "deepseek-v4-flash-free", "vterm:task-home-decision:planner"],
+            ["Reviewer", "R", "done", "codex", "gpt-5-codex", "vterm:task-home-decision:reviewer"],
+          ],
+          timeline: [
+            ["done", "方案生成", "完成页面结构建议。"],
+            ["done", "挑战完成", "Reviewer 已指出边界风险。"],
+            ["active", "等待决策", "用户确认后继续写 spec。"],
+          ],
+          context: ["public/mockups/task-home-playground.html"],
+          evidence: [".agent-workspace/tasks/task-home-decision/decision-report.html"],
+        },
+        {
+          id: "task-review-gate",
+          title: "Review Gate 阻止未经验证的 Done",
+          type: "Debug Fix",
+          summary: "实现已完成，等待 Review 页面保存验证证据。",
+          status: "review",
+          statusLabel: "review",
+          filter: "review",
+          loopLabel: "Review gate",
+          loopState: "review",
+          chips: ["verification pending", "diff ready"],
+          next: {
+            title: "进入 Review",
+            text: "运行验证、检查 diff、确认提交范围。",
+            route: "review",
+            label: "进入 Review",
+            urgent: true,
+          },
+          conductor: {
+            status: "review",
+            stage: "Gate handoff",
+            next: "等待 Review 审批。",
+            runtime: "codex",
+            model: "gpt-5-codex",
+            runId: "run-review-gate-011",
+            terminalId: "vterm:task-review-gate:conductor",
+          },
+          terminal: [
+            ["system", "$ codex --model gpt-5-codex", ""],
+            ["Conductor", "Executor 已声明完成。进入 Review Gate。", ""],
+            ["Conductor", "发送给 QA：运行验证并保存证据。", "worker"],
+            ["QA", "验证仍在运行，尚不能标记 Done。", "decision"],
+            ["Conductor", "等待 Review 页面记录验证结果。", ""],
+          ],
+          workers: [
+            ["Executor", "E", "done", "codex", "gpt-5-codex", "vterm:task-review-gate:executor"],
+            ["QA", "Q", "running", "opencode", "deepseek-v4-flash-free", "vterm:task-review-gate:qa"],
+          ],
+          timeline: [
+            ["done", "实现完成", "Executor 声明完成。"],
+            ["active", "验证", "QA 正在运行验证。"],
+            ["idle", "审批", "等待 Review。"],
+          ],
+          context: ["src/pages/Review.tsx", "src/lib/auditTrail.ts"],
+          evidence: [".agent-workspace/reviews/run-review-gate-011/gate.json"],
+        },
+      ];
+
+      const templates = [
+        ["research", "调研任务", "Conductor + Researcher A/B + Reviewer"],
+        ["product", "产品逻辑任务", "Conductor + Product Planner + Critic"],
+        ["spec", "Spec-Plan 任务", "Conductor + Planner + Reviewer + Executor"],
+        ["code", "代码实现任务", "Conductor + Executor + QA + Reviewer"],
+        ["debug", "Debug 修复任务", "Conductor + Debugger + QA"],
+      ];
+
+      const state = {
+        selectedTaskId: "task-plan-conductor",
+        filter: "all",
+        template: "spec",
+      };
+
+      const runtimeDefaults = {
+        opencode: "opencode/deepseek-v4-flash-free",
+        codex: "gpt-5-codex",
+        claude: "claude-sonnet-4",
+      };
+
+      function selectedTask() {
+        return tasks.find((task) => task.id === state.selectedTaskId) || tasks[0];
+      }
+
+      function visibleTasks() {
+        return state.filter === "all" ? tasks : tasks.filter((task) => task.filter === state.filter);
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+      }
+
+      function statusClass(value) {
+        if (value === "running" || value === "active") return "running";
+        if (value === "waiting" || value === "decision") return "waiting";
+        if (value === "review") return "review";
+        if (value === "done") return "done";
+        return "idle";
+      }
+
+      function renderFilters() {
+        const counts = {
+          all: tasks.length,
+          running: tasks.filter((task) => task.filter === "running").length,
+          waiting: tasks.filter((task) => task.filter === "waiting").length,
+          review: tasks.filter((task) => task.filter === "review").length,
+          queued: tasks.filter((task) => task.filter === "queued").length,
+        };
+        document.getElementById("filterRow").innerHTML = filters
+          .map(
+            ([id, label]) =>
+              `<button class="filter-button ${state.filter === id ? "active" : ""}" data-filter="${id}" type="button">${label} ${counts[id]}</button>`,
+          )
+          .join("");
+        document.getElementById("activeLoopCount").textContent = `${counts.running} active loops`;
+      }
+
+      function renderTaskList() {
+        document.getElementById("taskList").innerHTML = visibleTasks()
+          .map(
+            (task) => `
+              <button class="task-card ${task.id === state.selectedTaskId ? "active" : ""} ${task.filter}" data-task-id="${task.id}" type="button">
+                <span class="task-title">${task.title}</span>
+                <span class="small muted">${task.type} · ${task.loopLabel}</span>
+                <div class="chip-row">
+                  <span class="status ${statusClass(task.status)}">${task.statusLabel}</span>
+                  <span class="chip">${task.conductor.terminalId}</span>
+                </div>
+              </button>
+            `,
+          )
+          .join("");
+      }
+
+      function renderTask() {
+        const task = selectedTask();
+        document.getElementById("taskStatus").textContent = task.statusLabel;
+        document.getElementById("taskStatus").className = `status ${statusClass(task.status)}`;
+        document.getElementById("taskType").textContent = task.type;
+        document.getElementById("taskLoop").textContent = task.loopLabel;
+        document.getElementById("taskTitle").textContent = task.title;
+        document.getElementById("taskSummary").textContent = task.summary;
+        document.getElementById("taskChips").innerHTML = task.chips.map((chip) => `<span class="chip">${chip}</span>`).join("");
+        document.getElementById("nextActionTitle").textContent = task.next.title;
+        document.getElementById("nextActionText").textContent = task.next.text;
+        document.getElementById("nextActionButton").textContent = task.next.label;
+        document.getElementById("nextActionButton").dataset.routePage = task.next.route;
+        document.getElementById("nextActionCard").classList.toggle("urgent", task.next.urgent);
+      }
+
+      function renderConductor() {
+        const task = selectedTask();
+        document.getElementById("conductorStatus").textContent = task.conductor.status;
+        document.getElementById("conductorStatus").className = `status ${statusClass(task.conductor.status)}`;
+        document.getElementById("conductorStage").textContent = task.conductor.stage;
+        document.getElementById("conductorNext").textContent = task.conductor.next;
+        document.getElementById("conductorRuntime").textContent = task.conductor.runtime;
+        document.getElementById("conductorModel").textContent = task.conductor.model;
+        document.getElementById("conductorRun").textContent = task.conductor.runId;
+        document.getElementById("conductorTerminal").textContent = task.conductor.terminalId;
+      }
+
+      function renderConductorTerminal() {
+        const task = selectedTask();
+        const terminalLog = document.getElementById("conductorTerminalLog");
+        terminalLog.innerHTML = (task.terminal || [])
+          .map(
+            ([source, text, tone]) => `
+              <div class="terminal-line ${tone || ""}">
+                <span class="terminal-source">${escapeHtml(source)}</span>
+                <span class="terminal-text">${escapeHtml(text)}</span>
+              </div>
+            `,
+          )
+          .join("");
+        terminalLog.scrollTop = terminalLog.scrollHeight;
+      }
+
+      function renderWorkers() {
+        const task = selectedTask();
+        document.getElementById("workerCount").textContent = `${task.workers.length} workers`;
+        document.getElementById("workerGrid").innerHTML = task.workers
+          .map(([name, initial, status, runtime, model, terminalId]) => {
+            const avatarClass = initial.toLowerCase();
+            return `
+              <div class="worker-card">
+                <span class="avatar ${avatarClass}">${initial}</span>
+                <div>
+                  <div class="line-row">
+                    <strong>${name}</strong>
+                    <span class="status ${statusClass(status)}">${status}</span>
+                  </div>
+                  <p class="small muted">${runtime} · ${model}</p>
+                  <code>${terminalId}</code>
+                </div>
+                <button class="plain-button" type="button" data-route-page="ide">terminal</button>
+              </div>
+            `;
+          })
+          .join("");
+      }
+
+      function renderTimeline() {
+        const task = selectedTask();
+        document.getElementById("loopState").textContent = task.loopState;
+        document.getElementById("loopState").className = `status ${statusClass(task.loopState)}`;
+        document.getElementById("timeline").innerHTML = task.timeline
+          .map(
+            ([stateName, title, text], index) => `
+              <div class="timeline-item ${stateName}">
+                <span class="timeline-index">${index + 1}</span>
+                <div>
+                  <h3>${title}</h3>
+                  <p class="small muted">${text}</p>
+                </div>
+                <span class="status ${statusClass(stateName)}">${stateName}</span>
+              </div>
+            `,
+          )
+          .join("");
+      }
+
+      function renderDetails() {
+        const task = selectedTask();
+        document.getElementById("contextList").innerHTML = task.context
+          .map((item) => `<div class="detail-card"><code>${item}</code></div>`)
+          .join("");
+        document.getElementById("evidenceList").innerHTML = task.evidence
+          .map((item) => `<div class="detail-card"><code>${item}</code></div>`)
+          .join("");
+      }
+
+      function renderTemplates() {
+        document.getElementById("templateGrid").innerHTML = templates
+          .map(
+            ([id, title, text]) => `
+              <button class="template-card ${state.template === id ? "active" : ""}" data-template="${id}" type="button">
+                <span class="chip">${id}</span>
+                <h3>${title}</h3>
+                <p class="small muted">${text}</p>
+              </button>
+            `,
+          )
+          .join("");
+      }
+
+      function renderSessionPreview() {
+        const runtime = document.getElementById("runtimeSelect").value;
+        const model = document.getElementById("modelSelect").value;
+        const taskSlug = "new-task";
+        const sessions = [
+          ["Conductor", runtime, model, `vterm:${taskSlug}:conductor`],
+          ["Planner", runtime, model, `vterm:${taskSlug}:planner`],
+          ["Reviewer", "codex", "gpt-5-codex", `vterm:${taskSlug}:reviewer`],
+          ["Executor", runtime, model, `vterm:${taskSlug}:executor`],
+        ];
+        document.getElementById("commandInput").value =
+          runtime === "codex" ? `codex --model ${model}` : runtime === "claude" ? `claude --model ${model}` : `opencode --model ${model}`;
+        document.getElementById("sessionPreview").innerHTML = sessions
+          .map(
+            ([role, roleRuntime, roleModel, terminalId]) => `
+              <div class="session-card">
+                <strong>${role}</strong>
+                <span class="small muted">${roleRuntime} · ${roleModel}</span>
+                <code>${terminalId}</code>
+              </div>
+            `,
+          )
+          .join("");
+      }
+
+      function renderAll() {
+        renderFilters();
+        renderTaskList();
+        renderTask();
+        renderConductor();
+        renderConductorTerminal();
+        renderWorkers();
+        renderTimeline();
+        renderDetails();
+        renderTemplates();
+        renderSessionPreview();
+      }
+
+      function setRoute(target) {
+        window.location.hash = target === "home" ? "" : target;
+        document.querySelectorAll(".rail-button").forEach((button) => {
+          button.classList.toggle("active", button.title.toLowerCase() === target);
+        });
+      }
+
+      function applyRouteFromHash() {
+        const route = window.location.hash.replace("#", "") || "home";
+        setRoute(route);
+      }
+
+      function sendConductorMessage() {
+        const input = document.getElementById("conductorInput");
+        const message = input.value.trim();
+        if (!message) return;
+        const task = selectedTask();
+        task.terminal.push(["User", message, "user"]);
+        task.terminal.push(["Conductor", "收到。我会更新当前任务上下文，并决定是否转发给 Worker Agent。", ""]);
+        input.value = "";
+        renderConductorTerminal();
+      }
+
+      document.addEventListener("click", (event) => {
+        if (event.target.closest("#sendConductorButton")) {
+          sendConductorMessage();
+          return;
+        }
+
+        const filterButton = event.target.closest("[data-filter]");
+        if (filterButton) {
+          state.filter = filterButton.dataset.filter;
+          const next = visibleTasks()[0] || tasks[0];
+          state.selectedTaskId = next.id;
+          setRoute("home");
+          renderAll();
+          return;
+        }
+
+        const taskButton = event.target.closest("[data-task-id]");
+        if (taskButton) {
+          state.selectedTaskId = taskButton.dataset.taskId;
+          setRoute("home");
+          renderAll();
+          return;
+        }
+
+        const routeButton = event.target.closest("[data-route-page]");
+        if (routeButton) {
+          setRoute(routeButton.dataset.routePage);
+          return;
+        }
+
+        if (event.target.closest("[data-open-intake]")) {
+          document.getElementById("intakeModal").classList.add("open");
+          renderSessionPreview();
+          return;
+        }
+
+        if (event.target.closest("[data-close-intake]")) {
+          document.getElementById("intakeModal").classList.remove("open");
+          return;
+        }
+
+        const templateButton = event.target.closest("[data-template]");
+        if (templateButton) {
+          state.template = templateButton.dataset.template;
+          renderTemplates();
+          renderSessionPreview();
+        }
+      });
+
+      document.getElementById("runtimeSelect").addEventListener("change", () => {
+        const runtime = document.getElementById("runtimeSelect").value;
+        document.getElementById("modelSelect").value = runtimeDefaults[runtime];
+        renderSessionPreview();
+      });
+      document.getElementById("modelSelect").addEventListener("change", renderSessionPreview);
+      document.getElementById("conductorInput").addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          sendConductorMessage();
+        }
+      });
+      window.addEventListener("hashchange", applyRouteFromHash);
+
+      renderAll();
+      applyRouteFromHash();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.agent-workspace/
+
+.DS_Store
+*.log
+*.tmp
+
+.env
+.env.*
+!.env.example
+
+coverage/
+.vite/
+*.tsbuildinfo
