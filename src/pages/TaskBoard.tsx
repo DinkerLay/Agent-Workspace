@@ -9,7 +9,7 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { PtyTerminal } from "../components/PtyTerminal";
 import { getActiveRunForTask, getLoopForTask, getRunIdForTask } from "../lib/taskMachine";
 import {
@@ -41,7 +41,6 @@ import type {
   TaskIntakeSource,
   TaskSessionPlan,
   TaskSessionPlanSession,
-  TaskStatus,
   TaskTransitionEvent,
 } from "../types";
 import { StatusPill, laneTitle } from "../components/common";
@@ -120,14 +119,6 @@ type TaskBoardProps = {
   onOpenAgentTerminal?: (agentId: string) => void;
 };
 
-const filters: Array<{ id: "all" | "running" | "waiting" | "review" | "queued"; label: string }> = [
-  { id: "all", label: "全部" },
-  { id: "running", label: "运行中" },
-  { id: "waiting", label: "等待我处理" },
-  { id: "review", label: "Review" },
-  { id: "queued", label: "Queued" },
-];
-
 export function TaskBoard({
   agents,
   tasks,
@@ -162,11 +153,7 @@ export function TaskBoard({
   onResizeConductorPty = () => undefined,
   onOpenAgentTerminal = () => undefined,
 }: TaskBoardProps) {
-  const [filter, setFilter] = useState<(typeof filters)[number]["id"]>("all");
   const [taskIntakeDraft, setTaskIntakeDraft] = useState<TaskIntakeDraft>(() => createDefaultTaskIntakeDraft());
-  const visibleTasks = tasks.filter((task) => taskMatchesFilter(task, filter));
-  const counts = countTasks(tasks);
-  const activeLoopCount = tasks.filter((task) => task.status === "running" || task.status === "waiting-input").length;
   const conductorAgent = useMemo(
     () => (selectedTask ? getConductorAgent(agents, selectedAgentCluster, selectedTask, selectedAgent) : selectedAgent),
     [agents, selectedAgentCluster, selectedAgent, selectedTask],
@@ -219,35 +206,13 @@ export function TaskBoard({
 
   if (!selectedTask || !conductorAgent) {
     return (
-      <section className="task-home-layout" aria-label="Task Home">
-        <aside className="task-home-sidebar panel">
-          <ProjectControl
-            activeLoopCount={activeLoopCount}
-            onOpenRuntimeProject={onOpenRuntimeProject}
-            selectedProject={selectedProject}
-          />
-          <div className="task-home-filter-row" aria-label="Task filters">
-            {filters.map((item) => (
-              <button
-                className={filter === item.id ? "filter-button active" : "filter-button"}
-                key={item.id}
-                type="button"
-                onClick={() => setFilter(item.id)}
-              >
-                {item.label} {counts[item.id]}
-              </button>
-            ))}
-          </div>
-          <div className="task-home-task-list" aria-label="Tasks">
-            <span className="muted-text">还没有任务</span>
-          </div>
-        </aside>
-
+      <section className="task-home-layout task-home-layout-empty" aria-label="Task Home">
         <section className="task-home-main">
-          <article className="panel task-home-hero">
+          <article className="panel task-home-hero task-home-description">
             <div>
+              <span className="eyebrow">任务描述</span>
               <h2>还没有任务</h2>
-              <p>创建任务后会启动 Conductor，并把任务上下文写入真实 terminal。</p>
+              <p>任务的目标、上下文和交付条件会在这里汇总。</p>
             </div>
           </article>
           <div className="task-home-create-grid">
@@ -271,59 +236,16 @@ export function TaskBoard({
   }
 
   return (
-    <section className="task-home-layout" aria-label="Task Home">
-      <aside className="task-home-sidebar panel">
-        <ProjectControl
-          activeLoopCount={activeLoopCount}
-          onOpenRuntimeProject={onOpenRuntimeProject}
-          selectedProject={selectedProject}
-        />
-        <div className="task-home-filter-row" aria-label="Task filters">
-          {filters.map((item) => (
-            <button
-              className={filter === item.id ? "filter-button active" : "filter-button"}
-              key={item.id}
-              type="button"
-              onClick={() => setFilter(item.id)}
-            >
-              {item.label} {counts[item.id]}
-            </button>
-          ))}
-        </div>
-        <div className="task-home-task-list" aria-label="Tasks">
-          {visibleTasks.map((task) => (
-            <button
-              className={[
-                "task-home-task-card",
-                selectedTaskId === task.id ? "active" : "",
-                taskStateClass(task.status),
-              ].join(" ")}
-              key={task.id}
-              type="button"
-              onClick={() => onSelectTask(task.id)}
-            >
-              <strong>{task.title}</strong>
-              <span>
-                {task.source} · {getLoopForTask(task)}
-              </span>
-              <div>
-                <StatusPill status={task.status} />
-                <code>{getRunIdForTask(task, runs)}</code>
-              </div>
-            </button>
-          ))}
-        </div>
-      </aside>
-
+    <section className="task-home-layout task-home-layout-empty" aria-label="Task Home">
       <section className="task-home-main">
         <article className="panel task-home-hero">
           <div>
+            <span className="eyebrow">任务描述</span>
             <div className="task-home-kicker">
               <StatusPill status={selectedTask.status} />
               <span>{getLoopForTask(selectedTask)}</span>
               <span>{selectedTask.owner}</span>
             </div>
-            <h2>任务主页</h2>
             <h3>{selectedTask.title}</h3>
             <p>{selectedTask.summary}</p>
             <div className="task-home-chip-row">
@@ -477,85 +399,6 @@ export function TaskBoard({
         </div>
       </section>
     </section>
-  );
-}
-
-function ProjectControl({
-  activeLoopCount,
-  onOpenRuntimeProject,
-  selectedProject,
-}: {
-  activeLoopCount: number;
-  onOpenRuntimeProject: (input: RuntimeProjectInput) => void;
-  selectedProject: Project;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [projectPath, setProjectPath] = useState(selectedProject.path);
-  const [projectName, setProjectName] = useState(selectedProject.name);
-
-  useEffect(() => {
-    if (!editing) {
-      setProjectPath(selectedProject.path);
-      setProjectName(selectedProject.name);
-    }
-  }, [editing, selectedProject.name, selectedProject.path]);
-
-  const submitProject = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const nextPath = projectPath.trim();
-    if (!nextPath) return;
-    onOpenRuntimeProject({
-      projectPath: nextPath,
-      projectName: projectName.trim() || basename(projectPath),
-    });
-    setEditing(false);
-  };
-
-  return (
-    <div className={editing ? "task-home-project-control editing" : "task-home-project-control"}>
-      <div className="task-home-sidebar-head">
-        <div>
-          <span className="eyebrow">Project</span>
-          <strong>{selectedProject.name}</strong>
-          <small title={selectedProject.path}>{selectedProject.path}</small>
-        </div>
-        <StatusPill status={`${activeLoopCount} active loops`} />
-      </div>
-      {editing ? (
-        <form className="task-home-project-form" onSubmit={submitProject}>
-          <label>
-            <span>项目路径</span>
-            <input
-              aria-label="项目路径"
-              value={projectPath}
-              onChange={(event) => setProjectPath(event.target.value)}
-              placeholder="/Users/dinker/CODES/TEMP_project/Agent_Test"
-            />
-          </label>
-          <label>
-            <span>项目名称</span>
-            <input
-              aria-label="项目名称"
-              value={projectName}
-              onChange={(event) => setProjectName(event.target.value)}
-              placeholder={basename(projectPath) || "Project"}
-            />
-          </label>
-          <div className="task-home-project-actions">
-            <button className="ghost-button" type="button" onClick={() => setEditing(false)}>
-              取消
-            </button>
-            <button className="primary-button" type="submit">
-              打开项目
-            </button>
-          </div>
-        </form>
-      ) : (
-        <button className="ghost-button task-home-project-open" type="button" onClick={() => setEditing(true)}>
-          切换项目
-        </button>
-      )}
-    </div>
   );
 }
 
@@ -728,6 +571,7 @@ function TaskIntakePanel({
         <label>
           <span>任务标题</span>
           <input
+            id="new-task-title"
             aria-label="任务标题"
             value={draft.title}
             onChange={(event) => updateDraft({ title: event.target.value })}
@@ -825,43 +669,6 @@ function TaskIntakePanel({
           创建并启动
         </button>
       </form>
-      <div className="task-home-system-prompts" aria-label="Conductor runtime preview">
-        <div className="task-home-panel-head">
-          <h3>Conductor Runtime 预览</h3>
-          <StatusPill status="MCP tools" />
-        </div>
-        <div className="system-prompt-preview-list">
-          <details className="system-prompt-preview-card" open>
-            <summary>
-              <span>
-                <strong>{runtimePreview.sessionName}</strong>
-                <small>{runtimePreview.sessionRole}</small>
-              </span>
-              <StatusPill status="Conductor only" />
-            </summary>
-            <pre>{runtimePreview.prompt}</pre>
-          </details>
-          <div className="system-prompt-preview-card conductor-tool-preview">
-            <strong>MCP tools</strong>
-            <div className="conductor-tool-list">
-              {runtimePreview.tools.map((tool) => (
-                <code key={tool}>{tool}</code>
-              ))}
-            </div>
-          </div>
-          <div className="system-prompt-preview-card native-worker-preview">
-            <strong>Worker sessions</strong>
-            <span>原生 session，不注入 Agent Workspace 协议</span>
-            <div className="native-worker-list">
-              {runtimePreview.workerSessions.map((session) => (
-                <span key={session.id}>
-                  {session.name} · {session.role}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
       {latestIntake ? (
         <div className="task-home-latest-intake">
           <strong>{latestIntake.id}</strong>
@@ -1305,33 +1112,6 @@ function getConductorTranscript(nativePtySession: NativePtySession | undefined, 
     return selectedRun.nativeSession.transcriptPreview;
   }
   return selectedRun?.transcriptPreview ?? [];
-}
-
-function taskMatchesFilter(task: Task, filter: (typeof filters)[number]["id"]) {
-  if (filter === "all") return true;
-  if (filter === "running") return task.status === "running" || task.status === "waiting-input";
-  if (filter === "waiting") return task.status === "waiting-input" || task.status === "blocked";
-  if (filter === "review") return task.status === "pending-review" || task.status === "failed-verification";
-  if (filter === "queued") return task.status === "todo" || task.status === "queued";
-  return true;
-}
-
-function countTasks(tasks: Task[]) {
-  return {
-    all: tasks.length,
-    running: tasks.filter((task) => taskMatchesFilter(task, "running")).length,
-    waiting: tasks.filter((task) => taskMatchesFilter(task, "waiting")).length,
-    review: tasks.filter((task) => taskMatchesFilter(task, "review")).length,
-    queued: tasks.filter((task) => taskMatchesFilter(task, "queued")).length,
-  };
-}
-
-function taskStateClass(status: TaskStatus) {
-  if (status === "running") return "state-running";
-  if (status === "waiting-input" || status === "blocked") return "state-decision";
-  if (status === "pending-review" || status === "failed-verification") return "state-review";
-  if (status === "done") return "state-done";
-  return "state-neutral";
 }
 
 function agentCardStateClass(agent: Agent) {

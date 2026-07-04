@@ -1,8 +1,11 @@
 import {
   Blocks,
+  FileText,
   FileDiff,
+  FolderOpen,
+  Plus,
 } from "lucide-react";
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState, type FormEvent } from "react";
 import browserImage from "../docs/research/assets/agentsroom/browser-automation.jpg";
 import {
   browserRuntimeStatus,
@@ -68,7 +71,9 @@ import type {
   TeamWorkflow,
   View,
   Agent,
+  Project,
   PrototypeState,
+  Task,
   TaskSessionPlan,
 } from "./types";
 
@@ -127,6 +132,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const fallbackProject = initialState.projects[0];
   const fallbackAgentCluster = initialState.agentClusters[0];
   const selectedProject = state.projects.find((project) => project.id === state.selectedProjectId) ?? fallbackProject;
+  const selectedProjectTasks = state.tasks.filter((task) => selectedProject.taskIds.includes(task.id));
   const selectedAgentCluster =
     state.agentClusters.find((cluster) => cluster.id === state.selectedAgentClusterId) ??
     state.agentClusters.find((cluster) => cluster.id === selectedProject.defaultAgentClusterId) ??
@@ -739,11 +745,20 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
           })}
         </nav>
 
-        <div className="decision-box">
-          <div className="eyebrow">工作台主线</div>
-          <strong>任务主页 · Conductor · IDE 操作台</strong>
-          <p>任务主页创建和观察任务；Conductor 推进主线；IDE 承载真实 terminal 操作。</p>
-        </div>
+        <div className="rail-directory-divider" aria-label="目录分割线" role="separator" />
+        <ShellDirectoryTree
+          collapsed={primaryRailCollapsed}
+          selectedProject={selectedProject}
+          selectedTaskId={state.selectedTaskId}
+          tasks={selectedProjectTasks}
+          onExpandRail={() => setPrimaryRailCollapsed(false)}
+          onNewTask={() => dispatch({ type: "set-view", view: "backlog" })}
+          onOpenRuntimeProject={openRuntimeProject}
+          onSelectTask={(taskId) => {
+            dispatch({ type: "select-task", taskId });
+            dispatch({ type: "set-view", view: "backlog" });
+          }}
+        />
       </aside>
 
       <main className={`workspace workspace-${state.activeView}`}>
@@ -1044,6 +1059,122 @@ function pageTitle(view: View) {
     runs: "Runs / 审计",
   };
   return titles[view];
+}
+
+function ShellDirectoryTree({
+  collapsed,
+  selectedProject,
+  selectedTaskId,
+  tasks,
+  onExpandRail,
+  onNewTask,
+  onOpenRuntimeProject,
+  onSelectTask,
+}: {
+  collapsed: boolean;
+  selectedProject: Project;
+  selectedTaskId: string;
+  tasks: Task[];
+  onExpandRail: () => void;
+  onNewTask: () => void;
+  onOpenRuntimeProject: (input: { projectPath: string; projectName: string }) => void;
+  onSelectTask: (taskId: string) => void;
+}) {
+  const [addingProject, setAddingProject] = useState(false);
+  const [projectPath, setProjectPath] = useState("");
+
+  useEffect(() => {
+    if (collapsed && addingProject) setAddingProject(false);
+  }, [addingProject, collapsed]);
+
+  const startProjectCreate = () => {
+    if (collapsed) onExpandRail();
+    setAddingProject(true);
+  };
+
+  const submitProject = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const nextPath = projectPath.trim();
+    if (!nextPath) return;
+    onOpenRuntimeProject({
+      projectPath: nextPath,
+      projectName: basename(nextPath) || "Project",
+    });
+    setProjectPath("");
+    setAddingProject(false);
+  };
+
+  return (
+    <section className="rail-directory-tree" aria-label="项目任务列表">
+      <div className="rail-directory-heading">
+        <span>项目</span>
+        <button
+          aria-label="新建项目"
+          className="rail-icon-action"
+          title="新建项目"
+          type="button"
+          onClick={startProjectCreate}
+        >
+          <Plus size={13} />
+        </button>
+      </div>
+      {addingProject ? (
+        <form className="rail-project-form" onSubmit={submitProject}>
+          <label>
+            <span>目录地址</span>
+            <input
+              aria-label="项目目录地址"
+              value={projectPath}
+              onChange={(event) => setProjectPath(event.target.value)}
+              placeholder="/Users/dinker/CODES/TEMP_project/Agent_Test"
+            />
+          </label>
+          <div className="rail-project-form-actions">
+            <button className="rail-text-action" type="button" onClick={() => setAddingProject(false)}>
+              取消
+            </button>
+            <button className="rail-text-action primary" disabled={!projectPath.trim()} type="submit">
+              确定
+            </button>
+          </div>
+        </form>
+      ) : null}
+      <div
+        aria-label={`当前项目 ${selectedProject.name}`}
+        className="rail-directory-root"
+        title={`项目目录: ${selectedProject.path}`}
+      >
+        <FolderOpen size={17} />
+        <span className="rail-directory-copy">
+          <strong>{selectedProject.name}</strong>
+        </span>
+        <button
+          aria-label={`新建任务 ${selectedProject.name}`}
+          className="rail-icon-action rail-task-add"
+          title="新建任务"
+          type="button"
+          onClick={onNewTask}
+        >
+          <Plus size={13} />
+        </button>
+      </div>
+      <div className="rail-task-branch" aria-label={`${selectedProject.name} 任务`}>
+        {tasks.map((task) => (
+          <button
+            aria-label={`打开任务 ${task.title}`}
+            className={task.id === selectedTaskId ? "rail-task-leaf active" : "rail-task-leaf"}
+            key={task.id}
+            title={task.title}
+            type="button"
+            onClick={() => onSelectTask(task.id)}
+          >
+            <FileText size={14} />
+            <span>{task.title}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function buildConductorKickoffPrompt(input: {

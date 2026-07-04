@@ -86,7 +86,7 @@ describe("TaskBoard Task Home", () => {
     const props = baseProps();
     render(<TaskBoard {...props} nativePtySession={ptySession} />);
 
-    expect(screen.getByText("任务主页")).toBeTruthy();
+    expect(screen.getByText("任务描述")).toBeTruthy();
     expect(screen.getByText("Conductor Terminal")).toBeTruthy();
     expect(screen.getByText("Task Conductor")).toBeTruthy();
     expect(screen.getByText(ptySession.id)).toBeTruthy();
@@ -146,32 +146,37 @@ describe("TaskBoard Task Home", () => {
     expect(openedAgents[0]).toBeTruthy();
   });
 
-  it("opens a runtime project from the Task Home project control", () => {
-    const openedProjects: Array<{ projectPath: string; projectName: string }> = [];
+  it("does not render a second task sidebar inside Task Home", () => {
     const props = baseProps();
+    const { container } = render(<TaskBoard {...props} />);
 
-    render(
-      <TaskBoard
-        {...props}
-        onOpenRuntimeProject={(input) => {
-          openedProjects.push(input);
-        }}
-      />,
-    );
+    expect(container.querySelector(".task-home-layout-empty")).toBeTruthy();
+    expect(container.querySelector(".task-home-sidebar")).toBeNull();
+    expect(screen.queryByLabelText("Task filters")).toBeNull();
+    expect(screen.queryByLabelText("Tasks")).toBeNull();
+    expect(screen.queryByRole("button", { name: "切换目录 Agent-Workspace" })).toBeNull();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "切换项目" }));
-    fireEvent.change(screen.getByLabelText("项目路径"), {
-      target: { value: "/Users/dinker/CODES/TEMP_project/Agent_Test" },
-    });
-    fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "打开项目" }));
+  it("does not reserve sidebar space when there are no tasks yet", () => {
+    const props = baseProps();
+    const { container } = render(<TaskBoard {...props} tasks={[]} selectedTask={undefined} selectedTaskId="" />);
 
-    expect(openedProjects).toEqual([
-      {
-        projectPath: "/Users/dinker/CODES/TEMP_project/Agent_Test",
-        projectName: "Agent_Test",
-      },
-    ]);
+    expect(container.querySelector(".task-home-layout-empty")).toBeTruthy();
+    expect(container.querySelector(".task-home-sidebar")).toBeNull();
+    expect(screen.getByText("任务描述")).toBeTruthy();
+    expect(screen.getByText("AI 任务配置助手")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "新建任务" })).toBeNull();
+    expect(screen.getByLabelText("任务标题")).toBeTruthy();
+  });
+
+  it("keeps task creation triggers out of the Task Home description panel", () => {
+    const props = baseProps();
+    const { container } = render(<TaskBoard {...props} tasks={[]} selectedTask={undefined} selectedTaskId="" />);
+    const hero = container.querySelector(".task-home-hero");
+
+    expect(hero).toBeTruthy();
+    expect(within(hero as HTMLElement).queryByRole("button", { name: "新建任务" })).toBeNull();
+    expect(screen.getByText("新建任务")).toBeTruthy();
   });
 
   it("uses the AI task draft assistant to fill the intake form and patch follow-up changes", async () => {
@@ -556,18 +561,18 @@ describe("TaskBoard Task Home", () => {
     expect(screen.getByLabelText("Worker 3 职责")).toHaveProperty("value", "Evidence collector");
   });
 
-  it("previews only Conductor runtime prompt and MCP scope", () => {
+  it("does not render Conductor runtime prompt preview in the task creation page", () => {
     const props = baseProps();
 
     render(<TaskBoard {...props} />);
 
-    expect(screen.getByText("Conductor Runtime 预览")).toBeTruthy();
-    expect(screen.getAllByText("MCP tools").length).toBeGreaterThan(0);
-    expect(screen.getByText("call_session")).toBeTruthy();
-    expect(screen.getByText("read_task_state")).toBeTruthy();
-    expect(screen.getByText("read_session")).toBeTruthy();
+    expect(screen.queryByText("Conductor Runtime 预览")).toBeNull();
+    expect(screen.queryByText("MCP tools")).toBeNull();
+    expect(screen.queryByText("call_session")).toBeNull();
+    expect(screen.queryByText("read_task_state")).toBeNull();
+    expect(screen.queryByText("read_session")).toBeNull();
     expect(screen.queryByText("finish_task_claim")).toBeNull();
-    expect(screen.getByText("原生 session，不注入 Agent Workspace 协议")).toBeTruthy();
+    expect(screen.queryByText("原生 session，不注入 Agent Workspace 协议")).toBeNull();
     expect(screen.queryByText("Workspace Session Message")).toBeNull();
   });
 });

@@ -147,18 +147,33 @@ describe("App information architecture", () => {
     ).toContain("active");
   });
 
-  it("boots Task Home from an empty runtime workspace", () => {
-    render(<App />);
+  it("boots Task Home from an empty runtime workspace without a project sidebar", () => {
+    const { container } = render(<App />);
 
     expect(screen.getByRole("heading", { level: 1, name: "任务主页" })).toBeTruthy();
-    expect(screen.getByText("任务主页 · Conductor · IDE 操作台")).toBeTruthy();
+    expect(container.querySelector(".task-home-layout-empty")).toBeTruthy();
+    expect(container.querySelector(".task-home-sidebar")).toBeNull();
+    expect(screen.getByRole("separator", { name: "目录分割线" })).toBeTruthy();
+    const directoryTree = screen.getByLabelText("项目任务列表");
+    expect(within(directoryTree).getByText("项目")).toBeTruthy();
+    expect(within(directoryTree).getByRole("button", { name: "新建项目" })).toBeTruthy();
+    expect(within(directoryTree).getByLabelText("当前项目 Agent-Workspace")).toBeTruthy();
+    expect(within(directoryTree).getByRole("button", { name: "新建任务 Agent-Workspace" })).toBeTruthy();
+    expect(within(directoryTree).queryByRole("button", { name: "新任务" })).toBeNull();
+    expect(screen.queryByLabelText("目录路径")).toBeNull();
+    expect(screen.queryByLabelText("目录名称")).toBeNull();
+    expect(container.querySelector(".rail-project-status")).toBeNull();
+    expect(container.querySelector(".decision-box")).toBeNull();
+    expect(screen.queryByText("0 active loops")).toBeNull();
+    expect(screen.queryByText("任务主页 · Conductor · IDE 操作台")).toBeNull();
     expect(screen.getAllByText("还没有任务").length).toBeGreaterThan(0);
-    expect(screen.getByText("新建任务")).toBeTruthy();
-    expect(screen.getByText("Conductor Runtime 预览")).toBeTruthy();
-    expect(screen.getAllByText("MCP tools").length).toBeGreaterThan(0);
-    expect(screen.getByText("call_session")).toBeTruthy();
-    expect(screen.getByText("read_task_state")).toBeTruthy();
-    expect(screen.getByText("read_session")).toBeTruthy();
+    expect(within(screen.getByLabelText("Task Home")).queryByRole("button", { name: "新建任务" })).toBeNull();
+    expect(screen.getByText("任务描述")).toBeTruthy();
+    expect(screen.queryByText("Conductor Runtime 预览")).toBeNull();
+    expect(screen.queryByText("MCP tools")).toBeNull();
+    expect(screen.queryByText("call_session")).toBeNull();
+    expect(screen.queryByText("read_task_state")).toBeNull();
+    expect(screen.queryByText("read_session")).toBeNull();
     expect(screen.queryByText("finish_task_claim")).toBeNull();
     expect(screen.queryByText("Workspace Session Message")).toBeNull();
     expect(screen.queryByText("Conductor Terminal")).toBeNull();
@@ -185,10 +200,50 @@ describe("App information architecture", () => {
     render(<App />);
 
     expect(screen.getByText("Agent_Test")).toBeTruthy();
-    expect(screen.getByText("/Users/dinker/CODES/TEMP_project/Agent_Test")).toBeTruthy();
+    expect(screen.getByLabelText("当前项目 Agent_Test")).toBeTruthy();
+    expect(screen.getByTitle("项目目录: /Users/dinker/CODES/TEMP_project/Agent_Test")).toBeTruthy();
   });
 
-  it("opens a project from Task Home and auto-starts Conductor in that cwd", async () => {
+  it("returns to Task Home from the project task-create button", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "IDE 工作台" }));
+    expect(screen.getByRole("heading", { level: 1, name: "IDE 工作台" })).toBeTruthy();
+
+    fireEvent.click(within(screen.getByLabelText("项目任务列表")).getByRole("button", { name: "新建任务 Agent-Workspace" }));
+
+    expect(screen.getByRole("heading", { level: 1, name: "任务主页" })).toBeTruthy();
+  });
+
+  it("keeps the project row as a sidebar list item instead of an inline directory editor", () => {
+    render(<App />);
+
+    expect(screen.getByLabelText("当前项目 Agent-Workspace")).toBeTruthy();
+
+    expect(screen.queryByLabelText("目录路径")).toBeNull();
+    expect(screen.queryByLabelText("目录名称")).toBeNull();
+    expect(screen.queryByRole("button", { name: "打开目录" })).toBeNull();
+  });
+
+  it("creates a project from the sidebar project add button with a directory address", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
+    fireEvent.change(screen.getByLabelText("项目目录地址"), {
+      target: { value: "/Users/dinker/CODES/TEMP_project/Agent_Test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+
+    expect(screen.getByLabelText("当前项目 Agent_Test")).toBeTruthy();
+    expect(screen.queryByLabelText("项目目录地址")).toBeNull();
+  });
+
+  it("uses the current project context and auto-starts Conductor in that cwd", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/?projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
+    );
     const startPtyInputs: Array<{ id?: string; cwd: string; args?: string[] }> = [];
     window.agentWorkspace = {
       native: {
@@ -235,13 +290,6 @@ describe("App information architecture", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "切换项目" }));
-    fireEvent.change(screen.getByLabelText("项目路径"), {
-      target: { value: "/Users/dinker/CODES/TEMP_project/Agent_Test" },
-    });
-    fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "Agent_Test" } });
-    fireEvent.click(screen.getByRole("button", { name: "打开项目" }));
-
     expect(screen.getByText("Agent_Test")).toBeTruthy();
     createRuntimeTask({
       title: "调研claude dynamic workflow 的机制",
@@ -250,6 +298,11 @@ describe("App information architecture", () => {
     });
 
     await waitFor(() => expect(startPtyInputs).toHaveLength(1));
+    expect(
+      within(screen.getByLabelText("项目任务列表")).getByRole("button", {
+        name: "打开任务 调研claude dynamic workflow 的机制",
+      }),
+    ).toBeTruthy();
     expectConductorRuntimeSessionId(startPtyInputs[0].id);
     expect(startPtyInputs[0]).toMatchObject({
       taskId: expect.stringMatching(/^task-[a-z0-9]{6}$/),

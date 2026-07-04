@@ -85,11 +85,12 @@ svg {
   max-width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   padding: 18px;
   border-right: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(18px);
+  font-size: 14px;
   position: sticky;
   top: 0;
   height: 100vh;
@@ -105,8 +106,8 @@ svg {
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 46px;
+  gap: 10px;
+  min-height: 42px;
   min-width: 0;
 }
 
@@ -136,15 +137,16 @@ svg {
 
 .rail-collapsed .brand-copy,
 .rail-collapsed .nav-item span,
-.rail-collapsed .decision-box {
+.rail-collapsed .rail-directory-heading,
+.rail-collapsed .rail-directory-copy,
+.rail-collapsed .rail-directory-chevron,
+.rail-collapsed .rail-task-branch {
   display: none;
 }
 
 .brand strong,
 .brand span,
-.nav-item span,
-.decision-box strong,
-.decision-box p {
+.nav-item span {
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -166,8 +168,8 @@ svg {
 .stage-icon {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   border-radius: 10px;
   background: #111827;
   color: white;
@@ -175,7 +177,7 @@ svg {
 
 .nav-list {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .rail-collapsed .nav-list {
@@ -185,6 +187,8 @@ svg {
 }
 
 .nav-item,
+.rail-directory-root,
+.rail-task-leaf,
 .agent-row,
 .task-link,
 .queue-row,
@@ -201,10 +205,11 @@ svg {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  min-height: 38px;
+  min-height: 34px;
   padding: 0 10px;
   border-radius: 8px;
   color: #3f4754;
+  font-size: 14px;
 }
 
 .rail-collapsed .nav-item {
@@ -220,15 +225,216 @@ svg {
   color: #ffffff;
 }
 
-.decision-box {
-  margin-top: auto;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-2);
+.rail-directory-divider {
+  width: 100%;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--line);
 }
 
-.decision-box p,
+.rail-collapsed .rail-directory-divider {
+  width: 30px;
+}
+
+.rail-directory-tree {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rail-directory-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.rail-directory-root {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: inherit;
+  text-align: left;
+  font-size: 14px;
+}
+
+.rail-collapsed .rail-directory-tree {
+  width: 100%;
+  justify-items: center;
+}
+
+.rail-collapsed .rail-directory-root {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  min-height: 42px;
+  padding: 0;
+  background: transparent;
+}
+
+.rail-collapsed .rail-task-add {
+  display: none;
+}
+
+.rail-directory-root:hover,
+.rail-directory-root:focus-within,
+.rail-task-leaf:hover,
+.rail-task-leaf:focus-visible {
+  background: #eef2ff;
+  color: #1d4ed8;
+}
+
+.rail-collapsed .rail-directory-root:hover,
+.rail-collapsed .rail-directory-root:focus-visible {
+  background: #111827;
+  color: #ffffff;
+}
+
+.rail-directory-copy {
+  min-width: 0;
+}
+
+.rail-directory-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-directory-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rail-directory-label {
+  font-weight: 700;
+}
+
+.rail-task-branch {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding-left: 24px;
+}
+
+.rail-task-leaf {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: #3f4754;
+  font-size: 13px;
+}
+
+.rail-task-leaf.active {
+  background: #111827;
+  color: #ffffff;
+}
+
+.rail-task-leaf span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-icon-action {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.rail-icon-action:hover,
+.rail-icon-action:focus-visible {
+  background: rgba(17, 24, 39, 0.08);
+  color: #111827;
+}
+
+.rail-project-form {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px;
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.rail-project-form label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.rail-project-form input {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.rail-project-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rail-text-action {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rail-text-action:hover,
+.rail-text-action:focus-visible {
+  background: #eef2ff;
+  color: #111827;
+}
+
+.rail-text-action.primary {
+  background: #111827;
+  color: #ffffff;
+}
+
+.rail-text-action:disabled {
+  cursor: not-allowed;
+  background: #eef2f7;
+  color: #7b8494;
+}
+
 .scheme-copy,
 .loop-stage p,
 .selected-task p {
@@ -1528,106 +1734,27 @@ textarea:focus {
 
 .task-home-layout {
   display: grid;
-  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
   min-width: 0;
   max-width: 100%;
 }
 
+.task-home-layout.task-home-layout-empty {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .task-home-sidebar {
   position: sticky;
   top: 22px;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   min-width: 0;
   max-height: calc(100vh - 44px);
   overflow: hidden;
   padding: 12px;
-}
-
-.task-home-sidebar-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: start;
-  min-width: 0;
-}
-
-.task-home-sidebar-head > div {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.task-home-sidebar-head strong,
-.task-home-sidebar-head small {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-home-sidebar-head small {
-  color: var(--muted);
-}
-
-.task-home-project-control {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
-.task-home-project-open {
-  justify-self: start;
-  min-height: 32px;
-  padding: 0 10px;
-  font-size: 12px;
-}
-
-.task-home-project-form {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.task-home-project-form label {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.task-home-project-form input {
-  width: 100%;
-  min-width: 0;
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #ffffff;
-  color: var(--ink);
-}
-
-.task-home-project-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 0;
-}
-
-.task-home-project-actions .primary-button,
-.task-home-project-actions .ghost-button {
-  min-height: 32px;
-  padding: 0 10px;
-  font-size: 12px;
 }
 
 .task-home-filter-row {
@@ -1707,7 +1834,7 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
-  align-items: stretch;
+  align-items: start;
   min-width: 0;
   padding: 18px;
 }
@@ -1720,8 +1847,8 @@ textarea:focus {
 }
 
 .task-home-hero h2 {
-  font-size: 14px;
-  color: var(--muted);
+  font-size: 20px;
+  color: var(--ink);
 }
 
 .task-home-hero h3 {
@@ -1734,6 +1861,11 @@ textarea:focus {
   color: var(--muted);
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.task-home-hero > .primary-button,
+.task-home-hero > .ghost-button {
+  justify-self: end;
 }
 
 .task-home-kicker,
@@ -5905,6 +6037,10 @@ textarea:focus {
 
   .task-home-layout {
     grid-template-columns: minmax(240px, 285px) minmax(0, 1fr);
+  }
+
+  .task-home-layout.task-home-layout-empty {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .task-home-role-grid,
