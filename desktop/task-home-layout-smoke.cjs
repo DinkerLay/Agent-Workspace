@@ -31,10 +31,13 @@ async function collectMetrics(window) {
     (() => {
       const bodyText = document.body.innerText;
       const doc = document.documentElement;
-      const workerGrid = document.querySelector(".worker-agent-grid");
+      const executionFeed = document.querySelector(".execution-feed");
+      const executionPanel = document.querySelector(".execution-panel");
+      const taskSessionPanel = document.querySelector(".task-session-panel");
+      const taskSessionDetail = document.querySelector(".task-session-detail");
       const taskHome = document.querySelector(".task-home-layout");
-      const workerCards = Array.from(document.querySelectorAll(".worker-agent-card")).map((el) =>
-        el.innerText.split("\\n").filter(Boolean).slice(0, 3)
+      const sessionAgents = Array.from(document.querySelectorAll(".task-session-agent")).map((el) =>
+        el.innerText.split("\\n").filter(Boolean)
       );
       return {
         url: location.href,
@@ -43,6 +46,23 @@ async function collectMetrics(window) {
         hasNoTaskCopy: bodyText.includes("还没有任务"),
         hasNewTaskForm: Boolean(document.querySelector(".task-home-intake-form")),
         hasConductorTerminal: bodyText.includes("Conductor Terminal"),
+        hasExecutionConversation: Boolean(document.querySelector('[aria-label="Task execution conversation"]')),
+        hasExecutionFeed: Boolean(executionFeed),
+        hasExecutionComposer: Boolean(document.querySelector(".execution-composer")),
+        hasSend: Boolean(Array.from(document.querySelectorAll("button")).find((button) => button.innerText.trim() === "发送")),
+        hasStop: Boolean(Array.from(document.querySelectorAll("button")).find((button) => button.innerText.trim() === "停止")),
+        hasGoal: Boolean(Array.from(document.querySelectorAll("button")).find((button) => button.innerText.trim() === "Goal")),
+        hasUserMessage: bodyText.includes("任务发起") && bodyText.includes("message to Conductor"),
+        hasConductorOutput: bodyText.includes("分析输出") && bodyText.includes("output message"),
+        hasSessionCall: bodyText.includes("agent_session_call") && bodyText.includes("Conductor -> Executor"),
+        hasWorkerResult: bodyText.includes("实现结果") && bodyText.includes("result message"),
+        hasMarkdownRender: Boolean(document.querySelector(".execution-md ul")) && Boolean(document.querySelector(".execution-md pre code")),
+        hasTaskSessionPanel: Boolean(taskSessionPanel),
+        hasSelectedAgent: Boolean(taskSessionDetail) &&
+          taskSessionDetail.innerText.includes("Executor") &&
+          taskSessionDetail.innerText.includes("Code implementation") &&
+          /mcp/i.test(taskSessionDetail.innerText) &&
+          /skills/i.test(taskSessionDetail.innerText),
         hasConductor: bodyText.includes("Conductor"),
         hasExecutor: bodyText.includes("Executor"),
         hasQA: bodyText.includes("QA"),
@@ -51,19 +71,32 @@ async function collectMetrics(window) {
         clientWidth: doc.clientWidth,
         horizontalOverflow: doc.scrollWidth > doc.clientWidth,
         taskHome: taskHome ? { scrollWidth: taskHome.scrollWidth, clientWidth: taskHome.clientWidth } : null,
-        workerGrid: workerGrid
+        executionFeed: executionFeed
           ? {
-              cardCount: workerCards.length,
-              scrollHeight: workerGrid.scrollHeight,
-              clientHeight: workerGrid.clientHeight,
-              overflowY: getComputedStyle(workerGrid).overflowY,
-              internalScrollbar: workerGrid.scrollHeight > workerGrid.clientHeight,
+              scrollHeight: executionFeed.scrollHeight,
+              clientHeight: executionFeed.clientHeight,
+              overflowY: getComputedStyle(executionFeed).overflowY,
+              internalScrollContainer: getComputedStyle(executionFeed).overflowY === "auto",
             }
           : null,
-        workerCards,
+        executionPanel: executionPanel ? { scrollWidth: executionPanel.scrollWidth, clientWidth: executionPanel.clientWidth } : null,
+        sessionAgents,
       };
     })()
   `);
+}
+
+async function selectExecutor(window) {
+  await window.webContents.executeJavaScript(`
+    (() => {
+      const executor = Array.from(document.querySelectorAll(".task-session-agent")).find((button) =>
+        button.innerText.includes("Executor")
+      );
+      if (!executor) throw new Error("Missing Executor session agent");
+      executor.click();
+    })()
+  `);
+  await waitFor(window, `document.querySelector(".task-session-detail")?.innerText.includes("Code implementation")`, "Executor detail switch");
 }
 
 async function createTask(window) {
@@ -86,13 +119,13 @@ async function createTask(window) {
 
       setValue('input[aria-label="任务标题"]', "Electron layout smoke");
       setValue('textarea[aria-label="任务目标"]', "验证 Task Home 布局和任务创建");
-      setValue('select[aria-label="任务模板"]', "implementation");
+      setValue('select[aria-label="起始方案"]', "implementation");
       const submit = document.querySelector("form.task-home-intake-form button[type=submit]");
       if (!submit) throw new Error("Missing task submit button");
       submit.click();
     })()
   `);
-  await waitFor(window, `document.body.innerText.includes("Conductor Terminal")`, "task creation");
+  await waitFor(window, `document.body.innerText.includes("执行过程") && document.body.innerText.includes("agent_session_call")`, "task creation");
 }
 
 async function main() {
@@ -114,6 +147,7 @@ async function main() {
 
   const initial = await collectMetrics(window);
   await createTask(window);
+  await selectExecutor(window);
   const desktop = await collectMetrics(window);
 
   window.setSize(430, 900);
@@ -125,15 +159,31 @@ async function main() {
     initial.hasNewTaskForm &&
     !initial.hasConductorTerminal &&
     !initial.visibleMockText &&
-    desktop.hasConductorTerminal &&
+    !desktop.hasNewTaskForm &&
+    !desktop.hasConductorTerminal &&
+    desktop.hasExecutionConversation &&
+    desktop.hasExecutionFeed &&
+    desktop.hasExecutionComposer &&
+    desktop.hasSend &&
+    desktop.hasStop &&
+    desktop.hasGoal &&
+    desktop.hasUserMessage &&
+    desktop.hasConductorOutput &&
+    desktop.hasSessionCall &&
+    desktop.hasWorkerResult &&
+    desktop.hasMarkdownRender &&
+    desktop.hasTaskSessionPanel &&
+    desktop.hasSelectedAgent &&
     desktop.hasConductor &&
     desktop.hasExecutor &&
     desktop.hasQA &&
+    desktop.sessionAgents.some((agent) => agent.includes("Executor")) &&
     !desktop.visibleMockText &&
     !desktop.horizontalOverflow &&
-    !desktop.workerGrid?.internalScrollbar &&
+    desktop.executionFeed?.internalScrollContainer &&
     !narrow.horizontalOverflow &&
-    !narrow.workerGrid?.internalScrollbar;
+    !narrow.hasNewTaskForm &&
+    narrow.hasExecutionConversation;
 
   console.log(JSON.stringify({ ok, targetUrl, initial, desktop, narrow }, null, 2));
   app.exit(ok ? 0 : 1);

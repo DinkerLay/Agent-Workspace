@@ -478,6 +478,41 @@ describe("Shell Session Store", () => {
     expect(events.map((event) => event.type)).toEqual(["session.started", "session.idle"]);
   });
 
+  it("records user-visible task execution events in the runtime task index and optional session stream", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-task-execution-event-"));
+    const store = createSessionStore({ root });
+
+    const event = store.recordTaskEvent({
+      taskId: "task-1",
+      sessionId: "task-1-conductor",
+      cwd: root,
+      type: "user.intervention",
+      summary: "User intervention sent to Conductor",
+      data: {
+        message: "后端纠偏消息",
+        source: "task-composer",
+      },
+    });
+
+    const taskState = store.readTaskState({ taskId: "task-1" });
+    const sessionView = store.readSession({ taskId: "task-1", sessionId: "task-1-conductor" });
+
+    expect(event).toMatchObject({
+      taskId: "task-1",
+      sessionId: "task-1-conductor",
+      type: "user.intervention",
+      cursor: 1,
+      data: {
+        message: "后端纠偏消息",
+        source: "task-composer",
+      },
+    });
+    expect(taskState.events).toEqual([event]);
+    expect(sessionView.events).toEqual([event]);
+    expect(fs.existsSync(path.join(root, "task-1", "events.jsonl"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "task-1", "sessions", "task-1-conductor", "events.jsonl"))).toBe(true);
+  });
+
   it("removes OpenTUI string control sequences from clean transcript text", () => {
     const noisy = "\u001bP$qm\u001b\\visible\u001b_Gi=31337;name=box\u001b\\\u001b[31mred\u001b[0m\rnext";
 

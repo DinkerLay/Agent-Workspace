@@ -581,12 +581,14 @@ Task Home / Task Intake:
 - show Conductor runtime prompt preview,
 - show Conductor MCP tools and permission scope,
 - show and edit the Task Session Plan before creation,
-- show worker sessions as provider-native terminals,
+- after creation, show a compact execution conversation backed by `read_task_state`, with `task.user_message`, `user.intervention`, `call_session` dispatch messages, runtime wakeups, and worker result messages as separate Markdown cards,
+- keep raw worker and Conductor terminals as provider-native runtime/diagnostic surfaces rather than the default built Task page,
+- keep the bottom Conductor composer wired to the real Conductor session for user corrections during observation; sending a correction writes to the Conductor PTY and records `user.intervention` in `.agent-workspace/runtime/<runtimeTaskId>/events.jsonl`,
 - do not show worker protocol prompts.
 
 IDE Workbench:
 
-- Conductor terminal is the orchestration center,
+- Conductor terminal remains the orchestration runtime and diagnostic surface,
 - worker terminals are execution surfaces,
 - Shell event rail shows session status changes and dispatch history,
 - `read_session` output is visible as Conductor tool result, not as hidden state.

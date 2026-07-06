@@ -3,9 +3,11 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Bot, Search, ShieldCheck, Workflow } from "lucide-react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { initialPrototypeState } from "../mock/prototypeData";
+import type { ReadTaskStateResult } from "../orchestration/conductor-tools";
 import type { NativePtySession } from "../runtime/nativeBridge";
+import { createOpencodeSessionKey, getProjectRuntimeId, getTaskRuntimeId } from "../runtime/opencode";
 import { TaskBoard } from "./TaskBoard";
 
 afterEach(cleanup);
@@ -60,12 +62,18 @@ function baseProps() {
     onOpenLoops: () => undefined,
     onStartConductorPty: () => undefined,
     onRefreshConductorPty: () => undefined,
+    onWriteConductorPtyData: () => undefined,
+    onStopConductorPty: () => undefined,
     onOpenAgentTerminal: () => undefined,
   };
 }
 
+function creationProps() {
+  return { ...baseProps(), tasks: [], selectedTask: undefined, selectedTaskId: "" };
+}
+
 describe("TaskBoard Task Home", () => {
-  it("renders the approved Task Home shape with a real Conductor terminal as the primary area", () => {
+  it("renders the built Task page as a compact execution conversation instead of a Terminal page", () => {
     const ptySession: NativePtySession = {
       id: "native-project-agent-workspace-cluster-agent-workspace-firsttask-planner-task-plan-watch",
       command: "opencode",
@@ -87,18 +95,36 @@ describe("TaskBoard Task Home", () => {
     render(<TaskBoard {...props} nativePtySession={ptySession} />);
 
     expect(screen.getByText("任务描述")).toBeTruthy();
-    expect(screen.getByText("Conductor Terminal")).toBeTruthy();
-    expect(screen.getByText("Task Conductor")).toBeTruthy();
-    expect(screen.getByText(ptySession.id)).toBeTruthy();
-    expect(screen.getByText("Conductor: 正在读取 Reviewer 挑战并调度 Planner。")).toBeTruthy();
-    expect(screen.getByText("Worker Agents")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "执行过程" })).toBeTruthy();
+    expect(screen.getByText("任务发起")).toBeTruthy();
+    expect(screen.getByText("message to Conductor")).toBeTruthy();
+    expect(screen.getByText("分析输出")).toBeTruthy();
+    expect(screen.getByText("output message")).toBeTruthy();
+    expect(screen.getAllByText("agent_session_call").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Conductor -> Executor/)).toBeTruthy();
+    expect(screen.getByText("实现结果")).toBeTruthy();
+    expect(screen.getByText("result message")).toBeTruthy();
+    expect(screen.getByText("Selected Agent")).toBeTruthy();
+    expect(screen.getByText("MCP")).toBeTruthy();
+    expect(screen.getByText("Skills")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "发送" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "停止" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Goal" })).toBeTruthy();
+    expect(screen.queryByText("Conductor Terminal")).toBeNull();
+    expect(screen.queryByText(ptySession.id)).toBeNull();
+    expect(screen.queryByText("Conductor: 正在读取 Reviewer 挑战并调度 Planner。")).toBeNull();
+    expect(screen.queryByText("Worker Agents")).toBeNull();
     expect(screen.queryByText("当前任务摘要")).toBeNull();
     expect(screen.queryByText("看板优先 · Loop 可见 · IDE 下钻")).toBeNull();
   });
 
-  it("keeps Conductor input inside the terminal instead of rendering a duplicate page composer", () => {
+  it("sends bottom composer messages to the Conductor PTY and keeps stop/goal actions available", () => {
     const props = baseProps();
-    const { container } = render(
+    const writes: string[] = [];
+    const stopConductor = vi.fn();
+    const advance = vi.fn();
+
+    render(
       <TaskBoard
         {...props}
         nativePtySession={{
@@ -112,38 +138,148 @@ describe("TaskBoard Task Home", () => {
           rows: 30,
           transcript: ["ready"],
         }}
+        onAdvance={advance}
+        onWriteConductorPtyData={(data) => writes.push(data)}
+        onStopConductorPty={stopConductor}
       />,
     );
 
-    expect(screen.getByText("ready")).toBeTruthy();
-    expect(screen.queryByLabelText("发送给 Conductor")).toBeNull();
-    expect(container.querySelector(".conductor-terminal-compose")).toBeNull();
+    fireEvent.change(screen.getByLabelText("发送给 Conductor"), {
+      target: { value: "重新派发给 Executor，但保留 output 和 agent_session_call 的区分。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止" }));
+    fireEvent.click(screen.getByRole("button", { name: "Goal" }));
+
+    expect(writes).toEqual(["重新派发给 Executor，但保留 output 和 agent_session_call 的区分。\n"]);
+    expect(stopConductor).toHaveBeenCalledTimes(1);
+    expect(advance).toHaveBeenCalledWith(props.selectedTask.id);
+    expect((screen.getByLabelText("发送给 Conductor") as HTMLTextAreaElement).value).toBe("");
   });
 
-  it("starts the Conductor PTY when no session exists and opens worker terminals in the IDE", () => {
-    let started = 0;
-    const openedAgents: string[] = [];
+  it("switches the right details panel when a session agent is selected", () => {
     const props = baseProps();
 
-    render(
-      <TaskBoard
-        {...props}
-        runs={[]}
-        nativePtySession={undefined}
-        onStartConductorPty={() => {
-          started += 1;
-        }}
-        onOpenAgentTerminal={(agentId) => openedAgents.push(agentId)}
-      />,
-    );
+    render(<TaskBoard {...props} />);
 
-    expect(screen.getByText("尚未启动 Conductor PTY")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "启动 Conductor PTY" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "terminal" })[0]);
+    expect(screen.getByText("Selected Agent")).toBeTruthy();
+    expect(screen.getAllByText("Plan keeper").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Executor Implementation/ }));
 
-    expect(started).toBe(1);
-    expect(openedAgents.length).toBe(1);
-    expect(openedAgents[0]).toBeTruthy();
+    expect(screen.getAllByText("Implementation").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Provider").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("opencode").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("agent_session_call").length).toBeGreaterThan(0);
+  });
+
+  it("renders Markdown content inside execution cards", () => {
+    const props = baseProps();
+    const { container } = render(<TaskBoard {...props} />);
+
+    expect(container.querySelector(".execution-md ul")).toBeTruthy();
+    expect(container.querySelector(".execution-md pre code")).toBeTruthy();
+    expect(screen.getByText("关键变化")).toBeTruthy();
+  });
+
+  it("renders backend task runtime state instead of local projected execution cards", () => {
+    const props = baseProps();
+    const taskId = getTaskRuntimeId(props.selectedTask);
+    const executor = props.agents.find((agent) => agent.taskId === props.selectedTask.id && /executor/i.test(agent.id));
+    const targetSessionId = createOpencodeSessionKey({
+      projectId: getProjectRuntimeId(props.selectedProject),
+      taskId,
+      agentId: executor?.id ?? "task-intake-001-executor",
+    });
+    const taskRuntimeState: ReadTaskStateResult = {
+      taskId,
+      cursor: 5,
+      events: [
+        {
+          id: "event-1",
+          taskId,
+          sessionId: "",
+          type: "task.user_message",
+          createdAt: "2026-07-06T00:00:00.000Z",
+          cursor: 1,
+          summary: "Task user message",
+          data: {
+            message: "后端记录的任务输入\n- 真实 Session Store",
+          },
+        },
+        {
+          id: "event-2",
+          taskId,
+          sessionId: targetSessionId,
+          type: "dispatch.created",
+          createdAt: "2026-07-06T00:00:01.000Z",
+          cursor: 2,
+          summary: "Dispatch A1B2C3 created",
+          data: {
+            dispatchId: "A1B2C3",
+          },
+        },
+        {
+          id: "event-3",
+          taskId,
+          sessionId: targetSessionId,
+          type: "dispatch.result_available",
+          createdAt: "2026-07-06T00:00:02.000Z",
+          cursor: 3,
+          summary: "Dispatch A1B2C3 result is available",
+          data: {
+            dispatchId: "A1B2C3",
+            resultId: "result-A1B2C3",
+          },
+        },
+      ],
+      sessions: [],
+      dispatches: [
+        {
+          dispatchId: "A1B2C3",
+          taskId,
+          toSessionId: targetSessionId,
+          conductorSessionId: "conductor-session",
+          assignment: "### 后端派发任务\n- 从 Session Store 渲染 agent_session_call",
+          contextRefs: ["task/events.jsonl"],
+          expectedOutput: "真实后端结果",
+          priority: "normal",
+          status: "result_available",
+          createdAt: "2026-07-06T00:00:01.000Z",
+          resultId: "result-A1B2C3",
+        },
+      ],
+      results: [
+        {
+          resultId: "result-A1B2C3",
+          dispatchId: "A1B2C3",
+          sessionId: targetSessionId,
+          answerPreview: "后端 worker 结果",
+          createdAt: "2026-07-06T00:00:02.000Z",
+        },
+      ],
+      messages: [
+        {
+          taskId,
+          sessionId: targetSessionId,
+          dispatchId: "A1B2C3",
+          resultId: "result-A1B2C3",
+          answerText: "### 后端 worker 结果\n```text\n.agent-workspace/runtime/task/events.jsonl\n```",
+          answerPreview: "后端 worker 结果",
+          source: "opencode-message-parts",
+          createdAt: "2026-07-06T00:00:02.000Z",
+        },
+      ],
+      pendingDecisions: [],
+    };
+    const { container } = render(<TaskBoard {...props} taskRuntimeState={taskRuntimeState} />);
+
+    expect(screen.getByText("后端记录的任务输入")).toBeTruthy();
+    expect(screen.getByText("后端派发任务")).toBeTruthy();
+    expect(screen.getByText("后端 worker 结果")).toBeTruthy();
+    expect(screen.getByText(/-> Executor/)).toBeTruthy();
+    expect(container.querySelector(".execution-md pre code")?.textContent).toContain(".agent-workspace/runtime");
+    expect(screen.queryByText("分析输出")).toBeNull();
+    expect(screen.queryByText(/请让 .* 处理当前任务的实现部分/)).toBeNull();
   });
 
   it("does not render a second task sidebar inside Task Home", () => {
@@ -183,7 +319,7 @@ describe("TaskBoard Task Home", () => {
     const openedProjects: Array<{ projectPath: string; projectName: string }> = [];
     const draftRequests: Array<Record<string, unknown>> = [];
     let requestCount = 0;
-    const props = baseProps();
+    const props = creationProps();
 
     render(
       <TaskBoard
@@ -280,7 +416,7 @@ describe("TaskBoard Task Home", () => {
   });
 
   it("applies an AI follow-up that only changes the Session Agent Plan", async () => {
-    const props = baseProps();
+    const props = creationProps();
     let requestCount = 0;
 
     render(
@@ -408,7 +544,7 @@ describe("TaskBoard Task Home", () => {
     expect(screen.queryByText("opencode 没有返回可用的任务配置 JSON。")).toBeNull();
   });
 
-  it("does not expose a Conductor restart action while the selected session is running", () => {
+  it("does not expose a Conductor terminal restart action while the selected session is running", () => {
     let started = 0;
     const props = baseProps();
 
@@ -432,16 +568,14 @@ describe("TaskBoard Task Home", () => {
       />,
     );
 
-    const runningStartButton = screen.getByRole("button", { name: "Conductor 运行中" });
-    expect(runningStartButton).toHaveProperty("disabled", true);
-    fireEvent.click(runningStartButton);
-
+    expect(screen.queryByRole("button", { name: "Conductor 运行中" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "启动 Conductor PTY" })).toBeNull();
     expect(started).toBe(0);
   });
 
   it("submits task intake with template, model, Conductor owner, labels, artifact path, and template source", () => {
     const createdInputs: Array<Record<string, unknown>> = [];
-    const props = baseProps();
+    const props = creationProps();
 
     render(
       <TaskBoard
@@ -501,7 +635,7 @@ describe("TaskBoard Task Home", () => {
   });
 
   it("shows Session Agent Plan as editable cards, not a primary JSON editor", () => {
-    const props = baseProps();
+    const props = creationProps();
 
     render(<TaskBoard {...props} />);
 
@@ -515,7 +649,7 @@ describe("TaskBoard Task Home", () => {
 
   it("adds a worker session from the card editor and submits it in the task plan", () => {
     const createdInputs: Array<Record<string, unknown>> = [];
-    const props = baseProps();
+    const props = creationProps();
 
     render(
       <TaskBoard
@@ -552,7 +686,7 @@ describe("TaskBoard Task Home", () => {
   it("duplicates a worker session from the card editor", () => {
     const props = baseProps();
 
-    render(<TaskBoard {...props} />);
+    render(<TaskBoard {...props} tasks={[]} selectedTask={undefined} selectedTaskId="" />);
 
     fireEvent.click(within(screen.getByLabelText("Researcher session 卡片")).getByRole("button", { name: "复制" }));
 
@@ -564,7 +698,7 @@ describe("TaskBoard Task Home", () => {
   it("does not render Conductor runtime prompt preview in the task creation page", () => {
     const props = baseProps();
 
-    render(<TaskBoard {...props} />);
+    render(<TaskBoard {...props} tasks={[]} selectedTask={undefined} selectedTaskId="" />);
 
     expect(screen.queryByText("Conductor Runtime 预览")).toBeNull();
     expect(screen.queryByText("MCP tools")).toBeNull();

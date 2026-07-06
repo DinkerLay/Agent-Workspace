@@ -287,6 +287,34 @@ function createSessionStore({ root }) {
     return readableEvents(readJsonLines(file)).filter((event) => event.cursor > sinceCursor);
   }
 
+  function recordTaskEvent(input) {
+    const taskId = String(input?.taskId ?? "");
+    const sessionId = input?.sessionId ? String(input.sessionId) : "";
+    const eventRoot = resolveRoot({ taskId, cwd: input?.cwd ? String(input.cwd) : undefined });
+    const taskEventsPath = path.join(eventRoot, safeSegment(taskId), "events.jsonl");
+    fs.mkdirSync(path.dirname(taskEventsPath), { recursive: true });
+    if (!fs.existsSync(taskEventsPath)) fs.writeFileSync(taskEventsPath, "");
+
+    const taskEvents = readJsonLines(taskEventsPath);
+    const cursor = nextEventCursor(taskEvents);
+    const event = {
+      id: `event-${cursor}`,
+      taskId,
+      sessionId,
+      type: String(input?.type ?? "task.event"),
+      createdAt: new Date().toISOString(),
+      cursor,
+      summary: String(input?.summary ?? ""),
+      data: input?.data && typeof input.data === "object" && !Array.isArray(input.data) ? input.data : {},
+    };
+
+    if (sessionId) {
+      appendJsonLine(pathFor({ taskId, sessionId, cwd: input?.cwd ? String(input.cwd) : undefined }, "events.jsonl"), event);
+    }
+    appendJsonLine(taskEventsPath, event);
+    return event;
+  }
+
   function appendEvent(session, type, cursor, summary, data = {}) {
     const taskEventsPath = path.join(resolveRoot(session), safeSegment(session.taskId), "events.jsonl");
     fs.mkdirSync(path.dirname(taskEventsPath), { recursive: true });
@@ -371,6 +399,7 @@ function createSessionStore({ root }) {
     readSession,
     readTaskState,
     readEvents,
+    recordTaskEvent,
   };
 }
 

@@ -619,6 +619,40 @@ h3 {
   background: #2a3343;
 }
 
+.danger-button,
+.success-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.danger-button {
+  border-color: #fecdd3;
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.danger-button:hover {
+  background: #ffe4e6;
+}
+
+.success-button {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.success-button:hover {
+  background: #dcfce7;
+}
+
 .primary-button:disabled,
 .ghost-button:disabled,
 .icon-button:disabled,
@@ -2256,6 +2290,364 @@ textarea:focus {
   gap: 8px;
   min-width: 0;
   flex-wrap: wrap;
+}
+
+.task-execution-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  gap: 14px;
+  min-width: 0;
+}
+
+.execution-panel,
+.task-session-roster,
+.task-session-detail {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.execution-panel {
+  grid-template-rows: auto minmax(320px, min(56vh, 560px)) auto;
+}
+
+.execution-panel-head,
+.task-session-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.execution-panel-head > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.execution-panel-head h2 {
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.execution-feed {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  min-width: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.execution-event {
+  display: grid;
+  grid-template-columns: minmax(94px, 118px) minmax(0, 1fr);
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.execution-event:last-child {
+  border-bottom: 0;
+}
+
+.execution-event-user {
+  background: #fffbeb;
+}
+
+.execution-actor {
+  display: grid;
+  align-content: start;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 8px;
+  min-width: 0;
+  padding: 12px 10px;
+  border-right: 1px solid var(--line);
+}
+
+.execution-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.execution-actor strong,
+.execution-actor small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-actor small {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.execution-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.execution-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.execution-card-head strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.execution-card-head span {
+  min-width: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.execution-md {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: #263244;
+  font-size: 13px;
+  line-height: 1.48;
+}
+
+.execution-md h4,
+.execution-md p,
+.execution-md ul,
+.execution-md ol,
+.execution-md pre {
+  margin: 0;
+  min-width: 0;
+}
+
+.execution-md h4 {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.execution-md ul,
+.execution-md ol {
+  padding-left: 18px;
+}
+
+.execution-md li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.execution-md code {
+  padding: 1px 4px;
+  border: 1px solid #dbe3ef;
+  border-radius: 5px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+}
+
+.execution-md pre {
+  max-width: 100%;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: #111827;
+}
+
+.execution-md pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #d1fae5;
+  white-space: pre;
+}
+
+.execution-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  min-width: 0;
+}
+
+.execution-composer textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  line-height: 1.45;
+  padding: 10px;
+}
+
+.execution-composer-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-session-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.task-session-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-session-agent {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  text-align: left;
+}
+
+.task-session-agent:hover,
+.task-session-agent.active {
+  border-color: rgba(37, 99, 235, 0.6);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.task-session-agent span:not(.execution-avatar),
+.task-session-identity > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.task-session-agent strong,
+.task-session-agent small,
+.task-session-agent em,
+.task-session-identity strong,
+.task-session-identity small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-session-agent small,
+.task-session-identity small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.task-session-agent em {
+  padding: 4px 7px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.task-session-identity {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.task-session-facts {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  margin: 0;
+}
+
+.task-session-facts div {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.task-session-facts dt {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.task-session-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: #334155;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.task-session-tags {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-session-tags strong {
+  color: #475569;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.task-session-tags div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-session-tags span {
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .task-home-intake-form {
@@ -6044,6 +6436,7 @@ textarea:focus {
   }
 
   .task-home-role-grid,
+  .task-execution-grid,
   .task-home-create-grid {
     grid-template-columns: 1fr;
   }
@@ -6182,6 +6575,9 @@ textarea:focus {
   .health-grid,
   .task-intake-form,
   .task-home-role-grid,
+  .task-execution-grid,
+  .execution-event,
+  .execution-composer,
   .task-home-create-grid,
   .conductor-terminal-toolbar,
   .task-intake-compact-row,
@@ -6209,6 +6605,15 @@ textarea:focus {
 
   .conductor-terminal-actions {
     flex-direction: column;
+  }
+
+  .execution-actor {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .execution-composer-actions {
+    align-items: stretch;
   }
 
   .conductor-terminal-screen {
@@ -6250,7 +6655,9 @@ textarea:focus {
   }
 
   .primary-button,
-  .ghost-button {
+  .ghost-button,
+  .danger-button,
+  .success-button {
     width: 100%;
   }
 
@@ -6265,9 +6672,14 @@ textarea:focus {
   }
 
   .task-home-intake-row,
+  .task-session-facts div,
   .worker-agent-card,
   .task-home-timeline-item {
     grid-template-columns: 1fr;
+  }
+
+  .execution-composer-actions {
+    flex-direction: column;
   }
 
   .worker-agent-card {

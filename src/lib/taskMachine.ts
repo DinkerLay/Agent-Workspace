@@ -109,6 +109,8 @@ export function prototypeReducer(state: PrototypeState, action: PrototypeAction)
       return createPullRequestHandoff(state, action.runId);
     case "select-task":
       return selectTask(state, action.taskId);
+    case "clear-selected-task":
+      return { ...state, selectedTaskId: "" };
     case "set-prompt":
       return { ...state, prompt: action.prompt };
     case "send-prompt":

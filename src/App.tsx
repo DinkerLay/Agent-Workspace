@@ -9,10 +9,12 @@ import { useEffect, useMemo, useReducer, useRef, useState, type FormEvent } from
 import browserImage from "../docs/research/assets/agentsroom/browser-automation.jpg";
 import {
   browserRuntimeStatus,
+  appendNativeTaskEvent,
   defaultOpencodeRunModel,
   generateNativeTaskDraft,
   getNativePtySession,
   getNativeRuntimeStatus,
+  readNativeTaskState,
   resizeNativePtySession,
   runNativeVerification,
   startNativePtySession,
@@ -23,6 +25,7 @@ import {
   type NativeRuntimeStatus,
   writeNativePtySession,
 } from "./runtime/nativeBridge";
+import type { ReadTaskStateResult } from "./orchestration/conductor-tools";
 import { createRuntimeWorkspaceState } from "./runtime/opencode";
 import { getActiveRunForTask, prototypeReducer } from "./lib/taskMachine";
 import { CapabilityMap } from "./pages/CapabilityMap";
@@ -114,6 +117,9 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const [primaryRailCollapsed, setPrimaryRailCollapsed] = useState(true);
   const [nativeRuntimeStatus, setNativeRuntimeStatus] = useState<NativeRuntimeStatus>(browserRuntimeStatus);
   const [nativePtySessionsByKey, setNativePtySessionsByKey] = useState<Record<string, NativePtySession | undefined>>({});
+  const [nativeTaskStatesByRuntimeTaskId, setNativeTaskStatesByRuntimeTaskId] = useState<
+    Record<string, ReadTaskStateResult | undefined>
+  >({});
   const [nativeTerminalSizesByKey, setNativeTerminalSizesByKey] = useState<Record<string, { cols: number; rows: number }>>({});
   const nativePtySessionsRef = useRef<Record<string, NativePtySession | undefined>>({});
   const nativePtyCursorsRef = useRef<Record<string, number>>({});
@@ -124,6 +130,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const nativePtyEventHandlerRef = useRef<(event: NativePtyEvent) => void>(() => undefined);
   const startingNativePtySessionIdsRef = useRef<Set<string>>(new Set());
   const autoStartedTaskIdsRef = useRef<Set<string>>(new Set());
+  const seededTaskRuntimeEventIdsRef = useRef<Set<string>>(new Set());
   const initialPtyInputFlushedIdsRef = useRef<Set<string>>(new Set());
   const outputAfterInitialPtyInputIdsRef = useRef<Set<string>>(new Set());
   const pendingInitialPtyInputsRef = useRef<Record<string, { sessionId: string; input: string; agent: Agent }>>({});
@@ -142,6 +149,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const selectedRun = selectedTask ? getActiveRunForTask(state.runs, selectedTask.id) : undefined;
   const selectedProjectRuntimeId = getProjectRuntimeId(selectedProject);
   const selectedTaskRuntimeId = selectedTask ? getTaskRuntimeId(selectedTask) : "no-task";
+  const selectedTaskRuntimeState = selectedTask ? nativeTaskStatesByRuntimeTaskId[selectedTaskRuntimeId] : undefined;
   const agentBelongsToSelectedTask = (agent: Agent) => {
     if (!selectedTask) return false;
     if (agent.taskId !== selectedTask.id) return false;
@@ -247,7 +255,9 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     pendingInitialPtyInputsRef.current = {};
     startingNativePtySessionIdsRef.current.clear();
     autoStartedTaskIdsRef.current.clear();
+    seededTaskRuntimeEventIdsRef.current.clear();
     setNativePtySessionsByKey({});
+    setNativeTaskStatesByRuntimeTaskId({});
     setNativeTerminalSizesByKey({});
   };
 
@@ -296,6 +306,48 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     if (options.attach !== false) attachNativeSessionToRun(normalized, options.agent ?? activeSelectedAgent, options.taskId);
   };
 
+  const storeNativeTaskState = (taskState: ReadTaskStateResult | undefined) => {
+    if (!taskState?.taskId) return;
+    setNativeTaskStatesByRuntimeTaskId((current) => ({ ...current, [taskState.taskId]: taskState }));
+  };
+
+  const refreshNativeTaskStateForTask = (task: Task | undefined = selectedTask) => {
+    if (!task) return;
+    const runtimeTaskId = getTaskRuntimeId(task);
+    void readNativeTaskState({ taskId: runtimeTaskId })
+      .then((taskState) => {
+        storeNativeTaskState(taskState);
+      })
+      .catch(() => undefined);
+  };
+
+  const recordNativeTaskRuntimeEvent = (input: {
+    task: Task;
+    sessionId?: string;
+    type: "task.user_message" | "user.intervention";
+    summary: string;
+    data: Record<string, unknown>;
+  }) => {
+    const runtimeTaskId = getTaskRuntimeId(input.task);
+    return appendNativeTaskEvent({
+      taskId: runtimeTaskId,
+      sessionId: input.sessionId,
+      cwd: selectedProject.path,
+      type: input.type,
+      summary: input.summary,
+      data: input.data,
+    })
+      .then((result) => {
+        storeNativeTaskState(result.taskState);
+        if (!result.taskState) refreshNativeTaskStateForTask(input.task);
+        return result;
+      })
+      .catch(() => {
+        refreshNativeTaskStateForTask(input.task);
+        return undefined;
+      });
+  };
+
   const queueInitialPtyInput = (sessionKey: string, session: NativePtySession | undefined, agent: Agent, input: string) => {
     if (!session || !input.trim()) return;
     pendingInitialPtyInputsRef.current = {
@@ -328,9 +380,14 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   };
 
   const handleNativePtyEvent = (event: NativePtyEvent) => {
+    const taskRef = resolveNativeSessionRef(event.id);
+    if (taskRef?.taskId) {
+      refreshNativeTaskStateForTask(state.tasks.find((task) => task.id === taskRef.taskId));
+    }
+
     const sessionKey = nativePtySessionKeysByIdRef.current[event.id];
     if (!sessionKey) {
-      const resolved = resolveNativeSessionRef(event.id);
+      const resolved = taskRef;
       if (resolved) {
         nativePtySessionKeysByIdRef.current[event.id] = resolved.sessionKey;
         nativePtyAgentsByIdRef.current[event.id] = resolved.agent;
@@ -528,6 +585,37 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     selectedTaskConductorAgent?.id,
   ]);
 
+  useEffect(() => {
+    if (!selectedTask || !nativeRuntimeStatus.available) return;
+    const runtimeTaskId = getTaskRuntimeId(selectedTask);
+    if (seededTaskRuntimeEventIdsRef.current.has(runtimeTaskId)) return;
+
+    seededTaskRuntimeEventIdsRef.current.add(runtimeTaskId);
+    void readNativeTaskState({ taskId: runtimeTaskId })
+      .then((existingState) => {
+        storeNativeTaskState(existingState);
+        if (existingState?.events?.some((event) => event.type === "task.user_message")) return undefined;
+        return recordNativeTaskRuntimeEvent({
+          task: selectedTask,
+          type: "task.user_message",
+          summary: "Task user message",
+          data: {
+            message: selectedTask.summary || selectedTask.title,
+            title: selectedTask.title,
+            source: "task-intake",
+          },
+        });
+      })
+      .catch(() => undefined);
+  }, [nativeRuntimeStatus.available, selectedProject.path, selectedTask?.id]);
+
+  useEffect(() => {
+    if (!selectedTask || !nativeRuntimeStatus.available) return;
+    refreshNativeTaskStateForTask(selectedTask);
+    const timer = window.setInterval(() => refreshNativeTaskStateForTask(selectedTask), 1500);
+    return () => window.clearInterval(timer);
+  }, [nativeRuntimeStatus.available, selectedTask?.id]);
+
   function buildConductorInjectionForCurrentTask(agent: Agent) {
     if (!selectedTask) return undefined;
     const bridgeUrl = nativeRuntimeStatus.conductorToolBridgeUrl?.trim();
@@ -632,6 +720,20 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     if (!conductorNativePtySession || conductorNativePtySession.status !== "running") return;
     void writeNativePtySession(conductorNativePtySession.id, data).then((session) => {
       storeNativePtySession(session, { attach: false, agent: selectedTaskConductorAgent });
+      const message = data.trim();
+      if (selectedTask && message) {
+        void recordNativeTaskRuntimeEvent({
+          task: selectedTask,
+          sessionId: conductorNativePtySession.id,
+          type: "user.intervention",
+          summary: "User intervention sent to Conductor",
+          data: {
+            message,
+            source: "task-composer",
+            targetSessionId: conductorNativePtySession.id,
+          },
+        });
+      }
     });
   };
 
@@ -655,6 +757,16 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     if (!nativePtySession) return;
     void stopNativePtySession(nativePtySession.id).then((session) => {
       storeNativePtySession(session, { attach: session?.status === "stopped" });
+    });
+  };
+
+  const stopSelectedTaskConductorPtySession = () => {
+    if (!conductorNativePtySession) return;
+    void stopNativePtySession(conductorNativePtySession.id).then((session) => {
+      storeNativePtySession(session, {
+        attach: session?.status === "stopped",
+        agent: selectedTaskConductorAgent,
+      });
     });
   };
 
@@ -752,7 +864,10 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
           selectedTaskId={state.selectedTaskId}
           tasks={selectedProjectTasks}
           onExpandRail={() => setPrimaryRailCollapsed(false)}
-          onNewTask={() => dispatch({ type: "set-view", view: "backlog" })}
+          onNewTask={() => {
+            dispatch({ type: "clear-selected-task" });
+            dispatch({ type: "set-view", view: "backlog" });
+          }}
           onOpenRuntimeProject={openRuntimeProject}
           onSelectTask={(taskId) => {
             dispatch({ type: "select-task", taskId });
@@ -875,6 +990,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
             selectedAgent={activeSelectedAgent}
             selectedTask={selectedTask}
             selectedTaskId={state.selectedTaskId}
+            taskRuntimeState={selectedTaskRuntimeState}
             taskIntakeEvents={state.taskIntakeEvents}
             taskTransitionEvents={state.taskTransitionEvents}
             loopStages={loopStages}
@@ -892,6 +1008,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
             onRefreshConductorPty={refreshSelectedTaskConductorPtySession}
             onWriteConductorPtyData={writeRawToSelectedTaskConductorPtySession}
             onResizeConductorPty={resizeSelectedTaskConductorPtySession}
+            onStopConductorPty={stopSelectedTaskConductorPtySession}
             onOpenAgentTerminal={openAgentTerminal}
           />
         )}

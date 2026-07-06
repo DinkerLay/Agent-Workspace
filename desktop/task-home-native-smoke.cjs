@@ -19,7 +19,7 @@ const { createPtyManager } = require("./pty-manager.cjs");
 const { createSessionStore } = require("./session-store.cjs");
 
 const baseTargetUrl = process.env.AGENT_WORKSPACE_SMOKE_URL ?? "http://127.0.0.1:5188/";
-const targetProjectPath = process.env.AGENT_WORKSPACE_PROJECT_PATH ?? "/Users/dinker/CODES/Agent-Workspace";
+const targetProjectPath = process.env.AGENT_WORKSPACE_PROJECT_PATH ?? path.resolve(__dirname, "..");
 const targetProjectName = process.env.AGENT_WORKSPACE_PROJECT_NAME ?? path.basename(targetProjectPath);
 const taskTitle = process.env.AGENT_WORKSPACE_TASK_TITLE ?? "Native Conductor smoke";
 const taskSummary =
@@ -92,6 +92,16 @@ function expectedSessionIds() {
   );
 }
 
+function siblingSessionIds(conductorSessionId) {
+  const roles = expectedAgentRoleIds(taskTemplate);
+  return roles.map((roleId) => String(conductorSessionId).replace(/task-intake-\d+-conductor$/, `task-intake-001-${roleId}`));
+}
+
+function taskIdFromWorkspaceSessionId(sessionId) {
+  const parts = String(sessionId ?? "").split(":");
+  return parts.length >= 3 ? parts[2] : undefined;
+}
+
 function resolvePtyCommand(command) {
   if (command !== "opencode") return command;
   return resolveOpencodePath() ?? command;
@@ -118,8 +128,9 @@ function registerIpc() {
     }),
   );
   ipcMain.handle("native:start-pty", (_event, input) => {
+    const sessionId = String(input?.id ?? `pty-${Date.now()}`);
     const startInput = {
-      id: String(input?.id ?? `pty-${Date.now()}`),
+      id: sessionId,
       command: String(input?.command ?? "opencode"),
       args: Array.isArray(input?.args) ? input.args.map(String) : [],
       cwd: String(input?.cwd ?? process.cwd()),
@@ -128,6 +139,7 @@ function registerIpc() {
       stdin: input?.stdin === "ignore" ? "ignore" : "pipe",
       model: input?.model ? String(input.model) : undefined,
       requirePty: input?.requirePty !== false,
+      taskId: input?.taskId ? String(input.taskId) : taskIdFromWorkspaceSessionId(sessionId),
       env: input?.env && typeof input.env === "object" ? input.env : undefined,
       runtimeFiles: Array.isArray(input?.runtimeFiles) ? input.runtimeFiles : [],
     };
@@ -156,6 +168,22 @@ function registerIpc() {
   ipcMain.handle("native:call-session", (_event, input) => conductorToolBridge.callSession(input));
   ipcMain.handle("native:read-task-state", (_event, input) => conductorToolBridge.readTaskState(input));
   ipcMain.handle("native:read-session", (_event, input) => conductorToolBridge.readSession(input));
+  ipcMain.handle("native:append-task-event", (_event, input) => {
+    const taskId = String(input?.taskId ?? "");
+    const type = String(input?.type ?? "");
+    if (!["task.user_message", "user.intervention"].includes(type)) {
+      throw new Error(`Unsupported task event type: ${type}`);
+    }
+    const event = sessionStore.recordTaskEvent({
+      taskId,
+      sessionId: input?.sessionId ? String(input.sessionId) : "",
+      cwd: String(input?.cwd ?? targetProjectPath),
+      type,
+      summary: String(input?.summary ?? ""),
+      data: sanitizeJsonObject(input?.data),
+    });
+    return { ok: true, event, taskState: sessionStore.readTaskState({ taskId }) };
+  });
 }
 
 function publishPtyEvent(event) {
@@ -164,6 +192,11 @@ function publishPtyEvent(event) {
       window.webContents.send("native:pty-event", event);
     }
   }
+}
+
+function sanitizeJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return JSON.parse(JSON.stringify(value));
 }
 
 async function clickButton(window, predicateSource, label) {
@@ -197,13 +230,13 @@ async function createTask(window) {
 
       setValue('input[aria-label="任务标题"]', ${JSON.stringify(taskTitle)});
       setValue('textarea[aria-label="任务目标"]', ${JSON.stringify(taskSummary)});
-      setValue('select[aria-label="任务模板"]', ${JSON.stringify(taskTemplate)});
+      setValue('select[aria-label="起始方案"]', ${JSON.stringify(taskTemplate)});
       const submit = document.querySelector("form.task-home-intake-form button[type=submit]");
       if (!submit) throw new Error("Missing task submit button");
       submit.click();
     })()
   `);
-  await waitFor(window, `document.body.innerText.includes("Conductor Terminal")`, "task creation");
+  await waitFor(window, `document.body.innerText.includes("执行过程")`, "task creation");
 }
 
 async function setupRuntime() {
@@ -266,7 +299,7 @@ async function main() {
   await waitFor(window, `Boolean(document.querySelector(".task-home-intake-form"))`, "Task Home intake");
   const initialTextCheck = await window.webContents.executeJavaScript(`
     (() => {
-      const text = document.body.innerText;
+    const text = document.body.innerText;
       return {
         hasNoTaskCopy: text.includes("还没有任务"),
         hasPreview: text.includes("Conductor Runtime 预览"),
@@ -285,24 +318,59 @@ async function main() {
   const before = inspectOpencodeProcesses().length;
   await createTask(window);
 
-  const sessionIds = expectedSessionIds();
-  const conductorSessionId = sessionIds[0];
-  const workerSessionId = sessionIds[1];
-
   await waitUntil(() => ptyStarts.length === 1, "Conductor-only auto start");
-  await waitFor(window, `Array.from(document.querySelectorAll("button")).some((item) => item.innerText.includes("Conductor 运行中"))`, "auto-started Conductor");
-  await waitFor(
-    window,
-    `Boolean(document.querySelector('[aria-label="Conductor terminal output"] .xterm'))`,
-    "Conductor xterm mount",
-  );
+  const conductorStart = ptyStarts[0];
+  const sessionIds = siblingSessionIds(conductorStart.id);
+  const conductorSessionId = conductorStart.id;
+  const workerSessionId = sessionIds[1];
   await waitFor(
     window,
     `window.agentWorkspace.native.getPty({ id: ${JSON.stringify(conductorSessionId)} }).then((session) => session?.status === "running")`,
     "Conductor PTY running",
   );
+  const executionConversationCheck = await window.webContents.executeJavaScript(`
+    (() => {
+      const text = document.body.innerText;
+      return {
+        hasExecutionConversation: text.includes("执行过程"),
+        hasComposer: Boolean(document.querySelector('textarea[aria-label="发送给 Conductor"]')),
+        hasNoConductorTerminal: !text.includes("Conductor Terminal"),
+      };
+    })()
+  `);
 
-  const conductorStart = ptyStarts[0];
+  const taskRuntimeId = conductorStart.taskId || taskIdFromWorkspaceSessionId(conductorSessionId);
+  const taskUserEvent = await waitUntil(
+    () => sessionStore.readTaskState({ taskId: taskRuntimeId }).events.find((event) => event.type === "task.user_message"),
+    "task.user_message runtime event",
+  );
+  const correctionText = "后端纠偏 smoke：重新派发并检查 e2e。";
+  await window.webContents.executeJavaScript(`
+    (() => {
+      const textarea = document.querySelector('textarea[aria-label="发送给 Conductor"]');
+      if (!textarea) throw new Error("Missing Conductor composer");
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+      descriptor.set.call(textarea, ${JSON.stringify(correctionText)});
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new Event("change", { bubbles: true }));
+      const send = Array.from(document.querySelectorAll("button")).find((button) => button.innerText.trim() === "发送");
+      if (!send) throw new Error("Missing send button");
+      send.click();
+    })()
+  `);
+  const userInterventionWrite = await waitUntil(
+    () => ptyWrites.find((write) => write.id === conductorSessionId && write.text.includes(correctionText)),
+    "Conductor composer PTY write",
+  );
+  const userInterventionEvent = await waitUntil(
+    () =>
+      sessionStore
+        .readTaskState({ taskId: taskRuntimeId })
+        .events.find((event) => event.type === "user.intervention" && event.data?.message === correctionText),
+    "user.intervention runtime event",
+  );
+  await waitFor(window, `document.body.innerText.includes(${JSON.stringify(correctionText)})`, "composer event rendered");
+
   const conductorRuntimeConfig = JSON.stringify(conductorStart.env ?? {});
   const conductorRuntimeFiles = JSON.stringify(conductorStart.runtimeFiles ?? []);
   const noWorkerAutoStart = ptyStarts.every((input) => !String(input.id).includes("researcher") && !String(input.id).includes("reviewer"));
@@ -333,6 +401,27 @@ async function main() {
     `window.agentWorkspace.native.getPty({ id: ${JSON.stringify(workerSessionId)} }).then((session) => session?.status === "running")`,
     "Worker PTY running",
   );
+  const backendDispatchAssignment = "### 后端派发 smoke\\n- native callSession 已写入 Session Store";
+  const backendDispatch = await withTimeout(
+    window.webContents.executeJavaScript(`
+      window.agentWorkspace.native.callSession({
+        taskId: ${JSON.stringify(taskRuntimeId)},
+        toSessionId: ${JSON.stringify(workerSessionId)},
+        assignment: ${JSON.stringify(backendDispatchAssignment)},
+        expectedOutput: "Smoke dispatch result",
+        priority: "normal"
+      })
+    `),
+    "native call_session dispatch",
+  );
+  const backendDispatchState = await waitUntil(
+    () =>
+      sessionStore
+        .readTaskState({ taskId: taskRuntimeId })
+        .dispatches.find((dispatch) => dispatch.dispatchId === backendDispatch.dispatchId && dispatch.status === "delivered"),
+    "call_session delivered runtime state",
+  );
+  await waitFor(window, `document.body.innerText.includes("后端派发 smoke")`, "call_session event rendered");
 
   const workerStart = ptyStarts[1];
   const workerRuntime = JSON.stringify({
@@ -365,10 +454,15 @@ async function main() {
 
   const ok =
     initialTextCheck.hasNoTaskCopy &&
-    initialTextCheck.hasPreview &&
-    initialTextCheck.hasMcpTools &&
-    initialTextCheck.hasNativeWorkerCopy &&
     !initialTextCheck.hasOldProtocolCopy &&
+    executionConversationCheck.hasExecutionConversation &&
+    executionConversationCheck.hasComposer &&
+    executionConversationCheck.hasNoConductorTerminal &&
+    taskUserEvent?.data?.message === taskSummary &&
+    userInterventionWrite.text.includes(correctionText) &&
+    userInterventionEvent?.data?.message === correctionText &&
+    backendDispatch.ok &&
+    backendDispatchState?.assignment === backendDispatchAssignment &&
     conductorStart.id === conductorSessionId &&
     conductorStart.cwd === targetProjectPath &&
     !conductorStart.args.includes("--agent") &&
@@ -406,6 +500,25 @@ async function main() {
         realPtyAvailable,
         sessionIds,
         initialTextCheck,
+        executionConversationCheck,
+        backendTaskEvents: {
+          taskRuntimeId,
+          taskUserEvent: {
+            type: taskUserEvent?.type,
+            message: taskUserEvent?.data?.message,
+          },
+          userInterventionEvent: {
+            type: userInterventionEvent?.type,
+            message: userInterventionEvent?.data?.message,
+          },
+          backendDispatch: {
+            ok: backendDispatch.ok,
+            dispatchId: backendDispatch.dispatchId,
+            status: backendDispatch.status,
+            deliveryState: backendDispatch.deliveryState,
+            assignment: backendDispatchState?.assignment,
+          },
+        },
         noWorkerAutoStart,
         conductorKickoff: {
           id: conductorKickoff.id,

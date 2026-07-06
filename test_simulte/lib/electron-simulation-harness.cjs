@@ -127,6 +127,7 @@ async function createElectronSimulationHarness(options = {}) {
     ptyStarts,
     ptyWrites,
     conductorToolBridge,
+    sessionStore,
     conductorToolBridgeHttpServer,
     realPtyAvailable: Boolean(realPtyAvailable.pty),
     ptyBackend: realPtyAvailable.pty ? "node-pty" : "process-fallback",
@@ -185,6 +186,7 @@ async function createElectronSimulationHarness(options = {}) {
     ipcMain.removeHandler("native:call-session");
     ipcMain.removeHandler("native:read-task-state");
     ipcMain.removeHandler("native:read-session");
+    ipcMain.removeHandler("native:append-task-event");
   }
 
   return {
@@ -218,9 +220,10 @@ function registerIpcHandlers(input) {
     const requestedCommand = String(request?.command ?? "opencode");
     const args = Array.isArray(request?.args) ? request.args.map(String) : [];
     const resolvedCommand = resolvePtyCommand(requestedCommand, input.opencodePath);
+    const sessionId = String(request?.id ?? `pty-${Date.now()}`);
     const startInput = {
-      id: String(request?.id ?? `pty-${Date.now()}`),
-      taskId: request?.taskId ? String(request.taskId) : undefined,
+      id: sessionId,
+      taskId: request?.taskId ? String(request.taskId) : taskIdFromWorkspaceSessionId(sessionId),
       command: requestedCommand,
       args,
       resolvedCommand,
@@ -259,6 +262,33 @@ function registerIpcHandlers(input) {
   ipcMain.handle("native:call-session", (_event, request) => input.conductorToolBridge.callSession(request));
   ipcMain.handle("native:read-task-state", (_event, request) => input.conductorToolBridge.readTaskState(request));
   ipcMain.handle("native:read-session", (_event, request) => input.conductorToolBridge.readSession(request));
+  ipcMain.handle("native:append-task-event", (_event, request) => {
+    const taskId = String(request?.taskId ?? "");
+    const type = String(request?.type ?? "");
+    if (!["task.user_message", "user.intervention"].includes(type)) {
+      throw new Error(`Unsupported task event type: ${type}`);
+    }
+    const event = input.sessionStore.recordTaskEvent({
+      taskId,
+      sessionId: request?.sessionId ? String(request.sessionId) : "",
+      cwd: String(request?.cwd ?? input.projectPath),
+      type,
+      summary: String(request?.summary ?? ""),
+      data: sanitizeJsonObject(request?.data),
+    });
+    const taskState = input.conductorToolBridge.readTaskState({ taskId });
+    return { ok: true, event, taskState };
+  });
+}
+
+function sanitizeJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return JSON.parse(JSON.stringify(value));
+}
+
+function taskIdFromWorkspaceSessionId(sessionId) {
+  const parts = String(sessionId ?? "").split(":");
+  return parts.length >= 3 ? parts[2] : undefined;
 }
 
 function closeWindowQuietly(window) {

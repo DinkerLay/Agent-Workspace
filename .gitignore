@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .agent-workspace/
+.superpowers/
 
 .DS_Store
 *.log

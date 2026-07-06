@@ -1,17 +1,19 @@
 import {
   Copy,
   Inbox,
-  Play,
   Plus,
   Sparkles,
-  SquareTerminal,
   Trash2,
-  Workflow,
   type LucideIcon,
 } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
-import { PtyTerminal } from "../components/PtyTerminal";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { getActiveRunForTask, getLoopForTask, getRunIdForTask } from "../lib/taskMachine";
+import type {
+  ReadTaskStateResult,
+  SessionDispatchRecord,
+  SessionMessageRecord,
+  SessionStoreEvent,
+} from "../orchestration/conductor-tools";
 import {
   defaultOpencodeRunModel,
   type NativePtySession,
@@ -89,6 +91,18 @@ type ConductorRuntimePreview = {
   sessionPlan: TaskSessionPlan;
 };
 
+type ExecutionEvent = {
+  id: string;
+  kind: "user" | "conductor" | "call" | "worker";
+  actor: string;
+  initial: string;
+  accent: string;
+  time: string;
+  title: string;
+  meta: string;
+  markdown: string;
+};
+
 type TaskBoardProps = {
   agents: Agent[];
   agentClusters: AgentCluster[];
@@ -99,6 +113,7 @@ type TaskBoardProps = {
   selectedAgent?: Agent;
   selectedTask?: Task;
   selectedTaskId: string;
+  taskRuntimeState?: ReadTaskStateResult;
   taskIntakeEvents?: TaskIntakeEvent[];
   taskTransitionEvents: TaskTransitionEvent[];
   loopStages: LoopStage[];
@@ -116,6 +131,7 @@ type TaskBoardProps = {
   onRefreshConductorPty?: () => void;
   onWriteConductorPtyData?: (data: string) => void;
   onResizeConductorPty?: (cols: number, rows: number) => void;
+  onStopConductorPty?: () => void;
   onOpenAgentTerminal?: (agentId: string) => void;
 };
 
@@ -128,6 +144,7 @@ export function TaskBoard({
   selectedAgent,
   selectedTask,
   selectedTaskId,
+  taskRuntimeState,
   taskIntakeEvents = [],
   taskTransitionEvents,
   loopStages,
@@ -151,9 +168,12 @@ export function TaskBoard({
   onRefreshConductorPty = () => undefined,
   onWriteConductorPtyData = () => undefined,
   onResizeConductorPty = () => undefined,
+  onStopConductorPty = () => undefined,
   onOpenAgentTerminal = () => undefined,
 }: TaskBoardProps) {
   const [taskIntakeDraft, setTaskIntakeDraft] = useState<TaskIntakeDraft>(() => createDefaultTaskIntakeDraft());
+  const [conductorMessage, setConductorMessage] = useState("");
+  const [selectedSessionAgentId, setSelectedSessionAgentId] = useState<string | undefined>(selectedAgent?.id);
   const conductorAgent = useMemo(
     () => (selectedTask ? getConductorAgent(agents, selectedAgentCluster, selectedTask, selectedAgent) : selectedAgent),
     [agents, selectedAgentCluster, selectedAgent, selectedTask],
@@ -168,12 +188,44 @@ export function TaskBoard({
   );
   const conductorRuns = conductorAgent ? runs.filter((run) => run.agentId === conductorAgent.id) : runs;
   const selectedRun = selectedTask ? getActiveRunForTask(conductorRuns, selectedTask.id) : undefined;
-  const transcriptLines = getConductorTranscript(nativePtySession, selectedRun);
-  const selectedTaskEvents = selectedTask
-    ? taskTransitionEvents.filter((event) => event.taskId === selectedTask.id).slice(-4).reverse()
-    : [];
-  const canStartConductor = nativeRuntimeStatus.available && nativeRuntimeStatus.ptyAvailable !== false;
-  const conductorPtyRunning = nativePtySession?.status === "running" || nativePtySession?.status === "stopping";
+  const sessionAgents = useMemo(
+    () =>
+      selectedTask && conductorAgent
+        ? [conductorAgent, ...workerAgents]
+        : conductorAgent
+          ? [conductorAgent]
+          : [],
+    [conductorAgent, selectedTask, workerAgents],
+  );
+  const selectedSessionAgent =
+    sessionAgents.find((agent) => agent.id === selectedSessionAgentId) ?? sessionAgents[0] ?? conductorAgent;
+  const executionEvents =
+    selectedTask && conductorAgent
+      ? createRuntimeExecutionEvents({
+          taskRuntimeState,
+          selectedProject,
+          task: selectedTask,
+          conductorAgent,
+          workerAgents,
+        }) || createExecutionEvents(selectedTask, conductorAgent, workerAgents, selectedRun)
+      : [];
+
+  useEffect(() => {
+    if (!sessionAgents.length) {
+      setSelectedSessionAgentId(undefined);
+      return;
+    }
+    setSelectedSessionAgentId((currentId) =>
+      currentId && sessionAgents.some((agent) => agent.id === currentId) ? currentId : sessionAgents[0].id,
+    );
+  }, [sessionAgents]);
+
+  const sendConductorMessage = () => {
+    const trimmedMessage = conductorMessage.trim();
+    if (!trimmedMessage) return;
+    onWriteConductorPtyData(`${trimmedMessage}\n`);
+    setConductorMessage("");
+  };
 
   const applyTaskDraftResult = (result: NativeTaskDraftResult) => {
     const nextDraft = result.draft ?? result.draftPatch;
@@ -256,147 +308,138 @@ export function TaskBoard({
           </div>
         </article>
 
-        <section className="panel task-home-conductor">
-          <div className="task-home-conductor-head">
-            <div>
-              <span className="eyebrow">Task Conductor</span>
-              <h2>Conductor Terminal</h2>
-              <p>{conductorAgent.name} · {conductorAgent.role} · {selectedTask.title}</p>
-            </div>
-            <StatusPill status={nativePtySession?.status ?? selectedTask.status} />
-          </div>
-          <div className="conductor-terminal-shell">
-            <div className="conductor-terminal-toolbar">
+        <div className="task-execution-grid">
+          <section className="panel execution-panel" aria-label="Task execution conversation">
+            <div className="execution-panel-head">
               <div>
-                <code>{nativePtySession ? formatNativePtyCommand(nativePtySession) : agentLaunchCommand}</code>
-                <small>{nativePtySession?.id ?? "尚未绑定 PTY session"}</small>
+                <span className="eyebrow">Conversation</span>
+                <h2>执行过程</h2>
               </div>
-              <div className="conductor-terminal-actions">
-                <button
-                  className="primary-button"
-                  disabled={!canStartConductor || conductorPtyRunning}
-                  title={
-                    conductorPtyRunning
-                      ? "当前 Conductor PTY 已在运行；刷新或停止后再启动新的 session"
-                      : canStartConductor
-                        ? "启动当前任务的 Conductor PTY"
-                        : nativeRuntimeStatus.message
-                  }
-                  type="button"
-                  onClick={onStartConductorPty}
-                >
-                  <SquareTerminal size={16} />
-                  {conductorPtyRunning ? "Conductor 运行中" : "启动 Conductor PTY"}
-                </button>
-                <button className="ghost-button" disabled={!nativePtySession} type="button" onClick={onRefreshConductorPty}>
-                  刷新
-                </button>
-              </div>
+              <StatusPill status={nativePtySession?.status ?? selectedTask.status} />
             </div>
-            <PtyTerminal
-              ariaLabel="Conductor terminal output"
-              className="conductor-terminal-screen"
-              command={nativePtySession ? formatNativePtyCommand(nativePtySession) : agentLaunchCommand}
-              emptyTitle="尚未启动 Conductor PTY"
-              emptyDetail="启动后这里直接显示当前任务主 agent 的真实 terminal。"
-              session={nativePtySession}
-              transcriptLines={transcriptLines}
-              waitingDetail="Conductor PTY 已启动，正在等待 opencode TUI 输出。"
-              onData={onWriteConductorPtyData}
-              onResize={onResizeConductorPty}
-            />
-          </div>
-        </section>
-
-        <div className="task-home-role-grid">
-          <section className="panel task-home-workers">
-            <div className="task-home-panel-head">
-              <h2>Worker Agents</h2>
-              <StatusPill status={`${workerAgents.length} workers`} />
-            </div>
-            <div className="worker-agent-grid">
-              {workerAgents.map((agent) => (
-                <article className={["worker-agent-card", agentCardStateClass(agent)].join(" ")} key={agent.id}>
-                  <span className="agent-avatar" style={{ backgroundColor: agent.accent }}>
-                    {agent.name[0]}
-                  </span>
-                  <div>
-                    <strong>{agent.name}</strong>
-                    <small>{agent.role}</small>
-                    <code>{terminalIdForAgent(selectedProject, selectedAgentCluster, selectedTask, agent)}</code>
+            <div className="execution-feed" aria-label="执行过程列表">
+              {executionEvents.map((event) => (
+                <article className={`execution-event execution-event-${event.kind}`} key={event.id}>
+                  <div className="execution-actor">
+                    <span className="execution-avatar" style={{ backgroundColor: event.accent }}>
+                      {event.initial}
+                    </span>
+                    <strong>{event.actor}</strong>
+                    <small>{event.time}</small>
                   </div>
-                  <StatusPill status={agent.status} />
-                  <button className="ghost-button" type="button" onClick={() => onOpenAgentTerminal(agent.id)}>
-                    terminal
-                  </button>
+                  <div className="execution-card">
+                    <div className="execution-card-head">
+                      <strong>{event.title}</strong>
+                      <span>{event.meta}</span>
+                    </div>
+                    <MarkdownContent markdown={event.markdown} />
+                  </div>
                 </article>
               ))}
             </div>
-          </section>
-
-          <section className="panel task-home-progress">
-            <div className="task-home-panel-head">
-              <h2>Conductor 进展</h2>
-              <StatusPill status={selectedTask.status} />
-            </div>
-            <div className="task-home-timeline">
-              {selectedTaskEvents.length ? (
-                selectedTaskEvents.map((event, index) => (
-                  <article className="task-home-timeline-item" key={event.id}>
-                    <span>{index + 1}</span>
-                    <div>
-                      <strong>{event.summary}</strong>
-                      <small>{event.createdAt}</small>
-                      <code>{event.evidencePath}</code>
-                    </div>
-                    <StatusPill status={event.toStatus} />
-                  </article>
-                ))
-              ) : (
-                loopStages.map((stage, index) => (
-                  <article className="task-home-timeline-item" key={stage.label}>
-                    <span>{index + 1}</span>
-                    <div>
-                      <strong>{stage.label}</strong>
-                      <small>{stage.detail}</small>
-                    </div>
-                    <StatusPill status={stage.state} />
-                  </article>
-                ))
-              )}
-            </div>
-            <div className="task-home-action-row">
-              <button className="ghost-button" type="button" onClick={() => onStartAgent(selectedTask.id)}>
-                <Workflow size={16} />
-                Loop 启动
-              </button>
-              <button className="ghost-button" type="button" onClick={onOpenLoops}>
-                <Workflow size={16} />
-                调度规则
-              </button>
-              <button className="ghost-button" type="button" onClick={() => onAdvance(selectedTask.id)}>
-                <Play size={16} />
-                推进状态
-              </button>
+            <div className="execution-composer">
+              <textarea
+                aria-label="发送给 Conductor"
+                placeholder="给 Conductor 发消息，例如：先停止当前方向，重新让 Executor 按紧凑 Markdown feed 实现。"
+                rows={3}
+                value={conductorMessage}
+                onChange={(event) => setConductorMessage(event.target.value)}
+              />
+              <div className="execution-composer-actions">
+                <button className="primary-button" type="button" onClick={sendConductorMessage}>
+                  发送
+                </button>
+                <button className="danger-button" type="button" onClick={onStopConductorPty}>
+                  停止
+                </button>
+                <button className="success-button" type="button" onClick={() => onAdvance(selectedTask.id)}>
+                  Goal
+                </button>
+              </div>
             </div>
           </section>
+
+          <aside className="task-session-panel" aria-label="Task session agents">
+            <section className="panel task-session-roster">
+              <div className="task-session-head">
+                <span className="eyebrow">Agents</span>
+              </div>
+              <div className="task-session-list">
+                {sessionAgents.map((agent) => (
+                  <button
+                    aria-label={`${agent.name} ${agent.role} ${agentStatusLabel(agent.status)}`}
+                    className={agent.id === selectedSessionAgent?.id ? "task-session-agent active" : "task-session-agent"}
+                    key={agent.id}
+                    type="button"
+                    onClick={() => setSelectedSessionAgentId(agent.id)}
+                  >
+                    <span className="execution-avatar" style={{ backgroundColor: agent.accent }}>
+                      {agent.name[0]}
+                    </span>
+                    <span>
+                      <strong>{agent.name}</strong>
+                      <small>{agent.role}</small>
+                    </span>
+                    <em>{agentStatusLabel(agent.status)}</em>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            {selectedSessionAgent && (
+              <section className="panel task-session-detail">
+                <div className="task-session-head">
+                  <span className="eyebrow">Selected Agent</span>
+                  <StatusPill status={selectedSessionAgent.status} />
+                </div>
+                <div className="task-session-identity">
+                  <span className="execution-avatar" style={{ backgroundColor: selectedSessionAgent.accent }}>
+                    {selectedSessionAgent.name[0]}
+                  </span>
+                  <div>
+                    <strong>{selectedSessionAgent.name}</strong>
+                    <small>{selectedSessionAgent.role}</small>
+                  </div>
+                </div>
+                <dl className="task-session-facts">
+                  <div>
+                    <dt>Provider</dt>
+                    <dd>{selectedSessionAgent.provider}</dd>
+                  </div>
+                  <div>
+                    <dt>Model</dt>
+                    <dd>{selectedSessionAgent.model}</dd>
+                  </div>
+                  <div>
+                    <dt>CWD</dt>
+                    <dd>{selectedProject.path}</dd>
+                  </div>
+                  <div>
+                    <dt>Policy</dt>
+                    <dd>{selectedRun?.runtimePolicy.permissionMode ?? "task-scoped"}</dd>
+                  </div>
+                </dl>
+                <div className="task-session-tags">
+                  <strong>MCP</strong>
+                  <div>
+                    {mcpToolsForAgent(selectedSessionAgent, conductorAgent).map((tool) => (
+                      <span key={tool}>{tool}</span>
+                    ))}
+                  </div>
+                </div>
+                <div className="task-session-tags">
+                  <strong>Skills</strong>
+                  <div>
+                    {skillsForAgent(selectedSessionAgent, conductorAgent).map((skill) => (
+                      <span key={skill}>{skill}</span>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            )}
+          </aside>
         </div>
 
-        <div className="task-home-create-grid">
-          <TaskDraftAssistantPanel
-            currentDraft={toNativeTaskDraft(taskIntakeDraft, selectedProject)}
-            model={taskIntakeDraft.model}
-            onGenerateTaskDraft={generateTaskDraft}
-            onModelChange={(model) => setTaskIntakeDraft((currentDraft) => ({ ...currentDraft, model }))}
-          />
-          <TaskIntakePanel
-            draft={taskIntakeDraft}
-            selectedProject={selectedProject}
-            taskIntakeEvents={taskIntakeEvents}
-            onCreateTaskFromIntake={onCreateTaskFromIntake}
-            onDraftChange={setTaskIntakeDraft}
-          />
-        </div>
       </section>
     </section>
   );
@@ -1104,29 +1147,387 @@ function hasTaskIntakeDraftContent(draft: TaskIntakeDraft) {
   );
 }
 
-function getConductorTranscript(nativePtySession: NativePtySession | undefined, selectedRun: AgentRun | undefined) {
-  if (nativePtySession) {
-    return nativePtySession.transcript.map((line) => line.trimEnd()).filter(Boolean);
+function createRuntimeExecutionEvents(input: {
+  taskRuntimeState?: ReadTaskStateResult;
+  selectedProject: Project;
+  task: Task;
+  conductorAgent: Agent;
+  workerAgents: Agent[];
+}): ExecutionEvent[] | undefined {
+  const runtimeEvents = [...(input.taskRuntimeState?.events ?? [])].sort(
+    (left, right) => Number(left.cursor ?? 0) - Number(right.cursor ?? 0),
+  );
+  if (!runtimeEvents.length) return undefined;
+
+  const dispatches = (input.taskRuntimeState?.dispatches ?? []) as SessionDispatchRecord[];
+  const dispatchById = new Map(dispatches.map((dispatch) => [dispatch.dispatchId, dispatch]));
+  const messageByDispatchId = new Map(
+    (input.taskRuntimeState?.messages ?? []).map((message) => [message.dispatchId, message]),
+  );
+  const resultByDispatchId = new Map(
+    (input.taskRuntimeState?.results ?? []).map((result) => [result.dispatchId, result]),
+  );
+  const rendered: ExecutionEvent[] = [];
+  const seen = new Set<string>();
+
+  for (const event of runtimeEvents) {
+    if (event.type === "task.user_message" || event.type === "user.intervention") {
+      rendered.push(userExecutionEvent(event));
+      continue;
+    }
+
+    if (event.type === "dispatch.created") {
+      const dispatch = dispatchForEvent(event, dispatchById);
+      if (!dispatch || seen.has(`dispatch-${dispatch.dispatchId}`)) continue;
+      seen.add(`dispatch-${dispatch.dispatchId}`);
+      const targetAgent = resolveAgentForSessionId(dispatch.toSessionId, input);
+      rendered.push({
+        id: event.id,
+        kind: "call",
+        actor: "Call",
+        initial: "Call",
+        accent: "#475569",
+        time: formatExecutionEventTime(event),
+        title: "agent_session_call",
+        meta: `${input.conductorAgent.name || "Conductor"} -> ${targetAgent?.name ?? roleNameFromSessionId(dispatch.toSessionId)}`,
+        markdown: dispatch.assignment || event.summary || "Agent session call recorded.",
+      });
+      continue;
+    }
+
+    if (event.type === "dispatch.result_available") {
+      const dispatch = dispatchForEvent(event, dispatchById);
+      if (!dispatch || seen.has(`result-${dispatch.dispatchId}`)) continue;
+      seen.add(`result-${dispatch.dispatchId}`);
+      const message = messageByDispatchId.get(dispatch.dispatchId);
+      const result = resultByDispatchId.get(dispatch.dispatchId);
+      const targetAgent = resolveAgentForSessionId(dispatch.toSessionId, input);
+      rendered.push(workerExecutionEvent({
+        event,
+        dispatch,
+        message,
+        markdown: message?.answerText || result?.answerPreview || event.summary,
+        targetAgent,
+      }));
+      continue;
+    }
+
+    if (event.type === "dispatch.failed") {
+      const dispatch = dispatchForEvent(event, dispatchById);
+      if (!dispatch || seen.has(`dispatch-failed-${dispatch.dispatchId}`)) continue;
+      seen.add(`dispatch-failed-${dispatch.dispatchId}`);
+      const targetAgent = resolveAgentForSessionId(dispatch.toSessionId, input);
+      rendered.push({
+        id: event.id,
+        kind: "call",
+        actor: "Call",
+        initial: "Call",
+        accent: "#b91c1c",
+        time: formatExecutionEventTime(event),
+        title: "agent_session_call failed",
+        meta: `${input.conductorAgent.name || "Conductor"} -> ${targetAgent?.name ?? roleNameFromSessionId(dispatch.toSessionId)}`,
+        markdown: dispatch.failureMessage || event.summary || "Dispatch failed.",
+      });
+      continue;
+    }
+
+    if (event.type === "conductor.wakeup.sent" || event.type === "conductor.wakeup.queued") {
+      rendered.push({
+        id: event.id,
+        kind: "conductor",
+        actor: input.conductorAgent.name || "Conductor",
+        initial: (input.conductorAgent.name || "C")[0],
+        accent: input.conductorAgent.accent,
+        time: formatExecutionEventTime(event),
+        title: event.type === "conductor.wakeup.sent" ? "Runtime wakeup" : "Runtime wakeup queued",
+        meta: "runtime event",
+        markdown: event.summary,
+      });
+    }
   }
-  if (selectedRun?.nativeSession?.transcriptPreview?.length) {
-    return selectedRun.nativeSession.transcriptPreview;
+
+  return rendered.length ? rendered : undefined;
+}
+
+function userExecutionEvent(event: SessionStoreEvent): ExecutionEvent {
+  const message = stringFromEventData(event, "message") || event.summary;
+  return {
+    id: event.id,
+    kind: "user",
+    actor: "User",
+    initial: "U",
+    accent: "#b45309",
+    time: formatExecutionEventTime(event),
+    title: event.type === "task.user_message" ? "任务发起" : "用户修正方向",
+    meta: "message to Conductor",
+    markdown: message,
+  };
+}
+
+function workerExecutionEvent(input: {
+  event: SessionStoreEvent;
+  dispatch: SessionDispatchRecord;
+  message?: SessionMessageRecord;
+  markdown: string;
+  targetAgent?: Agent;
+}): ExecutionEvent {
+  const actor = input.targetAgent?.name ?? roleNameFromSessionId(input.dispatch.toSessionId);
+  return {
+    id: input.event.id,
+    kind: "worker",
+    actor,
+    initial: actor[0] ?? "W",
+    accent: input.targetAgent?.accent ?? "#2563eb",
+    time: formatExecutionEventTime(input.event),
+    title: "实现结果",
+    meta: "result message",
+    markdown: input.markdown,
+  };
+}
+
+function dispatchForEvent(event: SessionStoreEvent, dispatchById: Map<string, SessionDispatchRecord>) {
+  const dispatchId = stringFromEventData(event, "dispatchId");
+  return dispatchId ? dispatchById.get(dispatchId) : undefined;
+}
+
+function stringFromEventData(event: SessionStoreEvent, key: string) {
+  const value = event.data?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function resolveAgentForSessionId(
+  sessionId: string | undefined,
+  input: {
+    selectedProject: Project;
+    task: Task;
+    conductorAgent: Agent;
+    workerAgents: Agent[];
+  },
+) {
+  const agents = [input.conductorAgent, ...input.workerAgents];
+  return agents.find(
+    (agent) =>
+      createOpencodeSessionKey({
+        projectId: getProjectRuntimeId(input.selectedProject),
+        taskId: getTaskRuntimeId(input.task),
+        agentId: agent.id,
+      }) === sessionId,
+  );
+}
+
+function roleNameFromSessionId(sessionId: string | undefined) {
+  const tail = String(sessionId ?? "Worker").split(":").pop() ?? "Worker";
+  return tail
+    .replace(/^task-intake-\d+-/i, "")
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "Worker";
+}
+
+function formatExecutionEventTime(event: SessionStoreEvent) {
+  const cursor = Number(event.cursor);
+  return Number.isFinite(cursor) && cursor > 0 ? `#${cursor}` : "event";
+}
+
+function createExecutionEvents(
+  task: Task,
+  conductorAgent: Agent,
+  workerAgents: Agent[],
+  selectedRun: AgentRun | undefined,
+): ExecutionEvent[] {
+  const targetAgent =
+    workerAgents.find((agent) => /executor|implement|worker/i.test(`${agent.name} ${agent.role}`)) ??
+    workerAgents[0];
+  const targetName = targetAgent?.name ?? "Worker";
+  const conductorName = conductorAgent.name || "Conductor";
+  const runFiles = selectedRun?.changedFilePaths.length
+    ? selectedRun.changedFilePaths.slice(0, 4)
+    : ["src/pages/TaskBoard.tsx", "src/components/ExecutionConversation.tsx", "src/styles.css"];
+  const codeFence = ["```text", ...runFiles, "```"].join("\n");
+
+  return [
+    {
+      id: `${task.id}-user-intake`,
+      kind: "user",
+      actor: "User",
+      initial: "U",
+      accent: "#b45309",
+      time: "00:00",
+      title: "任务发起",
+      meta: "message to Conductor",
+      markdown: task.summary || task.title,
+    },
+    {
+      id: `${task.id}-conductor-output`,
+      kind: "conductor",
+      actor: "Conductor",
+      initial: "C",
+      accent: conductorAgent.accent,
+      time: "00:03",
+      title: "分析输出",
+      meta: "output message",
+      markdown: [
+        `我会把当前任务按 conversation-first 展示：用户输入、${conductorName} 输出、session 调用、Worker 结果和 Review 状态分开。`,
+        "",
+        "- Terminal 保留为后台运行能力和诊断入口。",
+        "- Task 页面只展示可读执行内容和 Agent 状态。",
+        "- 用户可以通过底部对话框随时纠偏 Conductor。",
+      ].join("\n"),
+    },
+    {
+      id: `${task.id}-agent-session-call`,
+      kind: "call",
+      actor: "Call",
+      initial: "Call",
+      accent: "#475569",
+      time: "00:04",
+      title: "agent_session_call",
+      meta: `Conductor -> ${targetName}`,
+      markdown: [
+        `请让 ${targetName} 处理当前任务的实现部分。`,
+        "",
+        "- 区分 Conductor 的普通 output message 和派发任务的 agent_session_call message。",
+        "- 卡片正文必须渲染 Markdown 内容，包括列表、代码块和状态说明。",
+        "- 不要从 terminal text 推导 task state。",
+      ].join("\n"),
+    },
+    {
+      id: `${task.id}-worker-result`,
+      kind: "worker",
+      actor: targetName,
+      initial: targetName[0] ?? "W",
+      accent: targetAgent?.accent ?? "#2563eb",
+      time: "00:11",
+      title: "实现结果",
+      meta: "result message",
+      markdown: [
+        "### 关键变化",
+        "- 新增执行对话流，按真实事件类型拆分展示。",
+        "- 底部 composer 写入 Conductor 的真实 session。",
+        "- 右侧可查看所选 session agent 的模型、MCP 和 Skills。",
+        "",
+        codeFence,
+      ].join("\n"),
+    },
+  ];
+}
+
+function MarkdownContent({ markdown }: { markdown: string }) {
+  const lines = markdown.trim().split(/\r?\n/);
+  const blocks: ReactNode[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    if (line.startsWith("```")) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      index += 1;
+      blocks.push(
+        <pre key={`code-${blocks.length}`}>
+          <code>{codeLines.join("\n")}</code>
+        </pre>,
+      );
+      continue;
+    }
+
+    if (/^#{1,4}\s+/.test(line)) {
+      const text = line.replace(/^#{1,4}\s+/, "");
+      blocks.push(<h4 key={`heading-${blocks.length}`}>{renderInlineMarkdown(text, `heading-${blocks.length}`)}</h4>);
+      index += 1;
+      continue;
+    }
+
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^[-*]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^[-*]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ul key={`ul-${blocks.length}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`${item}-${itemIndex}`}>{renderInlineMarkdown(item, `ul-${blocks.length}-${itemIndex}`)}</li>
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\d+\.\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ol key={`ol-${blocks.length}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`${item}-${itemIndex}`}>{renderInlineMarkdown(item, `ol-${blocks.length}-${itemIndex}`)}</li>
+          ))}
+        </ol>,
+      );
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !lines[index].startsWith("```") &&
+      !/^#{1,4}\s+/.test(lines[index]) &&
+      !/^[-*]\s+/.test(lines[index]) &&
+      !/^\d+\.\s+/.test(lines[index])
+    ) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    blocks.push(
+      <p key={`p-${blocks.length}`}>{renderInlineMarkdown(paragraphLines.join(" "), `p-${blocks.length}`)}</p>,
+    );
   }
-  return selectedRun?.transcriptPreview ?? [];
+
+  return <div className="execution-md">{blocks}</div>;
 }
 
-function agentCardStateClass(agent: Agent) {
-  if (agent.status === "working") return "state-running";
-  if (agent.status === "waiting") return "state-decision";
-  if (agent.status === "review") return "state-review";
-  return "state-neutral";
+function renderInlineMarkdown(text: string, keyPrefix: string) {
+  return text.split(/(`[^`]+`)/g).map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={`${keyPrefix}-code-${index}`}>{part.slice(1, -1)}</code>;
+    }
+    return <span key={`${keyPrefix}-text-${index}`}>{part}</span>;
+  });
 }
 
-function formatNativePtyCommand(session: NativePtySession) {
-  return [session.command, ...session.args].join(" ");
+function agentStatusLabel(status: Agent["status"]) {
+  if (status === "working") return "Run";
+  if (status === "waiting") return "Wait";
+  if (status === "review") return "Review";
+  return "Idle";
 }
 
-function terminalIdForAgent(project: Project, cluster: AgentCluster, task: Task, agent: Agent) {
-  return `vterm:${getProjectRuntimeId(project)}:${cluster.id}:${getTaskRuntimeId(task)}:${agent.id}`;
+function mcpToolsForAgent(agent: Agent, conductorAgent: Agent) {
+  if (agent.id === conductorAgent.id) return ["agent_session_call", "read_task_state", "read_session"];
+  return ["agent_session_call", "provider_state", "read_session"];
+}
+
+function skillsForAgent(agent: Agent, conductorAgent: Agent) {
+  const signature = `${agent.name} ${agent.role}`.toLowerCase();
+  if (agent.id === conductorAgent.id) return ["orchestration", "routing", "review-gate"];
+  if (signature.includes("qa") || signature.includes("verification")) return ["verification", "e2e-smoke"];
+  if (signature.includes("review")) return ["diff-review", "risk-scan"];
+  if (signature.includes("executor") || signature.includes("implement")) return ["implementation", "verification"];
+  return ["task-scope", "provider-native"];
 }
 
 function agentBelongsToTask(agent: Agent, task: Task) {

@@ -1,6 +1,8 @@
 export type SessionStoreState = "running" | "idle" | "waiting" | "blocked" | "timeout" | "exited";
 
 export type SessionEventType =
+  | "task.user_message"
+  | "user.intervention"
   | "session.started"
   | "session.idle"
   | "session.waiting"
@@ -31,6 +33,7 @@ export type SessionDispatchRecord = {
   dispatchId: string;
   taskId: string;
   toSessionId: string;
+  conductorSessionId?: string;
   assignment: string;
   contextRefs: string[];
   expectedOutput: string;
@@ -152,11 +155,29 @@ export type ReadTaskStateSessionSummary = {
 
 export type ReadTaskStateDispatchSummary = {
   dispatchId: string;
+  taskId?: string;
   toSessionId: string;
+  conductorSessionId?: string;
+  assignment?: string;
+  contextRefs?: string[];
+  expectedOutput?: string;
+  priority?: "low" | "normal" | "high";
   status: SessionDispatchRecord["status"];
+  createdAt?: string;
+  deliveredAt?: string;
+  failedAt?: string;
+  failureReason?: string;
+  failureMessage?: string;
+  failureError?: string;
   resultId?: string;
+  resultReason?: string;
   resultCursor?: number;
+  resultSource?: string;
   resultAvailableAt?: string;
+  provider?: string;
+  providerSessionId?: string;
+  providerMessageId?: string;
+  providerStepFinishId?: string;
 };
 
 export type ReadTaskStateResultSummary = {

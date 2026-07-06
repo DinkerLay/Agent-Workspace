@@ -687,6 +687,7 @@ export type PrototypeAction =
   | { type: "run-verification-command"; taskId: string }
   | { type: "create-pr-handoff"; runId: string }
   | { type: "select-task"; taskId: string }
+  | { type: "clear-selected-task" }
   | { type: "set-prompt"; prompt: string }
   | { type: "send-prompt" }
   | { type: "insert-scratchpad-item"; itemId: string }

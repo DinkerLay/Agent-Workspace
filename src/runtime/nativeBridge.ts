@@ -5,6 +5,8 @@ import type {
   ReadSessionResult,
   ReadTaskStateInput,
   ReadTaskStateResult,
+  SessionEventType,
+  SessionStoreEvent,
 } from "../orchestration/conductor-tools";
 import type { TaskSessionPlan } from "../types";
 import type { OpencodeProcessStat } from "./opencode";
@@ -158,6 +160,22 @@ export type NativePtyEvent =
       cursor: number;
     };
 
+export type NativeTaskEventInput = {
+  taskId: string;
+  sessionId?: string;
+  cwd: string;
+  type: Extract<SessionEventType, "task.user_message" | "user.intervention">;
+  summary: string;
+  data?: Record<string, unknown>;
+};
+
+export type NativeTaskEventResult = {
+  ok: boolean;
+  event?: SessionStoreEvent;
+  taskState?: ReadTaskStateResult;
+  error?: string;
+};
+
 export type NativeRuntimeBridge = {
   getRuntimeStatus(): Promise<NativeRuntimeStatus>;
   runOpencode(input: NativeOpencodeInput): Promise<NativeOpencodeResult>;
@@ -188,6 +206,7 @@ export type NativeRuntimeBridge = {
   callSession?(input: CallSessionInput): Promise<CallSessionResult>;
   readTaskState?(input: ReadTaskStateInput): Promise<ReadTaskStateResult | undefined>;
   readSession?(input: ReadSessionInput): Promise<ReadSessionResult | undefined>;
+  appendTaskEvent?(input: NativeTaskEventInput): Promise<NativeTaskEventResult>;
 };
 
 declare global {
@@ -353,4 +372,13 @@ export async function readNativeSession(input: ReadSessionInput): Promise<ReadSe
 
 export async function readNativeTaskState(input: ReadTaskStateInput): Promise<ReadTaskStateResult | undefined> {
   return window.agentWorkspace?.native.readTaskState?.(input);
+}
+
+export async function appendNativeTaskEvent(input: NativeTaskEventInput): Promise<NativeTaskEventResult> {
+  return (
+    window.agentWorkspace?.native.appendTaskEvent?.(input) ?? {
+      ok: false,
+      error: browserRuntimeStatus.message,
+    }
+  );
 }

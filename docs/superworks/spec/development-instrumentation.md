@@ -234,6 +234,8 @@ The following product audit events are required for the MVP execution path.
 | --- | --- | --- | --- | --- |
 | `project.context.selected` | user | project id | project manifest | Project context changes |
 | `task.intake.created` | user/shell | taskId | `.agent-workspace/tasks/intake.jsonl` | Task Home captures a task |
+| `task.user_message` | user/shell | taskId | `.agent-workspace/runtime/<task-id>/events.jsonl` | Built Task page records the initial user message that started the Conductor task |
+| `user.intervention` | user/shell | taskId, sessionId? | `.agent-workspace/runtime/<task-id>/events.jsonl` | Bottom Task composer sends a correction to Conductor and records it for the execution timeline |
 | `task.session_group.created` | shell | taskId | task session group artifact | Task creates Conductor and worker session records |
 | `task.status.changed` | shell | taskId | task event stream | Task changes queued/running/waiting/pending-review/blocked/done |
 | `conductor.session.started` | shell | taskId, sessionId | runtime session event stream | Shell starts task Conductor PTY |
@@ -296,6 +298,8 @@ Record product audit when:
 - project context is selected,
 - task draft assistant fills or patches a draft,
 - task is captured,
+- initial task user message is recorded for the execution conversation,
+- bottom Task composer sends a user intervention to Conductor,
 - task session group is created,
 - Conductor auto-start is requested,
 - task status changes.

@@ -213,9 +213,10 @@ function registerIpc() {
       throw new Error("node-pty is not available in this desktop shell.");
     }
 
+    const sessionId = String(input?.id ?? `pty-${Date.now()}`);
     return ptyManager.start({
-      id: String(input?.id ?? `pty-${Date.now()}`),
-      taskId: input?.taskId ? String(input.taskId) : undefined,
+      id: sessionId,
+      taskId: input?.taskId ? String(input.taskId) : taskIdFromWorkspaceSessionId(sessionId),
       command: resolvePtyCommand(String(input?.command ?? "opencode")),
       args: Array.isArray(input?.args) ? input.args.map(String) : [],
       cwd: String(input?.cwd ?? process.cwd()),
@@ -251,6 +252,29 @@ function registerIpc() {
   ipcMain.handle("native:read-task-state", (_event, input) => conductorToolBridge.readTaskState(input));
 
   ipcMain.handle("native:read-session", (_event, input) => conductorToolBridge.readSession(input));
+
+  ipcMain.handle("native:append-task-event", (_event, input) => {
+    const taskId = String(input?.taskId ?? "");
+    const type = String(input?.type ?? "");
+    if (!taskId) throw new Error("Task event requires taskId.");
+    if (!["task.user_message", "user.intervention"].includes(type)) {
+      throw new Error(`Unsupported task event type: ${type}`);
+    }
+
+    const event = runtimeSessionStore.recordTaskEvent({
+      taskId,
+      sessionId: input?.sessionId ? String(input.sessionId) : "",
+      cwd: String(input?.cwd ?? ""),
+      type,
+      summary: String(input?.summary ?? ""),
+      data: sanitizeJsonObject(input?.data),
+    });
+    return {
+      ok: true,
+      event,
+      taskState: runtimeSessionStore.readTaskState({ taskId }),
+    };
+  });
 }
 
 function resolvePtyCommand(command) {
@@ -319,6 +343,16 @@ function sanitizeRuntimeFiles(files) {
       relativePath: String(file.relativePath ?? ""),
       contents: String(file.contents ?? ""),
     }));
+}
+
+function sanitizeJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return JSON.parse(JSON.stringify(value));
+}
+
+function taskIdFromWorkspaceSessionId(sessionId) {
+  const parts = String(sessionId ?? "").split(":");
+  return parts.length >= 3 ? parts[2] : undefined;
 }
 
 function publishPtyEvent(event) {

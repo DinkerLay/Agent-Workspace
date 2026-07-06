@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("agentWorkspace", {
     callSession: (input) => ipcRenderer.invoke("native:call-session", input),
     readTaskState: (input) => ipcRenderer.invoke("native:read-task-state", input),
     readSession: (input) => ipcRenderer.invoke("native:read-session", input),
+    appendTaskEvent: (input) => ipcRenderer.invoke("native:append-task-event", input),
     onPtyEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("native:pty-event", listener);

@@ -6,6 +6,7 @@ import {
   getNativePtySession,
   getNativeRuntimeStatus,
   inspectNativeOpencodeProcesses,
+  appendNativeTaskEvent,
   callNativeSession,
   readNativeSession,
   readNativeTaskState,
@@ -204,6 +205,88 @@ describe("native runtime bridge", () => {
       taskId: "task-1",
       pendingDecisions: [],
     });
+  });
+
+  it("delegates task execution event appends to the desktop preload bridge", async () => {
+    const calls: string[] = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({
+          available: true,
+          mode: "desktop",
+          message: "ready",
+        }),
+        runOpencode: async (input) => ({
+          ok: true,
+          command: "opencode run --format json",
+          cwd: input.cwd,
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          durationMs: 1,
+        }),
+        appendTaskEvent: async (input) => {
+          calls.push(`${input.taskId}:${input.sessionId}:${input.type}:${input.data?.message}`);
+          return {
+            ok: true,
+            event: {
+              id: "event-1",
+              taskId: input.taskId,
+              sessionId: input.sessionId ?? "",
+              type: input.type,
+              createdAt: "2026-07-06T00:00:00.000Z",
+              cursor: 1,
+              summary: input.summary,
+              data: input.data,
+            },
+            taskState: {
+              taskId: input.taskId,
+              cursor: 1,
+              events: [
+                {
+                  id: "event-1",
+                  taskId: input.taskId,
+                  sessionId: input.sessionId ?? "",
+                  type: input.type,
+                  createdAt: "2026-07-06T00:00:00.000Z",
+                  cursor: 1,
+                  summary: input.summary,
+                  data: input.data,
+                },
+              ],
+              sessions: [],
+              dispatches: [],
+              results: [],
+              messages: [],
+              pendingDecisions: [],
+            },
+          };
+        },
+      },
+    };
+
+    await expect(
+      appendNativeTaskEvent({
+        taskId: "task-1",
+        sessionId: "task-1-conductor",
+        cwd: "/tmp/project",
+        type: "user.intervention",
+        summary: "User intervention sent to Conductor",
+        data: { message: "后端纠偏消息", source: "task-composer" },
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      taskState: {
+        taskId: "task-1",
+        events: [
+          {
+            type: "user.intervention",
+            data: { message: "后端纠偏消息" },
+          },
+        ],
+      },
+    });
+    expect(calls).toEqual(["task-1:task-1-conductor:user.intervention:后端纠偏消息"]);
   });
 
   it("delegates native PTY session lifecycle requests to the desktop preload bridge", async () => {

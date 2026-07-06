@@ -266,7 +266,20 @@ Submitting the intake form records a `TaskIntakeEvent` under `.agent-workspace/t
 
 Task Intake Progressive Disclosure keeps the Board capture surface compact by default. The default intake row accepts a task title and records a running task with manual-brief, Conductor owner, selected starting scheme/model defaults, and no artifact defaults. Expanding context fields must not create Review approval, mark Done, or write runtime state into product-intent files; it only reveals description, labels, starting scheme, model, artifact path, Session Agent Plan cards, and source-type explanations before the same Task Store capture and Conductor auto-start action.
 
-Task Home must not render a persistent "task context and evidence" panel in the default creation or inspection flow. Project path, run id, Conductor session id, transcript paths, and artifact pointers are runtime/audit metadata, not the main task-home interaction. They may appear in explicit debug, Audit Trail, Review, or Run detail surfaces, but Task Home should reserve its primary space for task creation, task selection, Conductor terminal status, and the editable Session Agent Plan.
+Task Home must not render a persistent "task context and evidence" panel in the default creation or inspection flow. Project path, run id, Conductor session id, transcript paths, and artifact pointers are runtime/audit metadata, not the main task-home interaction. They may appear in explicit debug, Audit Trail, Review, or Run detail surfaces, but Task Home should reserve its primary space for task creation, task selection, the built task execution conversation, and the editable Session Agent Plan.
+
+After Task Intake creates a task, the Task page is conversation-first rather than terminal-first. The primary surface is an execution conversation with compact Markdown cards for:
+
+- the user's initial task message to Conductor,
+- Conductor's normal output message,
+- Conductor's `agent_session_call` dispatch message to a target session,
+- worker result messages and later QA/Review events when present.
+
+The built Task page reads its execution feed from the Shell-owned runtime task state (`read_task_state`) when the desktop backend is available. `task.user_message`, `user.intervention`, `dispatch.created`, `dispatch.failed`, `dispatch.result_available`, and runtime wakeup events under `.agent-workspace/runtime/<runtimeTaskId>/events.jsonl` are projected into Markdown cards. Local projection may be used only as an empty-backend placeholder; once backend events exist, they are the source of truth for the Task page timeline.
+
+The Conductor PTY remains the real running backend for start/write/stop and diagnostics, but the built Task page must not expose the raw terminal as the default execution view. Users correct the current flow through the bottom Conductor composer; sending text writes to the Conductor session and records a user intervention event when runtime persistence is available. The composer should expose Send, Stop, and Goal controls. Stop targets the task Conductor session, and Goal advances through the scheduler/review path rather than bypassing verification.
+
+The built Task page sidebar shows the task session roster and a selected-agent detail panel. Clicking a session agent updates the detail panel with that session's provider/model, cwd, launch policy, configured MCP tools, and skills/capabilities. This sidebar is not a task facts panel and must not duplicate runtime evidence paths by default.
 
 The visible Session Agent Plan editor is card-first. The user should see a Conductor card and one card per worker session, with editable name, role, provider/model, instructions, expected output, and controls to add, remove, duplicate, or rename workers. The starting scheme is only a seed that initializes these cards; it is not the final task template after the user or AI assistant edits the plan. Raw JSON may exist only as an advanced import/export or debugging affordance, collapsed by default, and must not be the primary product surface. When a task is created, the resulting cards belong only to that task's `runtimeTaskId`; creating another task must create a fresh task-scoped session group and must not reuse the previous task's Conductor, worker cards, or terminal sessions.
 
