@@ -178,6 +178,7 @@ describe("App information architecture", () => {
     expect(screen.queryByText("call_session")).toBeNull();
     expect(screen.queryByText("read_task_state")).toBeNull();
     expect(screen.queryByText("read_session")).toBeNull();
+    expect(screen.queryByText("claim_task_completion")).toBeNull();
     expect(screen.queryByText("finish_task_claim")).toBeNull();
     expect(screen.queryByText("Workspace Session Message")).toBeNull();
     expect(screen.queryByText("Conductor Terminal")).toBeNull();
@@ -513,7 +514,7 @@ describe("App information architecture", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Conductor 对话 Terminal" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Agent 列表仅当前/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Executor.*Code implementation.*idle/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Executor.*Code implementation.*Ready/ }));
 
     expect(screen.getByRole("heading", { level: 2, name: "Executor 对话 Terminal" })).toBeTruthy();
     expect(screen.getByLabelText("Agent 启动命令预览").textContent).toBe(
@@ -701,6 +702,7 @@ describe("App information architecture", () => {
     expect(JSON.stringify(startPtyInputs[0].env ?? {})).toContain("AGENT_WORKSPACE_TOOL_BRIDGE_TOKEN");
     expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("Use call_session to assign session-level work");
     expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("Use read_task_state");
+    expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("claim_task_completion");
     expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("task-intake-001-researcher");
     expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).not.toContain("Workspace Session Message");
     await waitFor(() => expect(writePtyInputs).toHaveLength(1));
@@ -709,6 +711,7 @@ describe("App information architecture", () => {
     expect(writePtyInputs[0].text).toContain("调研claude dynamic workflow 的机制");
     expect(writePtyInputs[0].text).toContain("task-intake-001-researcher");
     expect(writePtyInputs[0].text).toContain("Use call_session when a worker should do work");
+    expect(writePtyInputs[0].text).toContain("Use claim_task_completion only after durable worker result evidence");
     expect(writePtyInputs[0].text).toContain("After call_session returns ok true, end this Conductor turn");
     expect(writePtyInputs[0].text).toContain("wait for a runtime wakeup");
     expect(writePtyInputs[0].text).not.toContain("delivered or queued");
@@ -884,7 +887,7 @@ describe("App information architecture", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "IDE 工作台" }));
     fireEvent.click(screen.getByRole("button", { name: /Agent 列表仅当前/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Researcher.*Evidence collector.*idle/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Researcher.*Evidence collector.*Ready/ }));
     fireEvent.click(await screen.findByRole("button", { name: "启动 opencode PTY" }));
     const researcherSessionLine = await screen.findByText(/^session .*researcher/);
     const researcherSessionId = sessionIdFromTranscriptLine(researcherSessionLine.textContent ?? "");
@@ -1047,7 +1050,7 @@ describe("App information architecture", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "IDE 工作台" }));
     fireEvent.click(screen.getByRole("button", { name: /Agent 列表仅当前/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Executor.*Code implementation.*idle/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Executor.*Code implementation.*Ready/ }));
     expect(screen.getByRole("heading", { level: 2, name: "Executor 对话 Terminal" })).toBeTruthy();
     const executorStartButton = await screen.findByRole("button", { name: "启动 opencode PTY" });
     fireEvent.click(executorStartButton);
@@ -1204,6 +1207,8 @@ describe("App information architecture", () => {
       "页面必须从 Session Store 读取执行事件",
     );
     expect(screen.getAllByText("页面必须从 Session Store 读取执行事件，并把用户纠偏写回 Conductor。").length).toBeGreaterThanOrEqual(1);
+    await waitFor(() => expect(writePtyInputs.length).toBeGreaterThan(0));
+    writePtyInputs.length = 0;
 
     fireEvent.change(screen.getByLabelText("发送给 Conductor"), {
       target: { value: "后端纠偏消息：重新派发 Executor 并补 e2e。" },
@@ -1211,10 +1216,164 @@ describe("App information architecture", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() => expect(appendTaskEvents.some((event) => event.type === "user.intervention")).toBe(true));
-    expect(writePtyInputs.some((input) => input.text.includes("后端纠偏消息"))).toBe(true);
+    expect(writePtyInputs).toHaveLength(1);
+    expect(writePtyInputs[0].text).toBe("后端纠偏消息：重新派发 Executor 并补 e2e。\r");
+    expect(appendTaskEvents.find((event) => event.type === "user.intervention")?.data?.message).toBe(
+      "后端纠偏消息：重新派发 Executor 并补 e2e。",
+    );
     await waitFor(() =>
       expect(screen.getAllByText("后端纠偏消息：重新派发 Executor 并补 e2e。").length).toBeGreaterThanOrEqual(1),
     );
+  });
+
+  it("routes runtime completion claims into the Review gate", async () => {
+    const taskStates = new Map<string, ReadTaskStateResult>();
+    const appendTaskEvents: Array<{ taskId: string; type: string }> = [];
+    const ptyEventCallbacks: Array<(event: NativePtyEvent) => void> = [];
+    const startedSessionIds: string[] = [];
+
+    function readState(taskId: string): ReadTaskStateResult {
+      return (
+        taskStates.get(taskId) ?? {
+          taskId,
+          cursor: 0,
+          events: [],
+          sessions: [],
+          dispatches: [],
+          results: [],
+          messages: [],
+          pendingDecisions: [],
+        }
+      );
+    }
+
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => desktopReadyStatus(),
+        runOpencode: async (input) => ({
+          ok: true,
+          command: "opencode",
+          cwd: input.cwd,
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          durationMs: 1,
+        }),
+        listOpencodeAgents: async () => ({ ok: true, agents: [] }),
+        startPty: async (input) => {
+          const id = input.id ?? "native-session";
+          startedSessionIds.push(id);
+          queueMicrotask(() => {
+            ptyEventCallbacks.forEach((callback) =>
+              callback({
+                type: "data",
+                id,
+                chunk: 'Ask anything... "Fix a TODO in the codebase"\ntab agents  ctrl+p commands\n',
+                cursor: 2,
+              }),
+            );
+          });
+          return {
+            id,
+            taskId: input.taskId,
+            command: input.command,
+            args: input.args ?? [],
+            cwd: input.cwd,
+            model: input.model,
+            backend: "pty",
+            status: "running",
+            cols: input.cols ?? 100,
+            rows: input.rows ?? 30,
+            stdin: input.stdin,
+            transcript: [`session ${id}\n`],
+            cursor: 1,
+          };
+        },
+        writePty: async (input) => ({
+          id: input.id,
+          command: "opencode",
+          args: [],
+          cwd: "/Users/dinker/CODES/Agent-Workspace",
+          backend: "pty",
+          status: "running",
+          cols: 100,
+          rows: 30,
+          transcript: [],
+          cursor: 1,
+        }),
+        appendTaskEvent: async (input) => {
+          appendTaskEvents.push({ taskId: input.taskId, type: input.type });
+          const current = readState(input.taskId);
+          const event: SessionStoreEvent = {
+            id: `event-${current.cursor + 1}`,
+            taskId: input.taskId,
+            sessionId: input.sessionId ?? "",
+            type: input.type,
+            createdAt: "2026-07-06T00:00:00.000Z",
+            cursor: current.cursor + 1,
+            summary: input.summary,
+            data: input.data,
+          };
+          const nextState: ReadTaskStateResult = {
+            ...current,
+            cursor: event.cursor,
+            events: [...(current.events ?? []), event],
+          };
+          taskStates.set(input.taskId, nextState);
+          return { ok: true, event, taskState: nextState };
+        },
+        readTaskState: async (input) => readState(input.taskId),
+        onPtyEvent: (callback) => {
+          ptyEventCallbacks.push(callback);
+          return () => {
+            ptyEventCallbacks.splice(ptyEventCallbacks.indexOf(callback), 1);
+          };
+        },
+      },
+    };
+
+    render(<App />);
+
+    createRuntimeTask({
+      title: "Runtime completion claim bridge",
+      summary: "后端 task.completion_claim 必须驱动 Review gate。",
+      templateId: "implementation",
+    });
+
+    await waitFor(() => expect(appendTaskEvents.some((event) => event.type === "task.user_message")).toBe(true));
+    await waitFor(() => expect(startedSessionIds.length).toBeGreaterThan(0));
+
+    const runtimeTaskId = appendTaskEvents.find((event) => event.type === "task.user_message")?.taskId;
+    expect(runtimeTaskId).toBeTruthy();
+    const current = readState(runtimeTaskId ?? "");
+    const completionClaim: SessionStoreEvent = {
+      id: `event-${current.cursor + 1}`,
+      taskId: runtimeTaskId ?? "",
+      sessionId: startedSessionIds[0],
+      type: "task.completion_claim",
+      createdAt: "2026-07-06T00:00:01.000Z",
+      cursor: current.cursor + 1,
+      summary: "Task completion claimed by Conductor",
+      data: {
+        message: "Conductor claims the task is complete; enter Review gate.",
+      },
+    };
+    taskStates.set(runtimeTaskId ?? "", {
+      ...current,
+      cursor: completionClaim.cursor,
+      events: [...(current.events ?? []), completionClaim],
+    });
+
+    ptyEventCallbacks.forEach((callback) =>
+      callback({
+        type: "data",
+        id: startedSessionIds[0],
+        chunk: "Task completion claimed by Conductor\n",
+        cursor: 3,
+      }),
+    );
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: "Review / 交付门禁" })).toBeTruthy());
   });
 
   it("keeps native opencode binding controls out of the primary Workbench while preserving task-scoped launches", async () => {
@@ -1255,7 +1414,7 @@ describe("App information architecture", () => {
     createRuntimeTask({ title: "Bind native opencode agent for Executor" });
     fireEvent.click(screen.getByRole("button", { name: "IDE 工作台" }));
     fireEvent.click(screen.getByRole("button", { name: /Agent 列表仅当前/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Executor.*Code implementation.*idle/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Executor.*Code implementation.*Ready/ }));
     expect(await screen.findByRole("heading", { level: 2, name: "Executor 对话 Terminal" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /运行详情/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "build-agent primary" })).toBeNull();
@@ -1281,7 +1440,7 @@ describe("App information architecture", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "IDE 工作台" }));
     fireEvent.click(screen.getByRole("button", { name: /Agent 列表仅当前/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Executor.*Code implementation.*idle/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Executor.*Code implementation.*Ready/ }));
 
     expect(screen.getByRole("heading", { level: 2, name: "Executor 对话 Terminal" })).toBeTruthy();
     expect(screen.getByLabelText("Agent 启动命令预览").textContent).toBe(

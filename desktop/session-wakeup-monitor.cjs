@@ -6,7 +6,10 @@ function createSessionWakeupMonitor({
   intervalMs = 0,
   debounceMs = 750,
   quietWakeupThresholdMs = 5000,
+  conductorMessageQuietThresholdMs = debounceMs,
   dispatchResultReader,
+  conductorMessageReader,
+  conductorQuestionReader,
   resolveConductorSessionId = inferConductorSessionId,
   formatWakeupInput = formatInteractivePtyInput,
 } = {}) {
@@ -15,6 +18,8 @@ function createSessionWakeupMonitor({
 
   const pendingWakeups = new Map();
   const scheduledInspections = new Map();
+  const recordedConductorMessageKeys = new Set();
+  const recordedConductorMessageCursors = new Map();
   let timer;
   let pendingWakeupTimer;
   let unsubscribeEvents;
@@ -54,6 +59,7 @@ function createSessionWakeupMonitor({
       resultAvailable: 0,
       wakeupsSent: 0,
       wakeupsQueued: 0,
+      conductorMessagesRecorded: 0,
     };
 
     addStats(result, drainPendingWakeups(sessions, sampled));
@@ -71,6 +77,7 @@ function createSessionWakeupMonitor({
 
     if (isConductorSessionId(event.id)) {
       schedulePendingWakeupDrain();
+      scheduleSessionInspect(event.id);
       return;
     }
     scheduleSessionInspect(event.id);
@@ -107,7 +114,8 @@ function createSessionWakeupMonitor({
 
   async function inspectSession(session, sessions, sampled) {
     const result = emptyResult();
-    if (!session?.id || !session?.taskId || isConductorSessionId(session.id)) return result;
+    if (!session?.id || !session?.taskId) return result;
+    if (isConductorSessionId(session.id)) return inspectConductorSession(session, sampled);
     const status = sampleSession(session, sampled);
     result.sampled += 1;
 
@@ -186,6 +194,89 @@ function createSessionWakeupMonitor({
     return result;
   }
 
+  async function inspectConductorSession(session, sampled) {
+    const result = emptyResult();
+    const status = sampleSession(session, sampled);
+    result.sampled += 1;
+    if (status.state === "running" && status.lastOutputAgeMs < conductorMessageQuietThresholdMs) return result;
+
+    const view = sessionStore.readSession({
+      taskId: session.taskId,
+      sessionId: session.id,
+      maxChars: 0,
+    });
+    const afterMessageCreatedAt = sessionStartedAtFromEvents(view.events);
+    const providerQuestion = await readConductorQuestion({
+      session,
+      status,
+      afterMessageCreatedAt,
+    });
+    if (providerQuestion?.answerText || providerQuestion?.questionText) {
+      sessionStore.recordState(
+        { taskId: session.taskId, sessionId: session.id },
+        "waiting_input",
+        conductorQuestionSummary(providerQuestion),
+        {
+          source: providerQuestion.source,
+          provider: providerQuestion.provider,
+          providerSessionId: providerQuestion.providerSessionId,
+          providerMessageId: providerQuestion.providerMessageId ?? providerQuestion.messageId,
+          providerQuestionPartId: providerQuestion.providerQuestionPartId ?? providerQuestion.questionPartId,
+          question: providerQuestion.questionText,
+        },
+      );
+      return result;
+    }
+
+    if (hasRecordedConductorMessageAtCursor(session, status, recordedConductorMessageCursors)) return result;
+
+    const providerMessage = await readConductorMessage({
+      session,
+      status,
+      afterMessageCreatedAt,
+    });
+    if (!providerMessage?.answerText) return result;
+    if (!hasCompletedProviderResult(providerMessage)) return result;
+
+    const messageKey = conductorMessageKey(session, providerMessage);
+    if (recordedConductorMessageKeys.has(messageKey)) return result;
+    if (view.events.some((event) => isRecordedConductorProviderMessage(event, providerMessage))) {
+      recordedConductorMessageKeys.add(messageKey);
+      recordedConductorMessageCursors.set(conductorSessionKey(session), status.cursor);
+      return result;
+    }
+
+    sessionStore.recordConductorMessage({
+      taskId: session.taskId,
+      sessionId: session.id,
+      message: providerMessage.answerText,
+      summary: "Conductor output message",
+      source: providerMessage.source,
+      provider: providerMessage.provider,
+      providerSessionId: providerMessage.providerSessionId,
+      providerMessageId: providerMessage.providerMessageId ?? providerMessage.messageId,
+      providerStepFinishId: providerMessage.providerStepFinishId ?? providerMessage.stepFinishId,
+      stepFinishReason: providerMessage.stepFinishReason,
+      completedAt: providerMessage.completedAt,
+      cursor: status.cursor,
+    });
+    sessionStore.recordState(
+      { taskId: session.taskId, sessionId: session.id },
+      "ready",
+      "Conductor provider turn completed.",
+      {
+        source: providerMessage.source,
+        provider: providerMessage.provider,
+        providerSessionId: providerMessage.providerSessionId,
+        providerMessageId: providerMessage.providerMessageId ?? providerMessage.messageId,
+      },
+    );
+    recordedConductorMessageKeys.add(messageKey);
+    recordedConductorMessageCursors.set(conductorSessionKey(session), status.cursor);
+    result.conductorMessagesRecorded += 1;
+    return result;
+  }
+
   function drainPendingWakeups(sessions = typeof ptyManager.list === "function" ? ptyManager.list() : [], sampled = new Map()) {
     const result = emptyResult();
     for (const wakeup of [...pendingWakeups.values()]) {
@@ -239,6 +330,16 @@ function createSessionWakeupMonitor({
   async function readDispatchResult({ session, dispatch, status }) {
     if (typeof dispatchResultReader !== "function") return undefined;
     return dispatchResultReader({ session, dispatch, status });
+  }
+
+  async function readConductorMessage({ session, status, afterMessageCreatedAt }) {
+    if (typeof conductorMessageReader !== "function") return undefined;
+    return conductorMessageReader({ session, status, afterMessageCreatedAt });
+  }
+
+  async function readConductorQuestion({ session, status, afterMessageCreatedAt }) {
+    if (typeof conductorQuestionReader !== "function") return undefined;
+    return conductorQuestionReader({ session, status, afterMessageCreatedAt });
   }
 
   function canWakeConductor(status) {
@@ -322,6 +423,7 @@ function emptyResult() {
     resultAvailable: 0,
     wakeupsSent: 0,
     wakeupsQueued: 0,
+    conductorMessagesRecorded: 0,
   };
 }
 
@@ -331,7 +433,42 @@ function addStats(target, source) {
   target.resultAvailable += source.resultAvailable ?? 0;
   target.wakeupsSent += source.wakeupsSent ?? 0;
   target.wakeupsQueued += source.wakeupsQueued ?? 0;
+  target.conductorMessagesRecorded += source.conductorMessagesRecorded ?? 0;
   return target;
+}
+
+function sessionStartedAtFromEvents(events = []) {
+  const started = events.find((event) => event.type === "session.started");
+  return started?.createdAt;
+}
+
+function conductorMessageKey(session, providerMessage) {
+  const providerMessageId = providerMessage.providerMessageId ?? providerMessage.messageId;
+  if (providerMessageId) return `${session.taskId}:${session.id}:${providerMessageId}`;
+  return `${session.taskId}:${session.id}:${providerMessage.completedAt ?? ""}:${String(providerMessage.answerText ?? "").slice(0, 200)}`;
+}
+
+function conductorSessionKey(session) {
+  return `${session.taskId}:${session.id}`;
+}
+
+function conductorQuestionSummary(providerQuestion) {
+  const question = String(providerQuestion?.questionText ?? "").trim();
+  if (question) return question;
+  const text = String(providerQuestion?.answerText ?? "").trim();
+  if (text) return text.slice(0, 240);
+  return "Conductor is waiting for user input.";
+}
+
+function hasRecordedConductorMessageAtCursor(session, status, recordedCursors) {
+  const previousCursor = recordedCursors.get(conductorSessionKey(session));
+  return Number.isFinite(previousCursor) && previousCursor >= status.cursor;
+}
+
+function isRecordedConductorProviderMessage(event, providerMessage) {
+  if (event.type !== "conductor.message") return false;
+  const providerMessageId = providerMessage.providerMessageId ?? providerMessage.messageId;
+  return Boolean(providerMessageId) && event.data?.providerMessageId === providerMessageId;
 }
 
 module.exports = {

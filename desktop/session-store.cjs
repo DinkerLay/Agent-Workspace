@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-function createSessionStore({ root }) {
+function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
   if (!root) {
     throw new Error("Session Store requires root.");
   }
@@ -12,7 +12,7 @@ function createSessionStore({ root }) {
     ensureSessionDir(session);
     const cursor = appendEvent(session, "session.started", undefined, `Started ${session.command ?? "session"}`);
     writeState(session, {
-      state: "running",
+      state: "ready",
       command: session.command,
       cwd: session.cwd,
       provider: session.provider,
@@ -31,19 +31,22 @@ function createSessionStore({ root }) {
   }
 
   function recordState(session, state, summary, data = {}) {
+    const runtimeState = normalizeSessionRuntimeState(state);
     const current = readJson(path.join(ensureSessionDir(session), "state.json")) ?? {};
-    if (current.state === state) {
+    if (normalizeSessionRuntimeState(current.state) === runtimeState) {
+      const cursor = latestKnownEventCursor(session, current.cursor ?? 0);
       writeState(session, {
-        state,
+        state: runtimeState,
+        cursor,
         lastStateSummary: summary,
         lastStateData: data,
         updatedAt: new Date().toISOString(),
       });
-      return current.cursor ?? 0;
+      return cursor;
     }
-    const cursor = appendEvent(session, `session.${state}`, undefined, summary, data);
+    const cursor = appendEvent(session, `session.${runtimeState}`, undefined, summary, data);
     writeState(session, {
-      state,
+      state: runtimeState,
       cursor,
       lastStateSummary: summary,
       lastStateData: data,
@@ -74,6 +77,11 @@ function createSessionStore({ root }) {
       dispatchId,
       conductorSessionId: record.conductorSessionId,
     });
+    writeState(session, {
+      state: "queued",
+      activeDispatchId: dispatchId,
+      updatedAt: new Date().toISOString(),
+    });
     return record;
   }
 
@@ -89,6 +97,11 @@ function createSessionStore({ root }) {
     writeJsonLines(dispatchesPath, dispatches);
     appendEvent(session, "dispatch.delivered", undefined, `Dispatch ${input.dispatchId} delivered`, {
       dispatchId: input.dispatchId,
+    });
+    writeState(session, {
+      state: "delivered_pending",
+      activeDispatchId: input.dispatchId,
+      updatedAt: new Date().toISOString(),
     });
   }
 
@@ -114,6 +127,37 @@ function createSessionStore({ root }) {
       reason: input.reason,
       message: input.message,
       error: input.error,
+    });
+    writeState(session, {
+      state: "delivery_failed",
+      activeDispatchId: input.dispatchId,
+      lastStateSummary: input.message ?? input.reason ?? "Dispatch failed",
+      lastStateData: {
+        dispatchId: input.dispatchId,
+        reason: input.reason,
+        message: input.message,
+        error: input.error,
+      },
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  function recordDispatchFailure(input) {
+    const toSessionId = String(input.toSessionId ?? "");
+    return recordTaskEvent({
+      taskId: input.taskId,
+      sessionId: toSessionId,
+      cwd: input.cwd,
+      type: "dispatch.failed",
+      summary: input.message ?? input.reason ?? "Dispatch route validation failed.",
+      data: {
+        dispatchId: input.dispatchId ? String(input.dispatchId) : "",
+        toSessionId,
+        assignment: input.assignment ?? "",
+        reason: input.reason,
+        message: input.message,
+        error: input.error,
+      },
     });
   }
 
@@ -178,6 +222,12 @@ function createSessionStore({ root }) {
         answerPreview: resultRecord.answerPreview,
       });
     }
+    writeState(session, {
+      state: "result_available",
+      activeDispatchId: input.dispatchId,
+      lastResultId: resultRecord.resultId,
+      updatedAt: new Date().toISOString(),
+    });
     return { ...resultRecord, status: updated.status, changed };
   }
 
@@ -199,29 +249,70 @@ function createSessionStore({ root }) {
     );
   }
 
+  function recordConductorMessage(input) {
+    const message = String(input.message ?? "");
+    return recordTaskEvent({
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      cwd: input.cwd,
+      type: "conductor.message",
+      summary: input.summary ?? message.slice(0, 160),
+      data: {
+        message,
+        source: input.source ?? "conductor",
+        provider: input.provider,
+        providerSessionId: input.providerSessionId,
+        providerMessageId: input.providerMessageId,
+        providerStepFinishId: input.providerStepFinishId,
+        stepFinishReason: input.stepFinishReason,
+        completedAt: Number.isFinite(input.completedAt) ? input.completedAt : undefined,
+        cursor: Number.isFinite(input.cursor) ? input.cursor : undefined,
+      },
+    });
+  }
+
+  function recordTaskCompletionClaim(input) {
+    const message = String(input.message ?? "");
+    return recordTaskEvent({
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      cwd: input.cwd,
+      type: "task.completion_claim",
+      summary: input.summary ?? "Task completion claimed by Conductor",
+      data: {
+        message,
+        source: input.source ?? "conductor",
+      },
+    });
+  }
+
   function readSession(input) {
     const session = { taskId: input.taskId, sessionId: input.sessionId };
     const dir = ensureSessionDir(session);
-    const state = readJson(path.join(dir, "state.json")) ?? { state: "idle", cursor: 0 };
+    const state = readJson(path.join(dir, "state.json")) ?? { state: "ready", cursor: 0 };
     const sinceCursor = normalizeCursor(input.sinceCursor);
-    const events = readableEvents(readJsonLines(path.join(dir, "events.jsonl"))).filter(
+    const events = readableEvents(readViewJsonLines(path.join(dir, "events.jsonl"))).filter(
       (event) => event.cursor > sinceCursor,
     );
-    const taskMessages = readJsonLines(path.join(resolveRoot(session), safeSegment(input.taskId), "messages.jsonl")).filter(
+    const taskMessages = readViewJsonLines(path.join(resolveRoot(session), safeSegment(input.taskId), "messages.jsonl")).filter(
       (message) => message.sessionId === input.sessionId,
     );
 
+    const dispatches = readJsonLines(path.join(dir, "dispatches.jsonl"));
+    const results = readViewJsonLines(path.join(dir, "results.jsonl"));
+    const projection = projectSessionRuntimeState(state.state, dispatches, results);
+
     return {
       sessionId: input.sessionId,
-      state: state.state ?? "idle",
+      ...projection,
       cursor: state.cursor ?? events.at(-1)?.cursor ?? 0,
       cleanTranscriptTail: "",
       events,
-      dispatches: readJsonLines(path.join(dir, "dispatches.jsonl")),
-      results: readJsonLines(path.join(dir, "results.jsonl")),
+      dispatches,
+      results,
       messages: taskMessages,
-      permissions: readJsonLines(path.join(dir, "permissions.jsonl")),
-      artifacts: readJsonLines(path.join(dir, "artifacts.jsonl")),
+      permissions: readViewJsonLines(path.join(dir, "permissions.jsonl")),
+      artifacts: readViewJsonLines(path.join(dir, "artifacts.jsonl")),
     };
   }
 
@@ -229,7 +320,7 @@ function createSessionStore({ root }) {
     const taskId = String(input.taskId ?? "");
     const taskRoot = path.join(resolveRoot({ taskId }), safeSegment(taskId));
     const taskEventsPath = path.join(taskRoot, "events.jsonl");
-    const taskEvents = readableEvents(readJsonLines(taskEventsPath));
+    const taskEvents = readableEvents(readViewJsonLines(taskEventsPath));
     const sinceCursor = normalizeCursor(input.sinceCursor);
     const sessionsRoot = path.join(taskRoot, "sessions");
     const sessionDirs = fs.existsSync(sessionsRoot)
@@ -238,22 +329,23 @@ function createSessionStore({ root }) {
     const sessions = [];
     const dispatches = [];
     const results = [];
-    const messages = readJsonLines(path.join(taskRoot, "messages.jsonl"));
+    const messages = readViewJsonLines(path.join(taskRoot, "messages.jsonl"));
     const permissions = [];
     const artifacts = [];
 
     for (const entry of sessionDirs) {
       const dir = path.join(sessionsRoot, entry.name);
-      const state = readJson(path.join(dir, "state.json")) ?? {};
       const sessionDispatches = readJsonLines(path.join(dir, "dispatches.jsonl"));
-      const sessionResults = readJsonLines(path.join(dir, "results.jsonl"));
-      const sessionPermissions = readJsonLines(path.join(dir, "permissions.jsonl"));
-      const sessionArtifacts = readJsonLines(path.join(dir, "artifacts.jsonl"));
+      const state = readJson(path.join(dir, "state.json")) ?? {};
+      const sessionResults = readViewJsonLines(path.join(dir, "results.jsonl"));
+      const sessionPermissions = readViewJsonLines(path.join(dir, "permissions.jsonl"));
+      const sessionArtifacts = readViewJsonLines(path.join(dir, "artifacts.jsonl"));
       const sessionId = state.sessionId ?? sessionDispatches[0]?.toSessionId ?? sessionResults[0]?.sessionId ?? entry.name;
 
+      const projection = projectSessionRuntimeState(state.state, sessionDispatches, sessionResults);
       sessions.push({
         sessionId,
-        state: state.state ?? "idle",
+        ...projection,
         cursor: state.cursor ?? 0,
         updatedAt: state.updatedAt,
         lastStateSummary: state.lastStateSummary,
@@ -284,7 +376,16 @@ function createSessionStore({ root }) {
       ? pathFor({ taskId: input.taskId, sessionId: input.sessionId }, "events.jsonl")
       : path.join(resolveRoot(input), safeSegment(input.taskId), "events.jsonl");
     const sinceCursor = normalizeCursor(input.sinceCursor);
-    return readableEvents(readJsonLines(file)).filter((event) => event.cursor > sinceCursor);
+    return readableEvents(readViewJsonLines(file)).filter((event) => event.cursor > sinceCursor);
+  }
+
+  function latestKnownEventCursor(session, fallback = 0) {
+    const taskEventsPath = path.join(resolveRoot(session), safeSegment(session.taskId), "events.jsonl");
+    if (!fs.existsSync(taskEventsPath)) return Number(fallback) || 0;
+    return readJsonLines(taskEventsPath).reduce((max, event) => {
+      const cursor = Number(event?.cursor);
+      return Number.isFinite(cursor) ? Math.max(max, cursor) : max;
+    }, Number(fallback) || 0);
   }
 
   function recordTaskEvent(input) {
@@ -387,6 +488,10 @@ function createSessionStore({ root }) {
       .flatMap((entry) => readJsonLines(path.join(sessionsRoot, entry.name, "dispatches.jsonl")));
   }
 
+  function readViewJsonLines(file) {
+    return readJsonLines(file, { maxBytes: jsonlReadTailBytes });
+  }
+
   return {
     startSession,
     recordOutput,
@@ -394,8 +499,11 @@ function createSessionStore({ root }) {
     recordDispatch,
     markDispatchDelivered,
     markDispatchFailed,
+    recordDispatchFailure,
     recordDispatchResult,
+    recordConductorMessage,
     recordConductorWakeup,
+    recordTaskCompletionClaim,
     readSession,
     readTaskState,
     readEvents,
@@ -415,16 +523,32 @@ function buildTaskPendingDecisions({ sessions, dispatches, results, permissions 
       sessionId: dispatch.toSessionId,
       resultId: resultIds.has(dispatch.resultId) ? dispatch.resultId : undefined,
       cursor: dispatch.resultCursor,
+      severity: "info",
+      actionHint: "read_result",
     });
   }
 
   for (const session of sessions) {
-    if (session.state === "waiting" || session.state === "blocked" || session.state === "timeout") {
+    if (
+      session.state === "waiting_input" ||
+      session.state === "permission_required" ||
+      session.state === "blocked" ||
+      session.state === "timeout" ||
+      session.state === "delivery_failed" ||
+      session.state === "result_invalid" ||
+      session.state === "exited"
+    ) {
+      const sessionDispatches = dispatches.filter((dispatch) => dispatch.toSessionId === session.sessionId);
       decisions.push({
         type: `session_${session.state}`,
         sessionId: session.sessionId,
+        dispatchId: session.state === "delivery_failed" ? session.unresolvedFailureDispatchId : undefined,
         cursor: session.cursor,
         summary: session.lastStateSummary,
+        severity: sessionDecisionSeverity(session.state),
+        actionHint: sessionDecisionActionHint(session.state),
+        relatedDispatchIds:
+          session.state === "delivery_failed" ? relatedDispatchIdsForDeliveryFailure(session, sessionDispatches) : undefined,
       });
     }
   }
@@ -437,11 +561,143 @@ function buildTaskPendingDecisions({ sessions, dispatches, results, permissions 
       sessionId: permission.sessionId,
       permissionId: permission.permissionId,
       summary: permission.summary,
+      severity: "attention",
+      actionHint: "resolve_permission",
     });
   }
 
   return decisions;
 }
+
+function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
+  const state = normalizeSessionRuntimeState(rawState);
+  const resultDispatches = dispatches.filter((dispatch) => dispatch.status === "result_available");
+  const activeDispatches = dispatches.filter((dispatch) => dispatch.status === "queued" || dispatch.status === "delivered");
+  const failedDispatches = dispatches.filter((dispatch) => dispatch.status === "failed");
+  const latestActiveDispatch = activeDispatches.at(-1);
+  const latestResultDispatch = resultDispatches.at(-1);
+  const latestFailedDispatch = failedDispatches.at(-1);
+  const latestFailedIndex = latestFailedDispatch ? dispatches.findLastIndex((dispatch) => dispatch === latestFailedDispatch) : -1;
+  const latestResultIndex = latestResultDispatch ? dispatches.findLastIndex((dispatch) => dispatch === latestResultDispatch) : -1;
+  const unresolvedFailureDispatch =
+    latestFailedDispatch && latestFailedIndex >= latestResultIndex ? latestFailedDispatch : undefined;
+  const latestResult = results.at(-1);
+  const resultCount = Math.max(results.length, resultDispatches.filter((dispatch) => dispatch.resultId).length);
+  const lastResultId = latestResult?.resultId ?? latestResultDispatch?.resultId;
+  const attentionHints = [];
+
+  let projectedState = state;
+  if (PROVIDER_ATTENTION_STATES.has(state) || PROCESS_UNAVAILABLE_STATES.has(state)) {
+    projectedState = state;
+  } else if (latestActiveDispatch?.status === "queued") {
+    projectedState = "queued";
+  } else if (latestActiveDispatch?.status === "delivered") {
+    projectedState = state === "running" ? "running" : "delivered_pending";
+  } else if (unresolvedFailureDispatch) {
+    projectedState = "delivery_failed";
+  } else if (latestResultDispatch || latestResult) {
+    projectedState = "result_available";
+  }
+
+  if (ATTENTION_RUNTIME_STATES.has(projectedState)) attentionHints.push(projectedState);
+  if (resultCount > 0 || lastResultId) attentionHints.push("result_available");
+
+  return {
+    state: projectedState,
+    activeDispatchId: latestActiveDispatch?.dispatchId ?? unresolvedFailureDispatch?.dispatchId,
+    lastResultId,
+    resultCount,
+    unresolvedFailureDispatchId: unresolvedFailureDispatch?.dispatchId,
+    attentionHints: [...new Set(attentionHints)],
+    assignmentReadinessHint: assignmentReadinessHintForState(projectedState, {
+      resultCount,
+      lastResultId,
+      latestActiveDispatch,
+    }),
+  };
+}
+
+function sessionDecisionSeverity(state) {
+  if (state === "waiting_input" || state === "permission_required") return "attention";
+  return "blocking";
+}
+
+function sessionDecisionActionHint(state) {
+  const hints = {
+    waiting_input: "provide_input",
+    permission_required: "resolve_permission",
+    blocked: "recover_blocked",
+    timeout: "recover_timeout",
+    delivery_failed: "recover_delivery",
+    result_invalid: "inspect_invalid_result",
+    exited: "restart_or_recover",
+  };
+  return hints[state] ?? "inspect_state";
+}
+
+function relatedDispatchIdsForDeliveryFailure(session, dispatches) {
+  const ids = [];
+  for (const dispatch of dispatches) {
+    if (dispatch.status === "result_available" || dispatch.dispatchId === session.unresolvedFailureDispatchId) {
+      ids.push(dispatch.dispatchId);
+    }
+  }
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function assignmentReadinessHintForState(state, context = {}) {
+  if (state === "ready" || state === "result_available" || state === "waiting_conductor") return "ready";
+  if (
+    state === "delivery_failed" &&
+    !context.latestActiveDispatch &&
+    (Number(context.resultCount ?? 0) > 0 || Boolean(context.lastResultId))
+  ) {
+    return "ready";
+  }
+  return "not_ready";
+}
+
+const PROVIDER_ATTENTION_STATES = new Set(["waiting_input", "permission_required", "blocked", "timeout", "result_invalid"]);
+const PROCESS_UNAVAILABLE_STATES = new Set(["stopping", "stopped", "exited", "start_failed"]);
+const ATTENTION_RUNTIME_STATES = new Set([
+  "waiting_input",
+  "permission_required",
+  "blocked",
+  "timeout",
+  "delivery_failed",
+  "result_invalid",
+  "exited",
+  "start_failed",
+]);
+
+function normalizeSessionRuntimeState(state) {
+  const value = String(state ?? "").trim();
+  if (value === "idle") return "ready";
+  if (value === "waiting") return "waiting_input";
+  if (RUNTIME_SESSION_STATES.has(value)) return value;
+  return "ready";
+}
+
+const RUNTIME_SESSION_STATES = new Set([
+  "not_started",
+  "starting",
+  "ready",
+  "queued",
+  "delivered_pending",
+  "running",
+  "waiting_input",
+  "permission_required",
+  "waiting_conductor",
+  "result_available",
+  "result_invalid",
+  "blocked",
+  "timeout",
+  "delivery_failed",
+  "stopping",
+  "stopped",
+  "exited",
+  "start_failed",
+]);
 
 function createResultRecord(input) {
   const answerText = String(input.answerText ?? "");
@@ -527,13 +783,36 @@ function readJson(file) {
   }
 }
 
-function readJsonLines(file) {
+function readJsonLines(file, options = {}) {
   if (!fs.existsSync(file)) return [];
-  return fs
-    .readFileSync(file, "utf8")
+  const text = readJsonLinesText(file, options.maxBytes);
+  if (!text.trim()) return [];
+  return text
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+function readJsonLinesText(file, maxBytes) {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+    return fs.readFileSync(file, "utf8");
+  }
+  const size = fs.statSync(file).size;
+  if (size <= maxBytes) {
+    return fs.readFileSync(file, "utf8");
+  }
+  const length = Math.min(size, Math.floor(maxBytes));
+  const buffer = Buffer.alloc(length);
+  const fd = fs.openSync(file, "r");
+  try {
+    fs.readSync(fd, buffer, 0, length, size - length);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const text = buffer.toString("utf8");
+  const firstNewline = text.indexOf("\n");
+  if (firstNewline < 0) return "";
+  return text.slice(firstNewline + 1);
 }
 
 function readTail(file, maxChars) {

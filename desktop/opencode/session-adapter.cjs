@@ -136,6 +136,214 @@ async function getLastEffectiveAssistantAnswer({
   };
 }
 
+async function getLastEffectiveAssistantAnswerForDirectory({
+  cwd,
+  afterMessageCreatedAt = 0,
+  query = sqliteJsonQuery,
+  dbPath,
+  sqlitePath,
+}) {
+  const directory = String(cwd ?? "").trim();
+  if (!directory) return undefined;
+  const afterTimestamp = normalizeOptionalTimestamp(afterMessageCreatedAt) ?? 0;
+
+  const sql = `
+    with latest_message as (
+      select
+        m.session_id as sessionId,
+        m.id as messageId,
+        m.time_created as messageCreatedAt,
+        json_extract(m.data, '$.time.completed') as completedAt,
+        sf.id as stepFinishId,
+        sf.time_created as stepFinishedAt,
+        json_extract(sf.data, '$.reason') as stepFinishReason
+      from message m
+      join session s on s.id = m.session_id
+      join part sf on sf.message_id = m.id
+      where (s.directory = ${sqlString(directory)} or s.path = ${sqlString(directory)})
+        and json_extract(m.data, '$.role') = 'assistant'
+        and m.time_created >= ${sqlNumber(afterTimestamp)}
+        and json_extract(sf.data, '$.type') = 'step-finish'
+        and json_extract(sf.data, '$.reason') = 'stop'
+        and exists (
+          select 1
+          from part p
+          where p.message_id = m.id
+            and json_extract(p.data, '$.type') = 'text'
+            and coalesce(json_extract(p.data, '$.ignored'), 0) = 0
+            and length(trim(coalesce(json_extract(p.data, '$.text'), ''))) > 0
+        )
+      order by m.time_created desc, sf.time_created desc
+      limit 1
+    )
+    select
+      latest_message.sessionId as sessionId,
+      latest_message.messageId as messageId,
+      latest_message.messageCreatedAt as messageCreatedAt,
+      latest_message.completedAt as completedAt,
+      latest_message.stepFinishId as stepFinishId,
+      latest_message.stepFinishedAt as stepFinishedAt,
+      latest_message.stepFinishReason as stepFinishReason,
+      p.id as partId,
+      p.time_created as partCreatedAt,
+      json_extract(p.data, '$.text') as text
+    from latest_message
+    join part p on p.message_id = latest_message.messageId
+    where json_extract(p.data, '$.type') = 'text'
+      and coalesce(json_extract(p.data, '$.ignored'), 0) = 0
+      and length(trim(coalesce(json_extract(p.data, '$.text'), ''))) > 0
+    order by p.time_created asc, p.id asc
+  `;
+  const rows = await query(sql, { dbPath, sqlitePath });
+  if (!rows.length) return undefined;
+
+  const answerText = rows
+    .map((row) => String(row.text ?? ""))
+    .filter((text) => text.trim().length > 0)
+    .join("\n\n")
+    .trim();
+  if (!answerText) return undefined;
+
+  return {
+    provider: "opencode",
+    providerSessionId: String(rows[0].sessionId),
+    messageId: String(rows[0].messageId),
+    messageCreatedAt: Number(rows[0].messageCreatedAt ?? 0),
+    completedAt: normalizeOptionalNumber(rows[0].completedAt) ?? normalizeOptionalNumber(rows[0].stepFinishedAt),
+    stepFinishId: rows[0].stepFinishId ? String(rows[0].stepFinishId) : undefined,
+    stepFinishedAt: normalizeOptionalNumber(rows[0].stepFinishedAt),
+    stepFinishReason: rows[0].stepFinishReason ? String(rows[0].stepFinishReason) : undefined,
+    answerText,
+    source: "opencode-message-parts",
+  };
+}
+
+async function getLastPendingQuestionForDirectory({
+  cwd,
+  afterMessageCreatedAt = 0,
+  query = sqliteJsonQuery,
+  dbPath,
+  sqlitePath,
+}) {
+  const directory = String(cwd ?? "").trim();
+  if (!directory) return undefined;
+  const afterTimestamp = normalizeOptionalTimestamp(afterMessageCreatedAt) ?? 0;
+
+  const sql = `
+    with latest_question as (
+      select
+        m.session_id as sessionId,
+        m.id as messageId,
+        m.time_created as messageCreatedAt,
+        q.id as questionPartId,
+        q.time_created as questionPartCreatedAt,
+        json_extract(q.data, '$.state.input.questions[0].question') as questionText,
+        json_extract(q.data, '$.state.input.questions[0].header') as questionHeader
+      from message m
+      join session s on s.id = m.session_id
+      join part q on q.message_id = m.id
+      where (s.directory = ${sqlString(directory)} or s.path = ${sqlString(directory)})
+        and json_extract(m.data, '$.role') = 'assistant'
+        and m.time_created >= ${sqlNumber(afterTimestamp)}
+        and json_extract(q.data, '$.type') = 'tool'
+        and json_extract(q.data, '$.tool') = 'question'
+        and json_extract(q.data, '$.state.status') = 'running'
+      order by m.time_created desc, q.time_created desc
+      limit 1
+    )
+    select
+      latest_question.sessionId as sessionId,
+      latest_question.messageId as messageId,
+      latest_question.messageCreatedAt as messageCreatedAt,
+      latest_question.questionPartId as questionPartId,
+      latest_question.questionPartCreatedAt as questionPartCreatedAt,
+      latest_question.questionText as questionText,
+      latest_question.questionHeader as questionHeader,
+      t.id as textPartId,
+      t.time_created as textPartCreatedAt,
+      json_extract(t.data, '$.text') as assistantText
+    from latest_question
+    left join part t on t.message_id = latest_question.messageId
+      and json_extract(t.data, '$.type') = 'text'
+      and coalesce(json_extract(t.data, '$.ignored'), 0) = 0
+      and length(trim(coalesce(json_extract(t.data, '$.text'), ''))) > 0
+    order by t.time_created asc, t.id asc
+  `;
+  const rows = await query(sql, { dbPath, sqlitePath });
+  return createPendingQuestionResult(rows);
+}
+
+async function getLastPendingQuestionForConductorTask({
+  cwd,
+  taskId,
+  afterMessageCreatedAt = 0,
+  query = sqliteJsonQuery,
+  dbPath,
+  sqlitePath,
+}) {
+  const directory = String(cwd ?? "").trim();
+  const task = String(taskId ?? "").trim();
+  if (!directory || !task) return undefined;
+  const afterTimestamp = normalizeOptionalTimestamp(afterMessageCreatedAt) ?? 0;
+  const startMarker = "Start this Agent Workspace task now.";
+  const taskMarker = `Task id: ${task}`;
+
+  const sql = `
+    with conductor_session as (
+      select m.session_id as sessionId
+      from message m
+      join session s on s.id = m.session_id
+      join part p on p.message_id = m.id
+      where (s.directory = ${sqlString(directory)} or s.path = ${sqlString(directory)})
+        and json_extract(m.data, '$.role') = 'user'
+        and json_extract(p.data, '$.type') = 'text'
+        and instr(coalesce(json_extract(p.data, '$.text'), ''), ${sqlString(startMarker)}) > 0
+        and instr(coalesce(json_extract(p.data, '$.text'), ''), ${sqlString(taskMarker)}) > 0
+      order by m.time_created desc
+      limit 1
+    ),
+    latest_question as (
+      select
+        m.session_id as sessionId,
+        m.id as messageId,
+        m.time_created as messageCreatedAt,
+        q.id as questionPartId,
+        q.time_created as questionPartCreatedAt,
+        json_extract(q.data, '$.state.input.questions[0].question') as questionText,
+        json_extract(q.data, '$.state.input.questions[0].header') as questionHeader
+      from message m
+      join conductor_session cs on cs.sessionId = m.session_id
+      join part q on q.message_id = m.id
+      where json_extract(m.data, '$.role') = 'assistant'
+        and m.time_created >= ${sqlNumber(afterTimestamp)}
+        and json_extract(q.data, '$.type') = 'tool'
+        and json_extract(q.data, '$.tool') = 'question'
+        and json_extract(q.data, '$.state.status') = 'running'
+      order by m.time_created desc, q.time_created desc
+      limit 1
+    )
+    select
+      latest_question.sessionId as sessionId,
+      latest_question.messageId as messageId,
+      latest_question.messageCreatedAt as messageCreatedAt,
+      latest_question.questionPartId as questionPartId,
+      latest_question.questionPartCreatedAt as questionPartCreatedAt,
+      latest_question.questionText as questionText,
+      latest_question.questionHeader as questionHeader,
+      t.id as textPartId,
+      t.time_created as textPartCreatedAt,
+      json_extract(t.data, '$.text') as assistantText
+    from latest_question
+    left join part t on t.message_id = latest_question.messageId
+      and json_extract(t.data, '$.type') = 'text'
+      and coalesce(json_extract(t.data, '$.ignored'), 0) = 0
+      and length(trim(coalesce(json_extract(t.data, '$.text'), ''))) > 0
+    order by t.time_created asc, t.id asc
+  `;
+  const rows = await query(sql, { dbPath, sqlitePath });
+  return createPendingQuestionResult(rows);
+}
+
 async function getFirstEffectiveAssistantAnswerAfter({
   providerSessionId,
   afterMessageCreatedAt = 0,
@@ -279,11 +487,40 @@ function normalizeOptionalTimestamp(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function createPendingQuestionResult(rows) {
+  if (!rows.length) return undefined;
+
+  const assistantText = rows
+    .map((row) => String(row.assistantText ?? ""))
+    .filter((text) => text.trim().length > 0)
+    .join("\n\n")
+    .trim();
+  const questionText = String(rows[0].questionText ?? "").trim();
+  const questionHeader = String(rows[0].questionHeader ?? "").trim();
+  if (!questionText && !assistantText && !questionHeader) return undefined;
+
+  return {
+    provider: "opencode",
+    providerSessionId: String(rows[0].sessionId),
+    messageId: String(rows[0].messageId),
+    messageCreatedAt: Number(rows[0].messageCreatedAt ?? 0),
+    questionPartId: rows[0].questionPartId ? String(rows[0].questionPartId) : undefined,
+    questionPartCreatedAt: normalizeOptionalNumber(rows[0].questionPartCreatedAt),
+    questionText,
+    questionHeader: questionHeader || undefined,
+    answerText: assistantText || questionText || questionHeader,
+    source: "opencode-question-tool",
+  };
+}
+
 module.exports = {
   defaultOpencodeDbPath,
   findProviderSessionForDispatch,
   getDispatchAssistantAnswer,
   getFirstEffectiveAssistantAnswerAfter,
   getLastEffectiveAssistantAnswer,
+  getLastEffectiveAssistantAnswerForDirectory,
+  getLastPendingQuestionForConductorTask,
+  getLastPendingQuestionForDirectory,
   sqliteJsonQuery,
 };

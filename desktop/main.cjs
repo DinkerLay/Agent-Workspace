@@ -7,7 +7,12 @@ const {
 } = require("./conductor-tool-bridge.cjs");
 const { ensureNodePtySpawnHelperExecutable } = require("./node-pty-runtime.cjs");
 const { inspectOpencodeProcesses } = require("./opencode/process-inspector.cjs");
-const { getDispatchAssistantAnswer } = require("./opencode/session-adapter.cjs");
+const {
+  findProviderSessionForDispatch,
+  getDispatchAssistantAnswer,
+  getLastEffectiveAssistantAnswerForDirectory,
+  getLastPendingQuestionForConductorTask,
+} = require("./opencode/session-adapter.cjs");
 const { getRuntimeStatus, listOpencodeAgents, resolveOpencodePath, runOpencode } = require("./opencode-runner.cjs");
 const { createPtyManager } = require("./pty-manager.cjs");
 const { createSessionWakeupMonitor } = require("./session-wakeup-monitor.cjs");
@@ -65,6 +70,7 @@ conductorToolBridge = createConductorToolBridge({
       requirePty: realPtyAvailable,
     });
   },
+  confirmWorkerAssignmentDelivery: confirmProviderDispatchDelivery,
   validateDispatch: ({ taskId, toSessionId }) => {
     if (!taskId || !toSessionId) return { ok: false, reason: "missing-task-or-session" };
     if (!isCanonicalWorkspaceSessionId(toSessionId)) return { ok: false, reason: "invalid-session-id" };
@@ -76,6 +82,8 @@ sessionWakeupMonitor = createSessionWakeupMonitor({
   ptyManager,
   sessionStore: runtimeSessionStore,
   dispatchResultReader: readProviderDispatchResult,
+  conductorMessageReader: readProviderConductorMessage,
+  conductorQuestionReader: readProviderConductorQuestion,
 });
 sessionWakeupMonitor.start();
 
@@ -288,6 +296,32 @@ function readProviderDispatchResult({ session, dispatch }) {
     dispatchId: dispatch.dispatchId,
     cwd: session.cwd,
     dispatchCreatedAt: dispatch.createdAt,
+  }).catch(() => undefined);
+}
+
+function confirmProviderDispatchDelivery({ session, dispatch }) {
+  if (!isOpencodeSession(session)) return { provider: "unknown", delivery: "unverified-non-opencode" };
+  return findProviderSessionForDispatch({
+    dispatchId: dispatch.dispatchId,
+    cwd: session.cwd,
+    dispatchCreatedAt: dispatch.createdAt,
+  }).catch(() => undefined);
+}
+
+function readProviderConductorMessage({ session, afterMessageCreatedAt }) {
+  if (!isOpencodeSession(session)) return undefined;
+  return getLastEffectiveAssistantAnswerForDirectory({
+    cwd: session.cwd,
+    afterMessageCreatedAt,
+  }).catch(() => undefined);
+}
+
+function readProviderConductorQuestion({ session, afterMessageCreatedAt }) {
+  if (!isOpencodeSession(session)) return undefined;
+  return getLastPendingQuestionForConductorTask({
+    cwd: session.cwd,
+    taskId: session.taskId,
+    afterMessageCreatedAt,
   }).catch(() => undefined);
 }
 

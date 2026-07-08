@@ -1,11 +1,19 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-function createPtyManager({ pty, spawn, sessionStore }) {
+function createPtyManager({
+  pty,
+  spawn,
+  sessionStore,
+  maxTranscriptChunks = 2_000,
+  stoppedSessionRetentionMs = 5 * 60 * 1_000,
+  now = () => Date.now(),
+}) {
   const sessions = new Map();
   const eventListeners = new Set();
 
   function start(input) {
+    cleanupStoppedSessions();
     if (!input.id) {
       throw new Error("PTY session requires id, command, and cwd.");
     }
@@ -52,6 +60,10 @@ function createPtyManager({ pty, spawn, sessionStore }) {
       rows,
       stdin,
       transcript,
+      transcriptBaseCursor: 0,
+      cursor: 0,
+      maxTranscriptChunks,
+      now,
       sessionStore,
       pid: proc.pid,
       process: proc,
@@ -74,19 +86,22 @@ function createPtyManager({ pty, spawn, sessionStore }) {
   }
 
   function get(id) {
+    cleanupStoppedSessions();
     const session = sessions.get(id);
     return session ? publicSession(session) : undefined;
   }
 
   function list() {
+    cleanupStoppedSessions();
     return Array.from(sessions.values()).map((session) => publicSession(session));
   }
 
   function read(id, cursor = 0) {
+    cleanupStoppedSessions();
     const session = sessions.get(id);
     if (!session) return undefined;
-    const start = normalizeCursor(cursor, session.transcript.length);
-    return publicSession(session, session.transcript.slice(start), session.transcript.length);
+    const start = normalizeReadStart(cursor, session);
+    return publicSession(session, session.transcript.slice(start), session.cursor);
   }
 
   function write(id, text) {
@@ -97,7 +112,7 @@ function createPtyManager({ pty, spawn, sessionStore }) {
     } else {
       session.process.stdin?.write(text);
     }
-    return publicSession(session, [], session.transcript.length);
+    return publicSession(session, [], session.cursor);
   }
 
   function resize(id, size) {
@@ -108,15 +123,16 @@ function createPtyManager({ pty, spawn, sessionStore }) {
     if (typeof session.process.resize === "function") {
       session.process.resize(size.cols, size.rows);
     }
-    return publicSession(session, [], session.transcript.length);
+    return publicSession(session, [], session.cursor);
   }
 
   function stop(id) {
     const session = sessions.get(id);
-    if (!session || session.status !== "running") return undefined;
+    if (!session || (session.status !== "running" && session.status !== "stopping")) return undefined;
+    const signal = session.status === "stopping" ? "SIGKILL" : "SIGTERM";
     session.status = "stopping";
-    session.signal = session.signal ?? "SIGTERM";
-    session.process.kill();
+    session.signal = signal;
+    session.process.kill(signal);
     return publicSession(session);
   }
 
@@ -130,9 +146,22 @@ function createPtyManager({ pty, spawn, sessionStore }) {
       id: session.id,
       state: session.status,
       summary: `PTY lifecycle is ${session.status}.`,
-      cursor: session.transcript.length,
+      cursor: session.cursor,
       lastOutputAgeMs,
     };
+  }
+
+  function cleanupStoppedSessions() {
+    if (!Number.isFinite(stoppedSessionRetentionMs) || stoppedSessionRetentionMs < 0) return 0;
+    const cutoff = now() - stoppedSessionRetentionMs;
+    let removed = 0;
+    for (const [id, session] of sessions) {
+      if (session.status !== "stopped") continue;
+      if (!Number.isFinite(session.stoppedAtMs) || session.stoppedAtMs > cutoff) continue;
+      sessions.delete(id);
+      removed += 1;
+    }
+    return removed;
   }
 
   function onEvent(listener) {
@@ -148,7 +177,7 @@ function createPtyManager({ pty, spawn, sessionStore }) {
     }
   }
 
-  return { start, get, list, read, write, resize, stop, onEvent, sampleStatus };
+  return { start, get, list, read, write, resize, stop, onEvent, sampleStatus, cleanupStoppedSessions };
 }
 
 function isLiveSession(session) {
@@ -244,7 +273,7 @@ function bindProcessEvents(proc, backend, session, transcript, emitEvent) {
   });
 }
 
-function publicSession(session, transcript = session.transcript, cursor = session.transcript.length) {
+function publicSession(session, transcript = session.transcript, cursor = session.cursor ?? session.transcript.length) {
   return {
     id: session.id,
     command: session.command,
@@ -268,7 +297,12 @@ function publicSession(session, transcript = session.transcript, cursor = sessio
 
 function recordTranscriptChunk(session, transcript, chunk, emitEvent) {
   const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+  session.cursor += 1;
   transcript.push(text);
+  while (transcript.length > session.maxTranscriptChunks) {
+    transcript.shift();
+    session.transcriptBaseCursor += 1;
+  }
   session.lastOutputAt = new Date().toISOString();
   session.sessionStore?.recordOutput(
     {
@@ -282,11 +316,12 @@ function recordTranscriptChunk(session, transcript, chunk, emitEvent) {
     type: "data",
     id: session.id,
     chunk: text,
-    cursor: transcript.length,
+    cursor: session.cursor,
   });
 }
 
 function emitExitEvent(session, emitEvent) {
+  session.stoppedAtMs = session.now();
   session.sessionStore?.recordState(
     {
       taskId: session.taskId ?? "unscoped-task",
@@ -306,15 +341,15 @@ function emitExitEvent(session, emitEvent) {
     status: session.status,
     exitCode: session.exitCode,
     signal: session.signal,
-    cursor: session.transcript.length,
+    cursor: session.cursor,
   });
 }
 
-function normalizeCursor(cursor, transcriptLength) {
+function normalizeReadStart(cursor, session) {
   const value = Number(cursor);
-  if (!Number.isFinite(value) || value < 0) return 0;
-  if (value > transcriptLength) return transcriptLength;
-  return Math.floor(value);
+  if (!Number.isFinite(value) || value <= session.transcriptBaseCursor) return 0;
+  if (value >= session.cursor) return session.transcript.length;
+  return Math.floor(value - session.transcriptBaseCursor);
 }
 
 function inferProvider(command) {

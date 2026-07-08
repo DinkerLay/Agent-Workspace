@@ -6,6 +6,7 @@ function createConductorToolBridge({
   ptyManager,
   startWorkerSession,
   validateDispatch,
+  confirmWorkerAssignmentDelivery,
   deliveryTimeoutMs = 15_000,
   deliveryPollIntervalMs = 250,
 }) {
@@ -20,6 +21,7 @@ function createConductorToolBridge({
         toSessionId,
         assignment,
         reason: validation.reason,
+        message: validation.reason ?? "Dispatch route validation failed.",
       });
       return callSessionFailure({
         dispatchId: "",
@@ -67,15 +69,16 @@ function createConductorToolBridge({
       });
     }
 
-    if (await waitForWorkerAssignmentDelivery(dispatch)) {
+    if (await waitForWorkerAssignmentDelivery(dispatch, { force: Boolean(input?.force) })) {
       return callSessionDelivered(dispatch);
     }
 
+    const targetState = workerSessionRuntimeState(dispatch);
     return failDispatch(dispatch, {
       errorCode: "target_session_delivery_timeout",
       message:
         "Target session started but did not become ready for assignment delivery before timeout. Conductor may retry later or ask the user.",
-      targetSessionState: "running_not_ready",
+      targetSessionState: targetState.state,
     });
   }
 
@@ -105,40 +108,134 @@ function createConductorToolBridge({
     };
   }
 
+  async function claimTaskCompletion(input) {
+    const taskId = String(input?.taskId ?? "");
+    const sessionId = String(input?.sessionId ?? resolveConductorSessionIdForTask({ taskId, ptyManager }) ?? "");
+    const message = String(input?.message ?? "");
+    if (typeof sessionStore.recordTaskCompletionClaim !== "function") {
+      return {
+        ok: false,
+        taskId,
+        sessionId,
+        status: "failed",
+        eventType: "task.completion_claim",
+        turnPolicy: "recover_or_stop",
+        errorCode: "completion_claim_not_supported",
+        message: "Session Store does not support structured task completion claims.",
+      };
+    }
+
+    const claimInput = {
+      taskId,
+      sessionId,
+      message,
+      source: "conductor",
+    };
+    if (input?.summary) claimInput.summary = String(input.summary);
+    const event = sessionStore.recordTaskCompletionClaim(claimInput);
+    return {
+      ok: true,
+      taskId,
+      sessionId,
+      status: "completion_claim_recorded",
+      eventType: "task.completion_claim",
+      event,
+      turnPolicy: "stop_for_review_gate",
+      nextAllowedAction: "wait_for_review_gate",
+      message:
+        "Structured completion claim recorded. Stop this Conductor turn and let the Review gate verify the task.",
+    };
+  }
+
   return {
     callSession,
     readTaskState,
     readSession,
+    claimTaskCompletion,
   };
 
-  function deliverWorkerAssignment(dispatch, { force = false } = {}) {
-    if (!force && !workerSessionReady(dispatch.toSessionId)) return false;
+  async function deliverWorkerAssignment(dispatch, { force = false, alreadyWrote = false } = {}) {
+    const runtimeState = workerSessionRuntimeState(dispatch);
+    if (!force && !isWorkerSessionDeliverable(runtimeState, dispatch)) {
+      return { delivered: false, wrote: alreadyWrote, targetSessionState: runtimeState.state };
+    }
     const session = ptyManager.get?.(dispatch.toSessionId);
-    if (!session || session.status !== "running") return false;
-    ptyManager.write(dispatch.toSessionId, formatInteractivePtyInput(formatWorkerAssignment(dispatch)));
+    if (!session || session.status !== "running") {
+      return { delivered: false, wrote: alreadyWrote, targetSessionState: runtimeState.state };
+    }
+    if (!workerSessionCanReceiveInput(session)) {
+      return { delivered: false, wrote: alreadyWrote, targetSessionState: runtimeState.state };
+    }
+
+    let wrote = alreadyWrote;
+    if (!wrote) {
+      ptyManager.write(dispatch.toSessionId, formatInteractivePtyInput(formatWorkerAssignment(dispatch)));
+      wrote = true;
+    }
+
+    if (typeof confirmWorkerAssignmentDelivery === "function") {
+      const confirmed = await confirmWorkerAssignmentDelivery({ session, dispatch });
+      if (!confirmed) {
+        return { delivered: false, wrote, targetSessionState: runtimeState.state };
+      }
+    }
+
     sessionStore.markDispatchDelivered?.({
       taskId: dispatch.taskId,
       sessionId: dispatch.toSessionId,
       dispatchId: dispatch.dispatchId,
     });
-    return true;
+    return { delivered: true, wrote, targetSessionState: "delivered_pending" };
   }
 
-  function workerSessionReady(sessionId) {
+  function workerSessionRuntimeState(dispatch) {
+    if (typeof sessionStore.readSession === "function") {
+      try {
+        const view = sessionStore.readSession({
+          taskId: dispatch.taskId,
+          sessionId: dispatch.toSessionId,
+          maxChars: 0,
+        });
+        if (view?.state) {
+          return {
+            state: normalizeRuntimeState(view.state),
+            activeDispatchId: view.activeDispatchId,
+            assignmentReadinessHint: view.assignmentReadinessHint,
+            lastResultId: view.lastResultId,
+            resultCount: view.resultCount,
+            attentionHints: Array.isArray(view.attentionHints) ? view.attentionHints : [],
+            source: "session-store",
+          };
+        }
+      } catch {
+        // Fall through to process lifecycle compatibility below.
+      }
+    }
+    const session = ptyManager.get?.(dispatch.toSessionId);
+    if (!session) return { state: "not_started", source: "pty" };
+    if (session.status === "running") return { state: "ready", source: "pty" };
+    if (session.status === "stopping") return { state: "stopping", source: "pty" };
+    return { state: "exited", source: "pty" };
+  }
+
+  function workerSessionCanReceiveInput(session) {
+    if (!isOpencodePtySession(session)) return true;
     if (typeof ptyManager.read !== "function") return true;
-    const session = ptyManager.read(sessionId, 0) ?? ptyManager.get?.(sessionId);
-    const transcript = Array.isArray(session?.transcript) ? session.transcript.join("") : "";
-    if (!transcript.trim()) return false;
-    return /Ask anything|Fix a TODO|tab\s+agents|ctrl\+p\s+commands|commands/i.test(transcript);
+    const snapshot = ptyManager.read(session.id, 0) ?? session;
+    const transcript = Array.isArray(snapshot?.transcript) ? snapshot.transcript.join("") : "";
+    return opencodeTranscriptCanReceiveInput(transcript);
   }
 
-  async function waitForWorkerAssignmentDelivery(dispatch) {
+  async function waitForWorkerAssignmentDelivery(dispatch, options = {}) {
     const deadline = Date.now() + Math.max(0, Number(deliveryTimeoutMs));
+    let wrote = false;
     do {
-      if (deliverWorkerAssignment(dispatch)) return true;
+      const result = await deliverWorkerAssignment(dispatch, { alreadyWrote: wrote, force: options.force });
+      wrote = result.wrote;
+      if (result.delivered) return true;
       await delay(Math.max(1, Number(deliveryPollIntervalMs)));
     } while (Date.now() < deadline);
-    return deliverWorkerAssignment(dispatch);
+    return (await deliverWorkerAssignment(dispatch, { alreadyWrote: wrote, force: options.force })).delivered;
   }
 
   function failDispatch(dispatch, failure) {
@@ -166,6 +263,7 @@ async function startConductorToolBridgeHttpServer({ bridge, token = crypto.rando
     call_session: bridge.callSession,
     read_task_state: bridge.readTaskState,
     read_session: bridge.readSession,
+    claim_task_completion: bridge.claimTaskCompletion,
   };
 
   const server = http.createServer(async (request, response) => {
@@ -259,6 +357,15 @@ function resolveConductorSessionIdForDispatch({ taskId, toSessionId, ptyManager 
   return String((running ?? candidates[0])?.id ?? "");
 }
 
+function resolveConductorSessionIdForTask({ taskId, ptyManager }) {
+  const sessions = typeof ptyManager?.list === "function" ? ptyManager.list() : [];
+  const candidates = sessions.filter(
+    (session) => String(session?.taskId ?? "") === String(taskId) && isConductorSessionId(session?.id),
+  );
+  const running = candidates.find((session) => session.status === "running");
+  return String((running ?? candidates[0])?.id ?? "");
+}
+
 function isConductorSessionId(sessionId) {
   return /(^|[-:])conductor$/i.test(String(sessionId ?? ""));
 }
@@ -298,7 +405,7 @@ function callSessionDelivered(dispatch) {
     toSessionId: dispatch.toSessionId,
     status: "delivered",
     deliveryState: "delivered",
-    targetSessionState: "running",
+    targetSessionState: "delivered_pending",
     resultState: "pending",
     async: true,
     turnPolicy: "stop_after_dispatch",
@@ -310,6 +417,60 @@ function callSessionDelivered(dispatch) {
       "Assignment delivered to target session. End this Conductor turn now and wait for a runtime wakeup before reading the result.",
   };
 }
+
+function isWorkerSessionDeliverable(runtimeState, dispatch) {
+  const state = typeof runtimeState === "string" ? runtimeState : runtimeState?.state;
+  if (state === "queued") return runtimeState?.activeDispatchId === dispatch?.dispatchId;
+  if (state === "delivery_failed") {
+    const hasResultContext =
+      Number(runtimeState?.resultCount ?? 0) > 0 ||
+      Boolean(runtimeState?.lastResultId) ||
+      (runtimeState?.attentionHints ?? []).includes("result_available");
+    return runtimeState?.assignmentReadinessHint === "ready" && hasResultContext;
+  }
+  return state === "ready" || state === "result_available" || state === "waiting_conductor";
+}
+
+function isOpencodePtySession(session) {
+  const provider = String(session?.provider ?? "");
+  const command = String(session?.command ?? "");
+  return provider === "opencode" || /(^|\/)opencode$/i.test(command);
+}
+
+function opencodeTranscriptCanReceiveInput(transcript) {
+  const text = String(transcript ?? "");
+  if (/esc\s+interrupt/i.test(text)) return false;
+  return text.includes("Ask anything") || text.includes("tab agents") || text.includes("ctrl+p commands");
+}
+
+function normalizeRuntimeState(state) {
+  const value = String(state ?? "").trim();
+  if (value === "idle") return "ready";
+  if (value === "waiting") return "waiting_input";
+  if (RUNTIME_SESSION_STATES.has(value)) return value;
+  return "ready";
+}
+
+const RUNTIME_SESSION_STATES = new Set([
+  "not_started",
+  "starting",
+  "ready",
+  "queued",
+  "delivered_pending",
+  "running",
+  "waiting_input",
+  "permission_required",
+  "waiting_conductor",
+  "result_available",
+  "result_invalid",
+  "blocked",
+  "timeout",
+  "delivery_failed",
+  "stopping",
+  "stopped",
+  "exited",
+  "start_failed",
+]);
 
 function callSessionFailure({ dispatchId, taskId, toSessionId, errorCode, message, targetSessionState }) {
   return {

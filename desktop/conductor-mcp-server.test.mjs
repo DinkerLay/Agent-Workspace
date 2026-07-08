@@ -35,7 +35,12 @@ describe("Conductor MCP server", () => {
     );
 
     expect(result.id).toBe(1);
-    expect(result.result.tools.map((tool) => tool.name)).toEqual(["call_session", "read_task_state", "read_session"]);
+    expect(result.result.tools.map((tool) => tool.name)).toEqual([
+      "call_session",
+      "read_task_state",
+      "read_session",
+      "claim_task_completion",
+    ]);
   });
 
   it("forwards tools/call to the bridge client", async () => {

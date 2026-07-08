@@ -3,6 +3,9 @@ import {
   findProviderSessionForDispatch,
   getDispatchAssistantAnswer,
   getLastEffectiveAssistantAnswer,
+  getLastEffectiveAssistantAnswerForDirectory,
+  getLastPendingQuestionForConductorTask,
+  getLastPendingQuestionForDirectory,
 } from "./session-adapter.cjs";
 
 const isVitest = process.env.VITEST === "true" || process.env.VITEST_WORKER_ID !== undefined;
@@ -118,6 +121,43 @@ describe("opencode session adapter", () => {
     expect(queries[0].includes("stop")).toBe(true);
   });
 
+  it("returns the latest completed assistant answer for a project directory", async () => {
+    const queries = [];
+    const query = async (sql) => {
+      queries.push(sql);
+      return [
+        {
+          sessionId: "ses_conductor",
+          messageId: "msg_conductor_final",
+          messageCreatedAt: 5000,
+          completedAt: 5100,
+          stepFinishId: "prt_stop",
+          stepFinishedAt: 5101,
+          stepFinishReason: "stop",
+          partId: "part_1",
+          partCreatedAt: 5001,
+          text: "两分支均通过，任务收口。",
+        },
+      ];
+    };
+
+    const result = await getLastEffectiveAssistantAnswerForDirectory({
+      cwd: "/tmp/project",
+      afterMessageCreatedAt: "2026-07-06T00:00:01.000Z",
+      query,
+    });
+
+    expect(result).toMatchObject({
+      provider: "opencode",
+      providerSessionId: "ses_conductor",
+      messageId: "msg_conductor_final",
+      answerText: "两分支均通过，任务收口。",
+    });
+    expect(queries[0].includes("/tmp/project")).toBe(true);
+    expect(queries[0].includes("m.time_created >= 1783296001000")).toBe(true);
+    expect(queries[0].includes("order by m.time_created desc")).toBe(true);
+  });
+
   it("does not return an answer before opencode reaches a stop step-finish", async () => {
     const query = async () => [];
 
@@ -128,6 +168,82 @@ describe("opencode session adapter", () => {
     });
 
     expect(result).toBe(undefined);
+  });
+
+  it("returns a pending provider-native question for a project directory", async () => {
+    const queries = [];
+    const query = async (sql) => {
+      queries.push(sql);
+      return [
+        {
+          sessionId: "ses_conductor",
+          messageId: "msg_question",
+          messageCreatedAt: 7000,
+          questionPartId: "prt_question",
+          questionPartCreatedAt: 7001,
+          questionText: "How should we proceed?",
+          questionHeader: "Researcher unavailable",
+          assistantText: "The worker is unavailable. I need your input.",
+        },
+      ];
+    };
+
+    const result = await getLastPendingQuestionForDirectory({
+      cwd: "/tmp/project",
+      afterMessageCreatedAt: "2026-07-06T00:00:01.000Z",
+      query,
+    });
+
+    expect(result).toMatchObject({
+      provider: "opencode",
+      providerSessionId: "ses_conductor",
+      messageId: "msg_question",
+      questionPartId: "prt_question",
+      questionText: "How should we proceed?",
+      answerText: "The worker is unavailable. I need your input.",
+      source: "opencode-question-tool",
+    });
+    expect(queries[0].includes("$.tool")).toBe(true);
+    expect(queries[0].includes("question")).toBe(true);
+    expect(queries[0].includes("$.state.status")).toBe(true);
+    expect(queries[0].includes("running")).toBe(true);
+  });
+
+  it("scopes a pending provider-native question to the task Conductor session", async () => {
+    const queries = [];
+    const query = async (sql) => {
+      queries.push(sql);
+      return [
+        {
+          sessionId: "ses_conductor",
+          messageId: "msg_question",
+          messageCreatedAt: 7000,
+          questionPartId: "prt_question",
+          questionPartCreatedAt: 7001,
+          questionText: "Pick the next route.",
+          questionHeader: "Route blocked",
+          assistantText: "The Researcher is unavailable.",
+        },
+      ];
+    };
+
+    const result = await getLastPendingQuestionForConductorTask({
+      cwd: "/tmp/project",
+      taskId: "task-abc123",
+      afterMessageCreatedAt: "2026-07-06T00:00:01.000Z",
+      query,
+    });
+
+    expect(result).toMatchObject({
+      providerSessionId: "ses_conductor",
+      messageId: "msg_question",
+      questionText: "Pick the next route.",
+      answerText: "The Researcher is unavailable.",
+      source: "opencode-question-tool",
+    });
+    expect(queries[0].includes("conductor_session")).toBe(true);
+    expect(queries[0].includes("Start this Agent Workspace task now.")).toBe(true);
+    expect(queries[0].includes("Task id: task-abc123")).toBe(true);
   });
 
   it("returns the first completed assistant answer for the matched dispatch window", async () => {

@@ -9,7 +9,7 @@ This directory contains the active product and runtime specs for Agent Workspace
 | Spec | Owns | Does not own |
 | --- | --- | --- |
 | `product-interaction-map.md` | Visible product surfaces, Task Home / Task Intake behavior, Board-first navigation, Review and audit interaction boundaries | Provider-specific adapter mechanics, Conductor MCP tool internals |
-| `conductor-session-communication.md` | Conductor-centric session communication, `call_session` / `read_task_state` / `read_session`, Task Session Plan semantics, Conductor runtime prompt boundary | UI layout details, terminal rendering, provider database schema |
+| `conductor-session-communication.md` | Conductor-centric session communication, `call_session` / `read_task_state` / `read_session` / `claim_task_completion`, Task Session Plan semantics, Conductor runtime prompt boundary | UI layout details, terminal rendering, provider database schema |
 | `provider-session-state-detection.md` | PTY trigger rules, provider adapter state mapping, session-store result extraction, Agent card state source | Task business policy, which workers a task should create |
 | `development-instrumentation.md` | Developer trace, product audit events, diagnostic evidence paths | Runtime decision policy, task status truth |
 

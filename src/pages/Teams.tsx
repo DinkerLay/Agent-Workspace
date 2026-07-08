@@ -18,6 +18,44 @@ export function Teams({
   onAdvanceTeamRun: () => void;
 }) {
   const selected = workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? workflows[0];
+  if (!selected) {
+    return (
+      <section className="teams-layout">
+        <div className="panel canvas-panel">
+          <div className="section-title">
+            <Network size={18} />
+            <span>Explicit handoff canvas</span>
+          </div>
+          <div className="team-run-card">
+            <div className="section-title compact">
+              <Network size={16} />
+              <span>No team workflows configured</span>
+            </div>
+            <span className="team-empty">
+              Team workflows are advanced capabilities and are disabled for this runtime workspace.
+            </span>
+          </div>
+          <div className="button-row">
+            <button aria-label="Start selected team workflow" className="primary-button" disabled type="button">
+              <Play size={16} />
+              Start workflow
+            </button>
+            <button aria-label="Advance handoff" className="ghost-button" disabled type="button">
+              <ArrowRight size={16} />
+              Advance handoff
+            </button>
+          </div>
+        </div>
+        <aside className="panel handoff-panel">
+          <div className="section-title">
+            <Network size={18} />
+            <span>Team workflows</span>
+          </div>
+          <span className="team-empty">No workflow records available.</span>
+        </aside>
+      </section>
+    );
+  }
   const activeNode = activeRun ? selected.nodes[activeRun.activeNodeIndex] ?? selected.nodes[0] : selected.nodes[0];
   const canAdvance = activeRun?.status === "running";
   const advanceLabel = activeRun

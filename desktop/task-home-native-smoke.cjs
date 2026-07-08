@@ -308,6 +308,7 @@ async function main() {
           text.includes("call_session") &&
           text.includes("read_task_state") &&
           text.includes("read_session") &&
+          text.includes("claim_task_completion") &&
           !text.includes("finish_task_claim"),
         hasNativeWorkerCopy: text.includes("Worker sessions") && text.includes("原生 session，不注入 Agent Workspace 协议"),
         hasOldProtocolCopy: text.includes("Workspace Session Message"),
@@ -472,6 +473,7 @@ async function main() {
     conductorRuntimeFiles.includes("Use call_session to assign session-level work") &&
     conductorRuntimeFiles.includes("read_task_state") &&
     conductorRuntimeFiles.includes("read_session") &&
+    conductorRuntimeFiles.includes("claim_task_completion") &&
     !conductorRuntimeFiles.includes("Workspace Session Message") &&
     noWorkerAutoStart &&
     conductorKickoff.text.includes(workerSessionId) &&

@@ -93,8 +93,8 @@ function createAsyncExitFakePty() {
           resize(cols, rows) {
             calls.push(["resize", process.pid, cols, rows]);
           },
-          kill() {
-            calls.push(["kill", process.pid]);
+          kill(signal) {
+            calls.push(["kill", process.pid, signal]);
           },
           emitData(text) {
             dataListener(text);
@@ -184,6 +184,63 @@ describe("desktop PTY manager", () => {
       cursor: 2,
       transcript: [],
     });
+  });
+
+  it("caps retained transcript chunks while preserving a monotonic cursor", () => {
+    const fake = createFakePty();
+    const manager = createPtyManager({ pty: fake.pty, maxTranscriptChunks: 3 });
+
+    const session = manager.start({
+      id: "pty-retained-tail",
+      command: "opencode",
+      cwd: "/Users/dinker/CODES/Agent-Workspace",
+    });
+    fake.emitData("chunk-1\n");
+    fake.emitData("chunk-2\n");
+    fake.emitData("chunk-3\n");
+    fake.emitData("chunk-4\n");
+    fake.emitData("chunk-5\n");
+
+    expect(manager.get(session.id)).toMatchObject({
+      cursor: 5,
+      transcript: ["chunk-3\n", "chunk-4\n", "chunk-5\n"],
+    });
+    expect(manager.read(session.id, 4)).toMatchObject({
+      cursor: 5,
+      transcript: ["chunk-5\n"],
+    });
+    expect(manager.read(session.id, 0)).toMatchObject({
+      cursor: 5,
+      transcript: ["chunk-3\n", "chunk-4\n", "chunk-5\n"],
+    });
+  });
+
+  it("evicts stopped sessions after the configured retention window", () => {
+    let now = 1_000;
+    const fake = createFakePty();
+    const manager = createPtyManager({
+      pty: fake.pty,
+      now: () => now,
+      stoppedSessionRetentionMs: 500,
+    });
+
+    const session = manager.start({
+      id: "pty-expire-stopped",
+      command: "opencode",
+      cwd: "/Users/dinker/CODES/Agent-Workspace",
+    });
+    fake.emitData("before stop\n");
+    manager.stop(session.id);
+
+    expect(manager.get(session.id)).toMatchObject({
+      status: "stopped",
+      transcript: ["before stop\n"],
+    });
+
+    now = 1_501;
+
+    expect(manager.get(session.id)).toBe(undefined);
+    expect(manager.list()).toEqual([]);
   });
 
   it("lists running sessions with task context for bridge-launched peers", () => {
@@ -501,6 +558,27 @@ describe("desktop PTY manager", () => {
       pid: firstSession.pid,
       transcript: ["before stop\n", "late output\n"],
     });
+  });
+
+  it("keeps stop effective for a session that is already stopping", () => {
+    const fake = createAsyncExitFakePty();
+    const manager = createPtyManager({ pty: fake.pty });
+
+    const session = manager.start({
+      id: "pty-stuck-stopping",
+      command: "opencode",
+      cwd: "/Users/dinker/CODES/Agent-Workspace",
+    });
+
+    const firstStop = manager.stop(session.id);
+    const secondStop = manager.stop(session.id);
+
+    expect(firstStop).toMatchObject({ status: "stopping" });
+    expect(secondStop).toMatchObject({ status: "stopping" });
+    expect(fake.calls.filter((call) => call[0] === "kill")).toEqual([
+      ["kill", session.pid, "SIGTERM"],
+      ["kill", session.pid, "SIGKILL"],
+    ]);
   });
 
   it("falls back to a child process backend when native PTY spawn is unavailable", () => {

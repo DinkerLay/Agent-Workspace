@@ -83,6 +83,17 @@ describe("responsive layout rules", () => {
     expect(styles).not.toMatch(/\.task-progress-track\s*\{[^}]*overflow:\s*auto;/s);
   });
 
+  it("lets the populated Task Home execution feed fill fullscreen height", async () => {
+    const styles = await readStyles();
+
+    expect(styles).toMatch(/\.workspace\s*\{[^}]*min-height:\s*100vh;/s);
+    expect(styles).toMatch(/\.task-home-layout\s*\{[^}]*min-height:\s*calc\(100vh - 44px\);/s);
+    expect(styles).toMatch(/\.task-home-main\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\);/s);
+    expect(styles).toMatch(/\.task-execution-grid\s*\{[^}]*min-height:\s*0;[^}]*align-items:\s*stretch;/s);
+    expect(styles).toMatch(/\.execution-panel\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\) auto;/s);
+    expect(styles).not.toContain("min(56vh, 560px)");
+  });
+
   it("keeps real permission attention static instead of continuously shaking", async () => {
     const styles = await readStyles();
 

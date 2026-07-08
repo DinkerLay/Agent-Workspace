@@ -506,6 +506,7 @@ svg {
 .workspace {
   min-width: 0;
   max-width: 100%;
+  min-height: 100vh;
   overflow-x: hidden;
   padding: 22px;
 }
@@ -973,6 +974,12 @@ h3 {
   border-color: rgba(217, 119, 6, 0.55);
   background: #fffbeb;
   box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.12);
+}
+
+.state-blocked {
+  border-color: rgba(220, 38, 38, 0.52);
+  background: #fef2f2;
+  box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.1);
 }
 
 .state-done {
@@ -1770,9 +1777,10 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
   min-width: 0;
   max-width: 100%;
+  min-height: calc(100vh - 44px);
 }
 
 .task-home-layout.task-home-layout-empty {
@@ -1860,8 +1868,10 @@ textarea:focus {
 
 .task-home-main {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 14px;
   min-width: 0;
+  min-height: 0;
 }
 
 .task-home-hero {
@@ -2297,6 +2307,8 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
   gap: 14px;
   min-width: 0;
+  min-height: 0;
+  align-items: stretch;
 }
 
 .execution-panel,
@@ -2311,7 +2323,8 @@ textarea:focus {
 }
 
 .execution-panel {
-  grid-template-rows: auto minmax(320px, min(56vh, 560px)) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
 }
 
 .execution-panel-head,
@@ -2339,6 +2352,7 @@ textarea:focus {
   align-content: start;
   gap: 0;
   min-width: 0;
+  min-height: 320px;
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2648,6 +2662,52 @@ textarea:focus {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 11px;
   overflow-wrap: anywhere;
+}
+
+.task-session-actions {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-session-actions strong {
+  color: #475569;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.task-session-actions div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recovery-action {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recovery-action-primary {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.recovery-action-danger {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.recovery-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .task-home-intake-form {
@@ -6106,6 +6166,10 @@ textarea:focus {
   background: #7c3aed;
 }
 
+.task-progress-meter button.state-blocked {
+  background: #dc2626;
+}
+
 .task-progress-meter button.state-neutral {
   background: #dbe3ea;
 }
@@ -6156,6 +6220,11 @@ textarea:focus {
 .task-progress-count.state-decision {
   border-color: #fed7aa;
   background: #fff7ed;
+}
+
+.task-progress-count.state-blocked {
+  border-color: #fecaca;
+  background: #fef2f2;
 }
 
 .task-progress-count.state-neutral {

@@ -12,6 +12,35 @@ afterEach(() => {
 });
 
 describe("Teams", () => {
+  it("renders an explicit empty state when runtime workflows are unavailable", () => {
+    const starts: number[] = [];
+    const advances: number[] = [];
+
+    render(
+      <Teams
+        workflows={[]}
+        selectedWorkflowId=""
+        activeRun={undefined}
+        onSelectWorkflow={() => undefined}
+        onStartTeamRun={() => starts.push(1)}
+        onAdvanceTeamRun={() => advances.push(1)}
+      />,
+    );
+
+    expect(screen.getByText("No team workflows configured")).toBeTruthy();
+    expect(screen.getByText("Team workflows are advanced capabilities and are disabled for this runtime workspace.")).toBeTruthy();
+    const startButton = screen.getByRole("button", { name: "Start selected team workflow" });
+    const advanceButton = screen.getByRole("button", { name: "Advance handoff" });
+    expect((startButton as HTMLButtonElement).disabled).toBe(true);
+    expect((advanceButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(startButton);
+    fireEvent.click(advanceButton);
+
+    expect(starts).toEqual([]);
+    expect(advances).toEqual([]);
+  });
+
   it("selects, starts, and advances explicit team workflow runs", () => {
     const selected: string[] = [];
     const starts: number[] = [];

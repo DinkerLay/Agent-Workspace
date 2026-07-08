@@ -28,6 +28,127 @@ function nodeExpect(actual) {
 }
 
 describe("Session wakeup monitor", () => {
+  it("records completed Conductor provider output as a task timeline message after Conductor PTY output", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-conductor-message-monitor-"));
+    const store = createSessionStore({ root });
+    const taskId = "task-1";
+    const conductorId = "opencode:project-runtime-current:task-1:task-1-conductor";
+    const callbacks = [];
+    let readCount = 0;
+
+    store.startSession({ taskId, sessionId: conductorId, command: "opencode", cwd: root });
+
+    const sessions = [{ id: conductorId, taskId, status: "running", provider: "opencode", cwd: root }];
+    const ptyManager = {
+      onEvent: (callback) => {
+        callbacks.push(callback);
+        return () => undefined;
+      },
+      list: () => sessions,
+      get: (id) => sessions.find((session) => session.id === id),
+      sampleStatus: (id) => ({
+        id,
+        state: "running",
+        summary: "Prompt visible.",
+        cursor: 12,
+        lastOutputAgeMs: 5,
+      }),
+      write: () => undefined,
+    };
+
+    const monitor = createSessionWakeupMonitor({
+      ptyManager,
+      sessionStore: store,
+      debounceMs: 1,
+      conductorMessageQuietThresholdMs: 0,
+      conductorMessageReader: ({ session }) => {
+        readCount += 1;
+        return {
+          provider: "opencode",
+          providerSessionId: "ses_conductor",
+          messageId: "msg_conductor_final",
+          stepFinishId: "prt_stop",
+          stepFinishReason: "stop",
+          completedAt: 5100,
+          answerText: `### 最终汇总\n两分支均通过，任务收口。\nSession: ${session.id}`,
+          source: "opencode-message-parts",
+        };
+      },
+    });
+
+    monitor.start();
+    callbacks[0]?.({ type: "data", id: conductorId, chunk: "screen repaint", cursor: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    callbacks[0]?.({ type: "data", id: conductorId, chunk: "terminal repaint after final answer", cursor: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    monitor.stop();
+
+    const taskView = store.readTaskState({ taskId });
+    const conductorMessages = taskView.events.filter((event) => event.type === "conductor.message");
+
+    expect(readCount).toBe(1);
+    expect(conductorMessages.length).toBe(1);
+    expect(conductorMessages[0]).toMatchObject({
+      taskId,
+      sessionId: conductorId,
+      type: "conductor.message",
+      data: {
+        providerMessageId: "msg_conductor_final",
+        message: `### 最终汇总\n两分支均通过，任务收口。\nSession: ${conductorId}`,
+      },
+    });
+  });
+
+  it("marks a Conductor session as waiting for input when the provider exposes a pending question", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-conductor-question-monitor-"));
+    const store = createSessionStore({ root });
+    const taskId = "task-1";
+    const conductorId = "opencode:project-runtime-current:task-1:task-1-conductor";
+
+    store.startSession({ taskId, sessionId: conductorId, command: "opencode", cwd: root });
+
+    const sessions = [{ id: conductorId, taskId, status: "running", provider: "opencode", cwd: root }];
+    const ptyManager = {
+      list: () => sessions,
+      get: (id) => sessions.find((session) => session.id === id),
+      sampleStatus: (id) => ({
+        id,
+        state: "running",
+        summary: "Prompt visible.",
+        cursor: 14,
+        lastOutputAgeMs: 5,
+      }),
+      write: () => undefined,
+    };
+
+    const monitor = createSessionWakeupMonitor({
+      ptyManager,
+      sessionStore: store,
+      conductorMessageQuietThresholdMs: 0,
+      conductorQuestionReader: () => ({
+        provider: "opencode",
+        providerSessionId: "ses_conductor",
+        messageId: "msg_question",
+        questionPartId: "prt_question",
+        questionText: "How should we proceed?",
+        answerText: "The worker is unavailable. I need your input.",
+        source: "opencode-question-tool",
+      }),
+    });
+
+    const result = await monitor.tick();
+    const taskView = store.readTaskState({ taskId });
+    const conductorView = store.readSession({ taskId, sessionId: conductorId });
+
+    expect(result.sampled).toBe(1);
+    expect(taskView.sessions[0]).toMatchObject({
+      sessionId: conductorId,
+      state: "waiting_input",
+      lastStateSummary: "How should we proceed?",
+    });
+    expect(conductorView.events.map((event) => event.type)).toContain("session.waiting_input");
+  });
+
   it("checks only the changed worker session after a PTY data event", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-wakeup-event-driven-"));
     const store = createSessionStore({ root });

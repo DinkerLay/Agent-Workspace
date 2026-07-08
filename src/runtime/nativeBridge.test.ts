@@ -159,7 +159,7 @@ describe("native runtime bridge", () => {
           toSessionId: "task-1-researcher",
           status: "delivered",
           deliveryState: "delivered",
-          targetSessionState: "running",
+          targetSessionState: "delivered_pending",
           resultState: "pending",
           turnPolicy: "stop_after_dispatch",
           nextAllowedAction: "wait_for_runtime_wakeup",
@@ -169,7 +169,7 @@ describe("native runtime bridge", () => {
         readTaskState: async () => ({
           taskId: "task-1",
           cursor: 1,
-          sessions: [{ sessionId: "task-1-researcher", state: "idle", cursor: 1 }],
+          sessions: [{ sessionId: "task-1-researcher", state: "ready", cursor: 1 }],
           dispatches: [],
           results: [],
           messages: [],
@@ -177,7 +177,7 @@ describe("native runtime bridge", () => {
         }),
         readSession: async () => ({
           sessionId: "task-1-researcher",
-          state: "idle",
+          state: "ready",
           cursor: 1,
           cleanTranscriptTail: "research done",
           events: [],
@@ -198,7 +198,7 @@ describe("native runtime bridge", () => {
       }),
     ).resolves.toMatchObject({ ok: true, status: "delivered", deliveryState: "delivered" });
     await expect(readNativeSession({ taskId: "task-1", sessionId: "task-1-researcher" })).resolves.toMatchObject({
-      state: "idle",
+      state: "ready",
       cleanTranscriptTail: "research done",
     });
     await expect(readNativeTaskState({ taskId: "task-1" })).resolves.toMatchObject({

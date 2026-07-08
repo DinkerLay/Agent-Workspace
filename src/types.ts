@@ -263,7 +263,7 @@ export type ReviewGateEvent = {
   taskId: string;
   runId: string;
   status: "blocked";
-  reason: "verification-required" | "redaction-required";
+  reason: "verification-required" | "review-readiness-required" | "redaction-required";
   evidencePath: string;
   createdAt: string;
   summary: string;

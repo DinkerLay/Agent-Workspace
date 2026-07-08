@@ -250,6 +250,81 @@ describe("prototype task state machine", () => {
     expect(next.agents.find((agent) => agent.id === "reviewer")?.status).toBe("working");
   });
 
+  it("does not regress review or done tasks back to running from live native PTY evidence", () => {
+    const pending = prototypeReducer(
+      prototypeReducer(initialPrototypeState, {
+        type: "start-agent",
+        taskId: "task-review",
+      }),
+      {
+        type: "agent-claims-done",
+        taskId: "task-review",
+      },
+    );
+
+    const stillPending = prototypeReducer(pending, {
+      type: "attach-native-session-evidence",
+      taskId: "task-review",
+      agentId: "reviewer",
+      session: {
+        id: "native-task-review",
+        command: "/opt/homebrew/bin/opencode",
+        args: ["--model", "opencode-go/deepseek-v4-flash"],
+        cwd: "/Users/dinker/CODES/Agent-Workspace",
+        model: "opencode-go/deepseek-v4-flash",
+        backend: "pty",
+        status: "running",
+        transcript: ["Ask anything...\n"],
+      },
+    } as never);
+
+    const verified = prototypeReducer(pending, {
+      type: "run-verification-command",
+      taskId: "task-review",
+    } as never);
+    const done = prototypeReducer(verified, {
+      type: "approve-review",
+      taskId: "task-review",
+    });
+    const stillDone = prototypeReducer(done, {
+      type: "attach-native-session-evidence",
+      taskId: "task-review",
+      agentId: "reviewer",
+      session: {
+        id: "native-task-review",
+        command: "/opt/homebrew/bin/opencode",
+        args: ["--model", "opencode-go/deepseek-v4-flash"],
+        cwd: "/Users/dinker/CODES/Agent-Workspace",
+        model: "opencode-go/deepseek-v4-flash",
+        backend: "pty",
+        status: "running",
+        transcript: ["Ask anything...\n"],
+      },
+    } as never);
+
+    expect(stillPending.tasks.find((item) => item.id === "task-review")?.status).toBe("pending-review");
+    expect(stillDone.tasks.find((item) => item.id === "task-review")?.status).toBe("done");
+  });
+
+  it("blocks Review approval when a verified task is not review-ready", () => {
+    const verified = prototypeReducer(initialPrototypeState, {
+      type: "run-verification-command",
+      taskId: "task-plan-watch",
+    } as never);
+
+    const next = prototypeReducer(verified, {
+      type: "approve-review",
+      taskId: "task-plan-watch",
+    });
+
+    expect(next.tasks.find((item) => item.id === "task-plan-watch")?.status).toBe("running");
+    expect(getActiveRunForTask(next.runs, "task-plan-watch")?.commitProposal.approved).toBe(false);
+    expect(next.reviewGateEvents[next.reviewGateEvents.length - 1]).toMatchObject({
+      reason: "review-readiness-required",
+      summary: "Review approval blocked for task-plan-watch: task must be pending review before approval.",
+    });
+  });
+
   it("keeps failed verification out of Done", () => {
     const next = prototypeReducer(initialPrototypeState, {
       type: "verification-failed",
@@ -336,7 +411,11 @@ describe("prototype task state machine", () => {
   });
 
   it("blocks review approval until Agent-Conversation redaction passes when trailer is selected", () => {
-    const verified = prototypeReducer(initialPrototypeState, {
+    const pending = prototypeReducer(initialPrototypeState, {
+      type: "agent-claims-done",
+      taskId: "task-plan-watch",
+    });
+    const verified = prototypeReducer(pending, {
       type: "run-verification-command",
       taskId: "task-plan-watch",
     } as never);
@@ -354,7 +433,7 @@ describe("prototype task state machine", () => {
       }
     ).reviewGateEvents?.[0];
 
-    expect(next.tasks.find((item) => item.id === "task-plan-watch")?.status).toBe("running");
+    expect(next.tasks.find((item) => item.id === "task-plan-watch")?.status).toBe("pending-review");
     expect(getActiveRunForTask(next.runs, "task-plan-watch")?.commitProposal.approved).toBe(false);
     expect(gateEvent).toMatchObject({
       reason: "redaction-required",
@@ -366,7 +445,11 @@ describe("prototype task state machine", () => {
   });
 
   it("records review approval evidence when Done is approved", () => {
-    const verified = prototypeReducer(initialPrototypeState, {
+    const pending = prototypeReducer(initialPrototypeState, {
+      type: "agent-claims-done",
+      taskId: "task-plan-watch",
+    });
+    const verified = prototypeReducer(pending, {
       type: "run-verification-command",
       taskId: "task-plan-watch",
     } as never);
@@ -418,7 +501,11 @@ describe("prototype task state machine", () => {
   });
 
   it("routes a Done notification from review approval evidence", () => {
-    const verified = prototypeReducer(initialPrototypeState, {
+    const pending = prototypeReducer(initialPrototypeState, {
+      type: "agent-claims-done",
+      taskId: "task-plan-watch",
+    });
+    const verified = prototypeReducer(pending, {
       type: "run-verification-command",
       taskId: "task-plan-watch",
     } as never);
@@ -448,7 +535,11 @@ describe("prototype task state machine", () => {
   });
 
   it("records PR handoff evidence after review approval without opening a PR", () => {
-    const verified = prototypeReducer(initialPrototypeState, {
+    const pending = prototypeReducer(initialPrototypeState, {
+      type: "agent-claims-done",
+      taskId: "task-plan-watch",
+    });
+    const verified = prototypeReducer(pending, {
       type: "run-verification-command",
       taskId: "task-plan-watch",
     } as never);

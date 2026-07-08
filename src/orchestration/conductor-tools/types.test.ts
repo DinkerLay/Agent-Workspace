@@ -28,10 +28,11 @@ describe("Conductor tool contracts", () => {
       contextRefs: ["docs/research/session-communication-mechanisms-2026-06-28.zh.md"],
       expectedOutput: "Research report",
       priority: "normal",
+      force: true,
     };
     const result: ReadSessionResult = {
       sessionId: "task-1-researcher",
-      state: "idle",
+      state: "ready",
       cursor: 2,
       cleanTranscriptTail: "done",
       events: [],
@@ -43,7 +44,8 @@ describe("Conductor tool contracts", () => {
     };
 
     expect(input.priority).toBe("normal");
-    expect(result.state).toBe("idle");
+    expect(input.force).toBe(true);
+    expect(result.state).toBe("ready");
   });
 
   it("expresses call_session as dispatch-only and task state as the loop summary", () => {
@@ -54,7 +56,7 @@ describe("Conductor tool contracts", () => {
       toSessionId: "task-1-researcher",
       status: "delivered",
       deliveryState: "delivered",
-      targetSessionState: "running",
+      targetSessionState: "delivered_pending",
       resultState: "pending",
       async: true,
       turnPolicy: "stop_after_dispatch",
@@ -66,7 +68,7 @@ describe("Conductor tool contracts", () => {
     const taskState: ReadTaskStateResult = {
       taskId: "task-1",
       cursor: 3,
-      sessions: [{ sessionId: "task-1-researcher", state: "idle", cursor: 2 }],
+      sessions: [{ sessionId: "task-1-researcher", state: "ready", cursor: 2 }],
       dispatches: [
         { dispatchId: "A1B2C3", toSessionId: "task-1-researcher", status: "result_available" },
       ],

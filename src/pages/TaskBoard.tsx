@@ -33,6 +33,13 @@ import {
   opencodeTaskTemplates,
 } from "../runtime/opencode";
 import { buildConductorSystemPrompt } from "../orchestration/conductor-tools/conductorPrompt";
+import {
+  agentRuntimeRecoveryActions,
+  agentRuntimeStateLabel,
+  createAgentRuntimeView,
+  type AgentRuntimeRecoveryAction,
+  type AgentRuntimeRecoveryActionId,
+} from "../app/agentRuntimeState";
 import type {
   Agent,
   AgentCluster,
@@ -133,6 +140,16 @@ type TaskBoardProps = {
   onResizeConductorPty?: (cols: number, rows: number) => void;
   onStopConductorPty?: () => void;
   onOpenAgentTerminal?: (agentId: string) => void;
+  onRecoverAgentSession?: (input: AgentSessionRecoveryRequest) => void;
+};
+
+export type AgentSessionRecoveryRequest = {
+  taskId: string;
+  runtimeTaskId: string;
+  agentId: string;
+  sessionId: string;
+  actionId: AgentRuntimeRecoveryActionId;
+  failedDispatchId?: string;
 };
 
 export function TaskBoard({
@@ -170,6 +187,7 @@ export function TaskBoard({
   onResizeConductorPty = () => undefined,
   onStopConductorPty = () => undefined,
   onOpenAgentTerminal = () => undefined,
+  onRecoverAgentSession = () => undefined,
 }: TaskBoardProps) {
   const [taskIntakeDraft, setTaskIntakeDraft] = useState<TaskIntakeDraft>(() => createDefaultTaskIntakeDraft());
   const [conductorMessage, setConductorMessage] = useState("");
@@ -199,6 +217,29 @@ export function TaskBoard({
   );
   const selectedSessionAgent =
     sessionAgents.find((agent) => agent.id === selectedSessionAgentId) ?? sessionAgents[0] ?? conductorAgent;
+  const sessionAgentRuntimeViews = useMemo(
+    () =>
+      selectedTask
+        ? sessionAgents.map((agent) =>
+            createAgentRuntimeView({
+              agent,
+              project: selectedProject,
+              task: selectedTask,
+              taskRuntimeState,
+            }),
+          )
+        : [],
+    [selectedProject, selectedTask, sessionAgents, taskRuntimeState],
+  );
+  const sessionAgentRuntimeViewById = useMemo(
+    () => new Map(sessionAgentRuntimeViews.map((view) => [view.agent.id, view])),
+    [sessionAgentRuntimeViews],
+  );
+  const selectedSessionAgentRuntimeView =
+    selectedSessionAgent && sessionAgentRuntimeViewById.get(selectedSessionAgent.id);
+  const selectedSessionRecoveryActions = selectedSessionAgentRuntimeView
+    ? agentRuntimeRecoveryActions(selectedSessionAgentRuntimeView)
+    : [];
   const executionEvents =
     selectedTask && conductorAgent
       ? createRuntimeExecutionEvents({
@@ -225,6 +266,21 @@ export function TaskBoard({
     if (!trimmedMessage) return;
     onWriteConductorPtyData(`${trimmedMessage}\n`);
     setConductorMessage("");
+  };
+
+  const recoverSelectedAgentSession = (action: AgentRuntimeRecoveryAction) => {
+    if (!selectedTask || !selectedSessionAgent || !selectedSessionAgentRuntimeView) return;
+    const failedDispatchId = selectedSessionAgentRuntimeView.unresolvedFailureDispatchId;
+    if (action.requiresFailedDispatch && !failedDispatchId) return;
+    if (action.requiresConfirmation && action.confirmMessage && !window.confirm(action.confirmMessage)) return;
+    onRecoverAgentSession({
+      taskId: selectedTask.id,
+      runtimeTaskId: getTaskRuntimeId(selectedTask),
+      agentId: selectedSessionAgent.id,
+      sessionId: selectedSessionAgentRuntimeView.sessionId,
+      actionId: action.id,
+      failedDispatchId,
+    });
   };
 
   const applyTaskDraftResult = (result: NativeTaskDraftResult) => {
@@ -365,24 +421,28 @@ export function TaskBoard({
                 <span className="eyebrow">Agents</span>
               </div>
               <div className="task-session-list">
-                {sessionAgents.map((agent) => (
-                  <button
-                    aria-label={`${agent.name} ${agent.role} ${agentStatusLabel(agent.status)}`}
-                    className={agent.id === selectedSessionAgent?.id ? "task-session-agent active" : "task-session-agent"}
-                    key={agent.id}
-                    type="button"
-                    onClick={() => setSelectedSessionAgentId(agent.id)}
-                  >
-                    <span className="execution-avatar" style={{ backgroundColor: agent.accent }}>
-                      {agent.name[0]}
-                    </span>
-                    <span>
-                      <strong>{agent.name}</strong>
-                      <small>{agent.role}</small>
-                    </span>
-                    <em>{agentStatusLabel(agent.status)}</em>
-                  </button>
-                ))}
+                {sessionAgents.map((agent) => {
+                  const runtimeView = sessionAgentRuntimeViewById.get(agent.id);
+                  const statusLabel = runtimeView?.label ?? agentRuntimeStateLabel("ready");
+                  return (
+                    <button
+                      aria-label={`${agent.name} ${agent.role} ${statusLabel}`}
+                      className={agent.id === selectedSessionAgent?.id ? "task-session-agent active" : "task-session-agent"}
+                      key={agent.id}
+                      type="button"
+                      onClick={() => setSelectedSessionAgentId(agent.id)}
+                    >
+                      <span className="execution-avatar" style={{ backgroundColor: agent.accent }}>
+                        {agent.name[0]}
+                      </span>
+                      <span>
+                        <strong>{agent.name}</strong>
+                        <small>{agent.role}</small>
+                      </span>
+                      <em>{statusLabel}</em>
+                    </button>
+                  );
+                })}
               </div>
             </section>
 
@@ -390,7 +450,10 @@ export function TaskBoard({
               <section className="panel task-session-detail">
                 <div className="task-session-head">
                   <span className="eyebrow">Selected Agent</span>
-                  <StatusPill status={selectedSessionAgent.status} />
+                  <StatusPill
+                    status={selectedSessionAgentRuntimeView?.state ?? "ready"}
+                    label={selectedSessionAgentRuntimeView?.label ?? agentRuntimeStateLabel("ready")}
+                  />
                 </div>
                 <div className="task-session-identity">
                   <span className="execution-avatar" style={{ backgroundColor: selectedSessionAgent.accent }}>
@@ -435,6 +498,29 @@ export function TaskBoard({
                     ))}
                   </div>
                 </div>
+                {selectedSessionRecoveryActions.length > 0 && (
+                  <div className="task-session-actions" aria-label="Agent recovery actions">
+                    <strong>恢复动作</strong>
+                    <div>
+                      {selectedSessionRecoveryActions.map((action) => {
+                        const disabled =
+                          action.requiresFailedDispatch && !selectedSessionAgentRuntimeView?.unresolvedFailureDispatchId;
+                        return (
+                          <button
+                            className={`recovery-action recovery-action-${action.tone}`}
+                            disabled={disabled}
+                            key={action.id}
+                            title={action.description}
+                            type="button"
+                            onClick={() => recoverSelectedAgentSession(action)}
+                          >
+                            {action.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </section>
             )}
           </aside>
@@ -1070,7 +1156,7 @@ function buildConductorRuntimePreview(draft: TaskIntakeDraft, selectedProject: P
       workerSessions,
       taskSessionPlan: sessionPlan,
     }),
-    tools: ["call_session", "read_task_state", "read_session"],
+    tools: ["call_session", "read_task_state", "read_session", "claim_task_completion"],
     workerSessions,
     sessionPlan,
   };
@@ -1172,7 +1258,18 @@ function createRuntimeExecutionEvents(input: {
 
   for (const event of runtimeEvents) {
     if (event.type === "task.user_message" || event.type === "user.intervention") {
+      if (isRawIdeTerminalIntervention(event)) continue;
       rendered.push(userExecutionEvent(event));
+      continue;
+    }
+
+    if (event.type === "conductor.message") {
+      rendered.push(conductorRuntimeEvent(event, input.conductorAgent, "Conductor 输出", "output message"));
+      continue;
+    }
+
+    if (event.type === "task.completion_claim") {
+      rendered.push(conductorRuntimeEvent(event, input.conductorAgent, "任务完成声明", "completion claim"));
       continue;
     }
 
@@ -1261,6 +1358,30 @@ function userExecutionEvent(event: SessionStoreEvent): ExecutionEvent {
     title: event.type === "task.user_message" ? "任务发起" : "用户修正方向",
     meta: "message to Conductor",
     markdown: message,
+  };
+}
+
+function isRawIdeTerminalIntervention(event: SessionStoreEvent) {
+  return event.type === "user.intervention" && stringFromEventData(event, "source") === "ide-terminal";
+}
+
+function conductorRuntimeEvent(
+  event: SessionStoreEvent,
+  conductorAgent: Agent,
+  title: string,
+  meta: string,
+): ExecutionEvent {
+  const actor = conductorAgent.name || "Conductor";
+  return {
+    id: event.id,
+    kind: "conductor",
+    actor,
+    initial: actor[0] ?? "C",
+    accent: conductorAgent.accent,
+    time: formatExecutionEventTime(event),
+    title,
+    meta,
+    markdown: stringFromEventData(event, "message") || event.summary,
   };
 }
 
@@ -1509,15 +1630,8 @@ function renderInlineMarkdown(text: string, keyPrefix: string) {
   });
 }
 
-function agentStatusLabel(status: Agent["status"]) {
-  if (status === "working") return "Run";
-  if (status === "waiting") return "Wait";
-  if (status === "review") return "Review";
-  return "Idle";
-}
-
 function mcpToolsForAgent(agent: Agent, conductorAgent: Agent) {
-  if (agent.id === conductorAgent.id) return ["agent_session_call", "read_task_state", "read_session"];
+  if (agent.id === conductorAgent.id) return ["agent_session_call", "read_task_state", "read_session", "claim_task_completion"];
   return ["agent_session_call", "provider_state", "read_session"];
 }
 

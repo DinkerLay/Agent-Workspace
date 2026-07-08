@@ -277,12 +277,16 @@ function registerIpcHandlers(input) {
       data: sanitizeJsonObject(request?.data),
     });
     const taskState = input.conductorToolBridge.readTaskState({ taskId });
-    return { ok: true, event, taskState };
+    return makeIpcSafe({ ok: true, event, taskState });
   });
 }
 
 function sanitizeJsonObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return JSON.parse(JSON.stringify(value));
+}
+
+function makeIpcSafe(value) {
   return JSON.parse(JSON.stringify(value));
 }
 

@@ -1,8 +1,8 @@
 import { CheckCircle2, CircleDot } from "lucide-react";
 import type { TaskStatus } from "../types";
 
-export function StatusPill({ status }: { status: string }) {
-  return <span className={`status-pill status-${normalizeStatus(status)}`}>{status}</span>;
+export function StatusPill({ status, label = status }: { status: string; label?: string }) {
+  return <span className={`status-pill status-${normalizeStatus(status)}`}>{label}</span>;
 }
 
 export function GateRow({ done, label }: { done: boolean; label: string }) {

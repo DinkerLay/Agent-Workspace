@@ -237,7 +237,11 @@ describe("workspace audit trail", () => {
   });
 
   it("preserves notification source evidence in workspace audit entries", () => {
-    const verified = prototypeReducer(initialPrototypeState, {
+    const pending = prototypeReducer(initialPrototypeState, {
+      type: "agent-claims-done",
+      taskId: "task-plan-watch",
+    });
+    const verified = prototypeReducer(pending, {
       type: "run-verification-command",
       taskId: "task-plan-watch",
     } as never);

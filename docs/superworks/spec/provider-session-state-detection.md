@@ -157,23 +157,53 @@ The adapter must not select "latest assistant message in the session" globally. 
 
 ## Workspace State Mapping
 
-The Trigger Monitor maps provider state to Workspace state:
+The Trigger Monitor maps provider state, dispatch lifecycle, and PTY lifecycle facts to one Agent Runtime State. PTY events only trigger inspection; they do not directly set Agent card state.
+
+```ts
+type AgentRuntimeState =
+  | "not_started"
+  | "starting"
+  | "ready"
+  | "queued"
+  | "delivered_pending"
+  | "running"
+  | "waiting_input"
+  | "permission_required"
+  | "waiting_conductor"
+  | "result_available"
+  | "result_invalid"
+  | "blocked"
+  | "timeout"
+  | "delivery_failed"
+  | "stopping"
+  | "stopped"
+  | "exited"
+  | "start_failed";
+```
+
+Agent cards, Workbench progress counts, `read_task_state`, `read_session`, and `call_session` deliverability checks must all consume this same Session Store state. Legacy `Agent.status` may remain as compatibility fallback only; it is not the native runtime status trigger.
+
+Provider state maps into the runtime state as follows:
 
 | Provider state | Workspace effect |
 | --- | --- |
-| `not_started` | dispatch remains queued or target session start pending |
-| `delivered_pending` | dispatch remains delivered; session may show running |
+| `not_started` | session state `not_started`; dispatch remains queued or target session start pending |
+| `delivered_pending` | dispatch remains delivered; session state `delivered_pending` |
 | `running` | session state `running`; UI shows working |
-| `waiting_input` | session state `waiting`; UI highlights required input |
-| `permission_required` | session state `waiting_permission`; UI highlights permission attention |
-| `completed_with_answer` | write task-level `messages.jsonl`, write worker `results.jsonl`, mark dispatch `result_available`, wake Conductor |
-| `completed_with_artifact` | write result record with artifact reference, mark dispatch `result_available`, wake Conductor |
-| `completed_without_result` | mark session `blocked` or `waiting_result_invalid`, record compact event, wake Conductor with failure text |
+| `waiting_input` | session state `waiting_input`; UI highlights required input |
+| `permission_required` | session state `permission_required`; UI highlights permission attention |
+| `completed_with_answer` | write task-level `messages.jsonl`, write worker `results.jsonl`, mark dispatch `result_available`, set session state `result_available`, wake Conductor |
+| `completed_with_artifact` | write result record with artifact reference, mark dispatch `result_available`, set session state `result_available`, wake Conductor |
+| `completed_without_result` | mark session `result_invalid`, record compact event, wake Conductor with failure text |
 | `blocked` | mark session `blocked`, wake Conductor with failure text |
 | `timeout` | mark session `timeout`, wake Conductor with timeout text |
 | `exited` | mark session `exited`; if dispatch has no result, wake Conductor with failure text |
 
 `completed_without_result` is a real state. It must not continue to display as `working`.
+
+`ready`, `queued`, `delivered_pending`, `result_available`, and `delivery_failed` can also be derived from Shell dispatch lifecycle records. A worker session with `ready`, `result_available`, or `waiting_conductor` is deliverable after Shell confirms the target provider terminal can receive input. `queued` means the current dispatch is waiting for delivery; it is not by itself proof that the target can receive input. A `delivery_failed` session is normally not deliverable, but a composite `delivery_failed` state with retained result context (`resultCount > 0` or `lastResultId`) and no active queued/delivered dispatch is a retry candidate; Shell may attempt another dispatch only after the provider terminal is input-ready and the provider adapter confirms the new dispatch marker. A session with `delivered_pending`, `running`, `waiting_input`, `permission_required`, `blocked`, `timeout`, pure `delivery_failed`, `result_invalid`, `stopping`, `stopped`, `exited`, or `start_failed` is not deliverable without user/runtime recovery.
+
+Agent recovery actions are derived from this same state, not from a second trigger. A retryable state may expose `retry_delivery`, `stop_then_retry`, `restart_fresh_then_retry`, or `force_retry` depending on the current runtime state and unresolved failed dispatch. Destructive actions require explicit user confirmation. `restart_fresh_then_retry` starts a new provider session for future messages but must not delete durable Session Store events, dispatches, results, or timeline evidence. `force_retry` skips only the semantic state gate; it must still require provider terminal input-readiness and provider adapter dispatch-marker confirmation before recording `delivered`.
 
 ## Session Store Records
 
@@ -257,9 +287,9 @@ Wake messages must not be JSON metadata payloads. They may include metadata line
 The UI should render Workspace state, not raw provider text guesses:
 
 - `running` -> working badge
-- `waiting` -> waiting/attention badge
-- `blocked` or `waiting_result_invalid` -> blocked/needs handling badge
-- `result_available` -> idle or result-ready badge depending on selected surface
+- `waiting_input` or `permission_required` -> waiting/attention badge
+- `blocked` or `result_invalid` -> blocked/needs handling badge
+- `result_available` -> result-ready badge and deliverable follow-up state
 - `timeout` -> timeout badge
 
 Agent cards must not read `NativePtySession.status`, terminal prompt text, or terminal regex results as their semantic state source. PTY lifecycle can only support explicit launch/exit records. Agent cards render the Workspace Agent State reduced from Provider Adapter results and explicit Runtime launch/exit records.
@@ -281,4 +311,4 @@ Implementation must include tests for:
 - The visible UI does not show `working` for a provider turn that already stopped without result.
 - PTY `data` and `exit` events never directly set Agent card state except for explicit launch/exit lifecycle records.
 - Terminal transcript regex and legacy sampled fields do not influence task state, Agent card state, dispatch result state, or Conductor wakeups.
-- Provider-native permission state maps to `permission_required` and then to Workspace `waiting_permission`.
+- Provider-native permission state maps to Workspace `permission_required`.

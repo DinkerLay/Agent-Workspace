@@ -1496,7 +1496,7 @@ function attachNativeSessionEvidence(
       agent.id === action.agentId
         ? {
             ...agent,
-            status: nativeSessionAgentStatus(action.session),
+            status: shouldPreserveNativeSessionAgentStatus(task.status) ? agent.status : nativeSessionAgentStatus(action.session),
             lastActive: action.session.status,
           }
         : agent,
@@ -1536,7 +1536,23 @@ function nativeSessionRunState(
   if (session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0) {
     return { runStatus: "failed-verification" as const, taskStatus: "failed-verification" as const };
   }
+  if (shouldPreserveNativeSessionTaskStatus(currentTaskStatus)) {
+    return { runStatus: nativeSessionRunStatusForPreservedTask(currentTaskStatus), taskStatus: currentTaskStatus };
+  }
   return { runStatus: "running" as const, taskStatus: "running" as const };
+}
+
+function shouldPreserveNativeSessionTaskStatus(status: TaskStatus) {
+  return status === "pending-review" || status === "done";
+}
+
+function shouldPreserveNativeSessionAgentStatus(status: TaskStatus) {
+  return status === "pending-review" || status === "done";
+}
+
+function nativeSessionRunStatusForPreservedTask(status: TaskStatus) {
+  if (status === "done") return "completed" as const;
+  return "pending-review" as const;
 }
 
 function nativeSessionEvidence(
@@ -1723,7 +1739,7 @@ export function approveReview(state: PrototypeState, taskId: string): PrototypeS
     : ensureRun(state.runs, task, agent?.id ?? state.selectedAgentId, "pending-review");
   const run = runs.find((item) => item.id === runId);
   if (!run) return state;
-  const blockReason = reviewApprovalBlockReason(state, run);
+  const blockReason = reviewApprovalBlockReason(state, task, run);
   if (blockReason) {
     return blockReviewApproval({ ...state, runs }, task, run, blockReason);
   }
@@ -1736,6 +1752,7 @@ export function approveReview(state: PrototypeState, taskId: string): PrototypeS
     activeView: "runs",
     selectedTaskId: taskId,
     tasks: setTaskStatus(state.tasks, taskId, "done"),
+    agents: state.agents.map((agent) => (agent.taskId === taskId ? { ...agent, status: "idle" } : agent)),
     reviewApprovalEvents: [...state.reviewApprovalEvents, approvalEvent],
     notificationEvents: [...state.notificationEvents, notificationEvent],
     runs: updateRun(runs, runId, (run) => ({
@@ -1758,9 +1775,11 @@ export function approveReview(state: PrototypeState, taskId: string): PrototypeS
 
 function reviewApprovalBlockReason(
   state: PrototypeState,
+  task: Task,
   run: AgentRun,
 ): ReviewGateEvent["reason"] | undefined {
   if (run.verification.status !== "passed") return "verification-required";
+  if (task.status !== "pending-review") return "review-readiness-required";
 
   const redactionRequired = state.commitConversationIncluded && Boolean(run.transcriptPath);
   const redactionScan = state.commitRedactionScans.find((scan) => scan.runId === run.id);
@@ -1776,10 +1795,7 @@ function blockReviewApproval(
   reason: ReviewGateEvent["reason"],
 ): PrototypeState {
   const gateEvent = createReviewGateEvent(state, task.id, run.id, reason);
-  const terminalLine =
-    reason === "verification-required"
-      ? `review gate: blocked ${task.id} until verification evidence passes`
-      : `review gate: blocked ${task.id} until Agent-Conversation redaction passes`;
+  const terminalLine = reviewGateTerminalLine(task.id, reason);
 
   return {
     ...state,
@@ -1797,10 +1813,7 @@ function createReviewGateEvent(
   reason: ReviewGateEvent["reason"],
 ): ReviewGateEvent {
   const sequence = state.reviewGateEvents.filter((event) => event.runId === runId).length + 1;
-  const reasonSummary =
-    reason === "verification-required"
-      ? "verification evidence must pass first"
-      : "Agent-Conversation redaction must pass first";
+  const reasonSummary = reviewGateReasonSummary(reason);
 
   return {
     id: `review-gate-${runId}-${String(sequence).padStart(3, "0")}`,
@@ -1812,6 +1825,22 @@ function createReviewGateEvent(
     createdAt: "2026-06-24T14:35:00Z",
     summary: `Review approval blocked for ${taskId}: ${reasonSummary}.`,
   };
+}
+
+function reviewGateReasonSummary(reason: ReviewGateEvent["reason"]) {
+  if (reason === "verification-required") return "verification evidence must pass first";
+  if (reason === "review-readiness-required") return "task must be pending review before approval";
+  return "Agent-Conversation redaction must pass first";
+}
+
+function reviewGateTerminalLine(taskId: string, reason: ReviewGateEvent["reason"]) {
+  if (reason === "verification-required") {
+    return `review gate: blocked ${taskId} until verification evidence passes`;
+  }
+  if (reason === "review-readiness-required") {
+    return `review gate: blocked ${taskId} until task reaches pending review`;
+  }
+  return `review gate: blocked ${taskId} until Agent-Conversation redaction passes`;
 }
 
 function createReviewApprovalEvent(

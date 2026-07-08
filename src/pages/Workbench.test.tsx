@@ -5,7 +5,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ComponentProps } from "react";
 import { initialPrototypeState } from "../mock/prototypeData";
+import type { ReadTaskStateResult } from "../orchestration/conductor-tools";
 import type { NativePtySession, NativeRuntimeStatus } from "../runtime/nativeBridge";
+import { createOpencodeSessionKey, getProjectRuntimeId, getTaskRuntimeId } from "../runtime/opencode";
 import { Workbench } from "./Workbench";
 
 afterEach(() => {
@@ -161,6 +163,7 @@ describe("Workbench", () => {
     expect(screen.getByText("call_session")).toBeTruthy();
     expect(screen.getByText("read_task_state")).toBeTruthy();
     expect(screen.getByText("read_session")).toBeTruthy();
+    expect(screen.getByText("claim_task_completion")).toBeTruthy();
     expect(screen.queryByText("finish_task_claim")).toBeNull();
     expect(screen.getByText("任务负责人，通过 MCP tools 调度和读取其他 session")).toBeTruthy();
 
@@ -178,6 +181,55 @@ describe("Workbench", () => {
     expect(screen.getByText("PTY 只提供生命周期；语义状态来自 provider adapter")).toBeTruthy();
   });
 
+  it("uses task runtime state for agent status pills and progress counts", () => {
+    const taskId = getTaskRuntimeId(selectedTask);
+    const projectId = getProjectRuntimeId(selectedProject);
+    const selectedAgentSessionId = createOpencodeSessionKey({
+      projectId,
+      taskId,
+      agentId: selectedAgent.id,
+    });
+    const taskRuntimeState: ReadTaskStateResult = {
+      taskId,
+      cursor: 9,
+      events: [],
+      sessions: [
+        {
+          sessionId: selectedAgentSessionId,
+          state: "result_available",
+          cursor: 9,
+        },
+      ],
+      dispatches: [
+        {
+          dispatchId: "A1B2C3",
+          taskId,
+          toSessionId: selectedAgentSessionId,
+          status: "result_available",
+          resultId: "result-A1B2C3",
+        },
+      ],
+      results: [
+        {
+          resultId: "result-A1B2C3",
+          dispatchId: "A1B2C3",
+          sessionId: selectedAgentSessionId,
+          answerPreview: "Executor result is ready.",
+        },
+      ],
+      messages: [],
+      pendingDecisions: [],
+    };
+
+    const { container } = renderWorkbench({ taskRuntimeState });
+
+    expect(screen.getAllByText("Result available").length).toBeGreaterThan(0);
+    expect(container.querySelector(".conversation-meta")?.textContent).toContain("Result available");
+    expect(container.querySelector(".conversation-meta")?.textContent).not.toContain("result_available");
+    expect(container.querySelector(".conversation-meta")?.textContent).not.toContain("review");
+    expect(screen.getByText("结果")).toBeTruthy();
+  });
+
   it("lets the left rail, agent list, and task context collapse and expand independently", () => {
     const selectedAgents: string[] = [];
     const selectedTasks: string[] = [];
@@ -186,15 +238,15 @@ describe("Workbench", () => {
       onSelectTask: (taskId) => selectedTasks.push(taskId),
     });
 
-    expect(screen.queryByRole("button", { name: /Executor.*Implementation.*idle/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Executor.*Implementation.*Ready/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "收起左侧 Agent 导航" }));
     expect(container.querySelector(".conversation-workbench.agents-collapsed")).toBeTruthy();
     expect(screen.getByRole("button", { name: "展开左侧 Agent 导航" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "展开左侧 Agent 导航" }));
     fireEvent.click(screen.getByRole("button", { name: /Agent 列表仅当前/ }));
-    expect(screen.getByRole("button", { name: /Executor.*Implementation.*idle/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Executor.*Implementation.*idle/ }));
+    expect(screen.getByRole("button", { name: /Executor.*Implementation.*Ready/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Executor.*Implementation.*Ready/ }));
 
     fireEvent.click(screen.getByRole("button", { name: /当前任务.*展开/ }));
     expect(screen.getAllByText("按 Agent 归因 changed files 并保存 commit context").length).toBeGreaterThan(0);

@@ -8,6 +8,7 @@ Real simulation scripts for Agent Workspace runtime behavior.
 Current scenarios:
 
 - `session-dispatch/call-session-to-worker.e2e.cjs`: verifies `call_session` starts a worker session, waits for provider TUI readiness, writes the assignment through the PTY, records dispatch delivery, and publishes PTY output back through Electron preload events.
+- `state-message-flow/completion-claim-review-gate.e2e.cjs`: uses a fake opencode binary to verify Session Store state projection reaches Agent card labels, preserves result-plus-failure decisions, and routes structured `task.completion_claim` into the Review gate.
 - `task-home-real-research/claude-dynamic-workflow.e2e.cjs`: clears `/Users/dinker/CODES/TEMP_project/Agent_Test/docs` and its `.agent-workspace/test-simulte-runtime`, starts the real Task Home flow, creates a research task with the research template, runs real `opencode`, requires provider-result-available Researcher and Reviewer dispatches, and waits for new `docs/research/`, `docs/superworks/spec/`, and `docs/superworks/plans/` outputs.
 
 Runtime layout:

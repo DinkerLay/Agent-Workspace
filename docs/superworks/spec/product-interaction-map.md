@@ -191,7 +191,7 @@ The shell therefore treats each terminal as a Workspace Session execution surfac
 ```text
 Conductor Workspace Session
   -> Agent Workspace MCP tools
-  -> call_session / read_task_state / read_session
+  -> call_session / read_task_state / read_session / claim_task_completion
   -> Shell Session Manager
   -> delegated Workspace Session
   -> provider-native work in PTY
@@ -275,7 +275,7 @@ After Task Intake creates a task, the Task page is conversation-first rather tha
 - Conductor's `agent_session_call` dispatch message to a target session,
 - worker result messages and later QA/Review events when present.
 
-The built Task page reads its execution feed from the Shell-owned runtime task state (`read_task_state`) when the desktop backend is available. `task.user_message`, `user.intervention`, `dispatch.created`, `dispatch.failed`, `dispatch.result_available`, and runtime wakeup events under `.agent-workspace/runtime/<runtimeTaskId>/events.jsonl` are projected into Markdown cards. Local projection may be used only as an empty-backend placeholder; once backend events exist, they are the source of truth for the Task page timeline.
+The built Task page reads its execution feed from the Shell-owned runtime task state (`read_task_state`) when the desktop backend is available. `task.user_message`, `user.intervention`, `dispatch.created`, `dispatch.failed`, `dispatch.result_available`, `conductor.message`, `task.completion_claim`, and runtime wakeup events under `.agent-workspace/runtime/<runtimeTaskId>/events.jsonl` are projected into Markdown cards. Local projection may be used only as an empty-backend placeholder; once backend events exist, they are the source of truth for the Task page timeline.
 
 The Conductor PTY remains the real running backend for start/write/stop and diagnostics, but the built Task page must not expose the raw terminal as the default execution view. Users correct the current flow through the bottom Conductor composer; sending text writes to the Conductor session and records a user intervention event when runtime persistence is available. The composer should expose Send, Stop, and Goal controls. Stop targets the task Conductor session, and Goal advances through the scheduler/review path rather than bypassing verification.
 

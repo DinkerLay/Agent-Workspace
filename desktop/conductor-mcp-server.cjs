@@ -16,6 +16,11 @@ const tools = [
     description: "Read Shell-owned provider-extracted results and state for a session.",
     inputSchema: objectSchema(["taskId", "sessionId"]),
   },
+  {
+    name: "claim_task_completion",
+    description: "Record a structured task completion claim after durable evidence and required review context support completion.",
+    inputSchema: objectSchema(["taskId", "sessionId", "message"]),
+  },
 ];
 
 async function handleMcpMessage(message, bridgeClient = createBridgeClientFromEnv()) {

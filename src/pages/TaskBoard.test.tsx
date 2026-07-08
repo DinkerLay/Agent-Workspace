@@ -101,6 +101,7 @@ describe("TaskBoard Task Home", () => {
     expect(screen.getByText("分析输出")).toBeTruthy();
     expect(screen.getByText("output message")).toBeTruthy();
     expect(screen.getAllByText("agent_session_call").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("claim_task_completion").length).toBeGreaterThan(0);
     expect(screen.getByText(/Conductor -> Executor/)).toBeTruthy();
     expect(screen.getByText("实现结果")).toBeTruthy();
     expect(screen.getByText("result message")).toBeTruthy();
@@ -170,6 +171,136 @@ describe("TaskBoard Task Home", () => {
     expect(screen.getAllByText("Provider").length).toBeGreaterThan(0);
     expect(screen.getAllByText("opencode").length).toBeGreaterThan(0);
     expect(screen.getAllByText("agent_session_call").length).toBeGreaterThan(0);
+  });
+
+  it("shows agent card status from task runtime state instead of stale agent.status", () => {
+    const props = baseProps();
+    const taskId = getTaskRuntimeId(props.selectedTask);
+    const projectId = getProjectRuntimeId(props.selectedProject);
+    const selectedAgentSessionId = createOpencodeSessionKey({
+      projectId,
+      taskId,
+      agentId: props.selectedAgent.id,
+    });
+    const taskRuntimeState: ReadTaskStateResult = {
+      taskId,
+      cursor: 7,
+      events: [],
+      sessions: [
+        {
+          sessionId: selectedAgentSessionId,
+          state: "result_available",
+          cursor: 7,
+        },
+      ],
+      dispatches: [
+        {
+          dispatchId: "A1B2C3",
+          taskId,
+          toSessionId: selectedAgentSessionId,
+          status: "result_available",
+          resultId: "result-A1B2C3",
+        },
+      ],
+      results: [
+        {
+          resultId: "result-A1B2C3",
+          dispatchId: "A1B2C3",
+          sessionId: selectedAgentSessionId,
+          answerPreview: "Review result is ready.",
+        },
+      ],
+      messages: [],
+      pendingDecisions: [],
+    };
+
+    const { container } = render(<TaskBoard {...props} taskRuntimeState={taskRuntimeState} />);
+    const selectedDetail = container.querySelector(".task-session-detail");
+
+    expect(screen.getByRole("button", { name: new RegExp(`${props.selectedAgent.name}.*Result available`) })).toBeTruthy();
+    expect(within(selectedDetail as HTMLElement).getByText("Result available")).toBeTruthy();
+    expect(within(selectedDetail as HTMLElement).queryByText("result_available")).toBeNull();
+    expect(within(selectedDetail as HTMLElement).queryByText("Review")).toBeNull();
+  });
+
+  it("shows state-driven recovery actions and confirms destructive agent retries", () => {
+    const props = baseProps();
+    const taskId = getTaskRuntimeId(props.selectedTask);
+    const projectId = getProjectRuntimeId(props.selectedProject);
+    const selectedAgentSessionId = createOpencodeSessionKey({
+      projectId,
+      taskId,
+      agentId: props.selectedAgent.id,
+    });
+    const recoverAgentSession = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const taskRuntimeState: ReadTaskStateResult = {
+      taskId,
+      cursor: 9,
+      events: [],
+      sessions: [
+        {
+          sessionId: selectedAgentSessionId,
+          state: "delivery_failed",
+          cursor: 9,
+          lastResultId: "result-A1B2C3",
+          resultCount: 1,
+          unresolvedFailureDispatchId: "D4E5F6",
+          attentionHints: ["delivery_failed", "result_available"],
+          assignmentReadinessHint: "ready",
+        },
+      ],
+      dispatches: [
+        {
+          dispatchId: "D4E5F6",
+          taskId,
+          toSessionId: selectedAgentSessionId,
+          assignment: "Retry the report fix.",
+          status: "failed",
+          failureReason: "target_session_delivery_timeout",
+        },
+      ],
+      results: [
+        {
+          resultId: "result-A1B2C3",
+          dispatchId: "A1B2C3",
+          sessionId: selectedAgentSessionId,
+          answerPreview: "Previous result exists.",
+        },
+      ],
+      messages: [],
+      pendingDecisions: [],
+    };
+
+    try {
+      render(
+        <TaskBoard
+          {...props}
+          taskRuntimeState={taskRuntimeState}
+          onRecoverAgentSession={recoverAgentSession}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: "重试发送" })).toBeTruthy();
+      const restart = screen.getByRole("button", { name: "重启新会话后重试" });
+
+      fireEvent.click(screen.getByRole("button", { name: "重试发送" }));
+      fireEvent.click(restart);
+      expect(recoverAgentSession).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(restart);
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(recoverAgentSession).toHaveBeenLastCalledWith({
+        taskId: props.selectedTask.id,
+        runtimeTaskId: taskId,
+        agentId: props.selectedAgent.id,
+        sessionId: selectedAgentSessionId,
+        actionId: "restart_fresh_then_retry",
+        failedDispatchId: "D4E5F6",
+      });
+    } finally {
+      confirm.mockRestore();
+    }
   });
 
   it("renders Markdown content inside execution cards", () => {
@@ -280,6 +411,102 @@ describe("TaskBoard Task Home", () => {
     expect(container.querySelector(".execution-md pre code")?.textContent).toContain(".agent-workspace/runtime");
     expect(screen.queryByText("分析输出")).toBeNull();
     expect(screen.queryByText(/请让 .* 处理当前任务的实现部分/)).toBeNull();
+  });
+
+  it("renders Conductor runtime messages and completion claims from backend task state", () => {
+    const props = baseProps();
+    const taskId = getTaskRuntimeId(props.selectedTask);
+    const taskRuntimeState: ReadTaskStateResult = {
+      taskId,
+      cursor: 4,
+      events: [
+        {
+          id: "event-1",
+          taskId,
+          sessionId: "conductor-session",
+          type: "conductor.message",
+          createdAt: "2026-07-06T00:00:01.000Z",
+          cursor: 1,
+          summary: "Conductor summarized progress",
+          data: {
+            message: "### 最终汇总\n两分支均通过，任务收口。",
+          },
+        },
+        {
+          id: "event-2",
+          taskId,
+          sessionId: "conductor-session",
+          type: "task.completion_claim",
+          createdAt: "2026-07-06T00:00:02.000Z",
+          cursor: 2,
+          summary: "Task completion claimed by Conductor",
+          data: {
+            message: "任务完成，等待 Review gate。",
+          },
+        },
+      ],
+      sessions: [],
+      dispatches: [],
+      results: [],
+      messages: [],
+      pendingDecisions: [],
+    };
+
+    render(<TaskBoard {...props} taskRuntimeState={taskRuntimeState} />);
+
+    expect(screen.getByText("Conductor 输出")).toBeTruthy();
+    expect(screen.getByText("completion claim")).toBeTruthy();
+    expect(screen.getByText("最终汇总")).toBeTruthy();
+    expect(screen.getByText("两分支均通过，任务收口。")).toBeTruthy();
+    expect(screen.getByText("任务完成，等待 Review gate。")).toBeTruthy();
+  });
+
+  it("does not render historical raw terminal control sequences as user interventions", () => {
+    const props = baseProps();
+    const taskId = getTaskRuntimeId(props.selectedTask);
+    const taskRuntimeState: ReadTaskStateResult = {
+      taskId,
+      cursor: 3,
+      events: [
+        {
+          id: "event-control",
+          taskId,
+          sessionId: "conductor-session",
+          type: "user.intervention",
+          createdAt: "2026-07-06T00:00:01.000Z",
+          cursor: 1,
+          summary: "User intervention sent from IDE terminal",
+          data: {
+            message: "\u001b]10;rgb:d7d7/fbfb/e8e8\u001b\\",
+            source: "ide-terminal",
+          },
+        },
+        {
+          id: "event-message",
+          taskId,
+          sessionId: "conductor-session",
+          type: "user.intervention",
+          createdAt: "2026-07-06T00:00:02.000Z",
+          cursor: 2,
+          summary: "User intervention sent to Conductor",
+          data: {
+            message: "请先停止当前方向。",
+            source: "task-composer",
+          },
+        },
+      ],
+      sessions: [],
+      dispatches: [],
+      results: [],
+      messages: [],
+      pendingDecisions: [],
+    };
+
+    const { container } = render(<TaskBoard {...props} taskRuntimeState={taskRuntimeState} />);
+
+    expect(screen.getByText("请先停止当前方向。")).toBeTruthy();
+    expect(container.textContent).not.toContain("rgb:d7d7");
+    expect(container.textContent).not.toContain("User intervention sent from IDE terminal");
   });
 
   it("does not render a second task sidebar inside Task Home", () => {
@@ -705,6 +932,7 @@ describe("TaskBoard Task Home", () => {
     expect(screen.queryByText("call_session")).toBeNull();
     expect(screen.queryByText("read_task_state")).toBeNull();
     expect(screen.queryByText("read_session")).toBeNull();
+    expect(screen.queryByText("claim_task_completion")).toBeNull();
     expect(screen.queryByText("finish_task_claim")).toBeNull();
     expect(screen.queryByText("原生 session，不注入 Agent Workspace 协议")).toBeNull();
     expect(screen.queryByText("Workspace Session Message")).toBeNull();

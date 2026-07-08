@@ -323,7 +323,7 @@ Record product audit when:
 - Conductor runtime injection is prepared,
 - Conductor PTY starts,
 - Conductor MCP tools are available for the session,
-- Conductor calls `call_session`, `read_task_state`, or `read_session`,
+- Conductor calls `call_session`, `read_task_state`, `read_session`, or `claim_task_completion`,
 - tool call completes or fails.
 
 Record developer trace when:
@@ -675,7 +675,7 @@ The first implementation should cover:
 
 1. Task intake and task status transitions.
 2. Conductor runtime injection and Conductor PTY start.
-3. `call_session`, `read_task_state`, and `read_session` tool calls.
+3. `call_session`, `read_task_state`, `read_session`, and `claim_task_completion` tool calls.
 4. Worker PTY start, dispatch created/delivered/failed, provider result available, state changed.
 5. Verification command start/completion and Review approval/block.
 6. Dev trace for IPC, PTY spawn/write, MCP bridge, Session Store write failures, and verification failures.

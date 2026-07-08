@@ -13,9 +13,11 @@
     "desktop:task-home-native-smoke": "electron desktop/task-home-native-smoke.cjs",
     "desktop:conductor-tool-smoke": "node desktop/conductor-tool-flow-smoke.cjs",
     "simulate:session-dispatch": "electron test_simulte/session-dispatch/call-session-to-worker.e2e.cjs",
+    "simulate:state-message-flow": "electron test_simulte/state-message-flow/completion-claim-review-gate.e2e.cjs",
     "simulate:task-home-real-research": "electron test_simulte/task-home-real-research/claude-dynamic-workflow.e2e.cjs",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
+    "verify": "npm test -- --run && npm run build && npm run simulate:session-dispatch && npm run simulate:state-message-flow",
     "preview": "vite preview --host 127.0.0.1 --port 4188"
   },
   "dependencies": {

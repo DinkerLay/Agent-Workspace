@@ -10,8 +10,15 @@ import {
   SquareTerminal,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import {
+  agentRuntimeProgressBucket,
+  agentRuntimeStateClass,
+  agentRuntimeStateLabel,
+  createAgentRuntimeView,
+} from "../app/agentRuntimeState";
 import { laneTitle, StatusPill } from "../components/common";
 import { PtyTerminal } from "../components/PtyTerminal";
+import type { ReadTaskStateResult } from "../orchestration/conductor-tools";
 import type { NativePtySession, NativeRuntimeStatus } from "../runtime/nativeBridge";
 import type {
   Agent,
@@ -45,6 +52,7 @@ type WorkbenchProps = {
   scratchpadSavedAt: string;
   nativeRuntimeStatus: NativeRuntimeStatus;
   nativePtySession?: NativePtySession;
+  taskRuntimeState?: ReadTaskStateResult;
   agentLaunchCommand: string;
   defaultAgentLaunchCommand: string;
   onPromptChange: (value: string) => void;
@@ -117,6 +125,7 @@ function WorkbenchReady({
   tasks,
   nativeRuntimeStatus,
   nativePtySession,
+  taskRuntimeState,
   agentLaunchCommand,
   defaultAgentLaunchCommand,
   onSelectAgent,
@@ -138,19 +147,45 @@ function WorkbenchReady({
     (agent) => selectedAgentCluster.agentIds.includes(agent.id) && agentBelongsToTask(agent, selectedTask),
   );
   const currentAgent = projectAgents.find((agent) => agent.id === selectedAgent.id) ?? projectAgents[0] ?? selectedAgent;
+  const projectAgentRuntimeViews = useMemo(
+    () =>
+      projectAgents.map((agent) =>
+        createAgentRuntimeView({
+          agent,
+          project: selectedProject,
+          task: selectedTask,
+          taskRuntimeState,
+        }),
+      ),
+    [projectAgents, selectedProject, selectedTask, taskRuntimeState],
+  );
+  const projectAgentRuntimeViewById = useMemo(
+    () => new Map(projectAgentRuntimeViews.map((view) => [view.agent.id, view])),
+    [projectAgentRuntimeViews],
+  );
+  const currentAgentRuntimeView =
+    projectAgentRuntimeViewById.get(currentAgent.id) ??
+    createAgentRuntimeView({
+      agent: currentAgent,
+      project: selectedProject,
+      task: selectedTask,
+      taskRuntimeState,
+    });
   const projectTasks = tasks.filter((task) => selectedProject.taskIds.includes(task.id));
   const visibleAgents = agentsExpanded ? projectAgents : [currentAgent];
   const visibleTasks = tasksExpanded ? projectTasks : [selectedTask];
-  const workingAgentCount = projectAgents.filter((agent) => agent.status === "working").length;
-  const reviewAgentCount = projectAgents.filter((agent) => agent.status === "review").length;
-  const waitingAgentCount = projectAgents.filter((agent) => agent.status === "waiting").length;
-  const idleAgentCount = projectAgents.filter((agent) => agent.status === "idle").length;
-  const activeAgentCount = workingAgentCount + reviewAgentCount;
+  const runningAgentCount = projectAgentRuntimeViews.filter((view) => agentRuntimeProgressBucket(view.state) === "running").length;
+  const resultAgentCount = projectAgentRuntimeViews.filter((view) => agentRuntimeProgressBucket(view.state) === "result").length;
+  const waitingAgentCount = projectAgentRuntimeViews.filter((view) => agentRuntimeProgressBucket(view.state) === "waiting").length;
+  const blockedAgentCount = projectAgentRuntimeViews.filter((view) => agentRuntimeProgressBucket(view.state) === "blocked").length;
+  const readyAgentCount = projectAgentRuntimeViews.filter((view) => agentRuntimeProgressBucket(view.state) === "ready").length;
+  const activeAgentCount = runningAgentCount;
   const progressCounts = [
-    { key: "working", label: "运行", value: workingAgentCount, className: "state-running" },
-    { key: "review", label: "决策", value: reviewAgentCount, className: "state-review" },
+    { key: "running", label: "运行", value: runningAgentCount, className: "state-running" },
+    { key: "result", label: "结果", value: resultAgentCount, className: "state-review" },
     { key: "waiting", label: "等待", value: waitingAgentCount, className: "state-decision" },
-    { key: "idle", label: "空闲", value: idleAgentCount, className: "state-neutral" },
+    { key: "blocked", label: "阻塞", value: blockedAgentCount, className: "state-blocked" },
+    { key: "ready", label: "就绪", value: readyAgentCount, className: "state-neutral" },
   ].filter((item) => item.value > 0);
   const runtimePolicy = selectedRun?.runtimePolicy;
   const terminalTranscript = useMemo(
@@ -166,7 +201,7 @@ function WorkbenchReady({
   const permissionStatus = runtimePolicy?.permissionMode ?? "pending";
   const permissionNeedsAttention = permissionStatus === "pending" || permissionStatus === "ask-before-write";
   const selectedAgentIsConductor = currentAgent.name === "Conductor";
-  const conductorTools = ["call_session", "read_task_state", "read_session"];
+  const conductorTools = ["call_session", "read_task_state", "read_session", "claim_task_completion"];
   const workbenchClassName = [
     "ide-layout",
     "conversation-workbench",
@@ -202,7 +237,7 @@ function WorkbenchReady({
             <span className="agent-avatar" style={{ backgroundColor: currentAgent.accent }}>
               {currentAgent.name[0]}
             </span>
-            <StatusPill status={currentAgent.status} />
+            <StatusPill status={currentAgentRuntimeView.state} label={currentAgentRuntimeView.label} />
             <small>{projectAgents.length} agents</small>
           </div>
         ) : (
@@ -263,27 +298,32 @@ function WorkbenchReady({
                 <small>{agentsExpanded ? "收起" : `仅当前 · ${projectAgents.length}`}</small>
               </button>
               <div className={agentsExpanded ? "agent-list expanded" : "agent-list collapsed"}>
-                {visibleAgents.map((agent) => (
-                  <button
-                    className={[
-                      "agent-row session-agent-row",
-                      currentAgent.id === agent.id ? "active" : "",
-                      agentCardStateClass(agent),
-                    ].join(" ")}
-                    key={agent.id}
-                    onClick={() => onSelectAgent(agent.id)}
-                    type="button"
-                  >
-                    <span className="agent-avatar" style={{ backgroundColor: agent.accent }}>
-                      {agent.name[0]}
-                    </span>
-                    <span>
-                      <strong>{agent.name}</strong>
-                      <small>{agent.role}</small>
-                    </span>
-                    <StatusPill status={agent.status} />
-                  </button>
-                ))}
+                {visibleAgents.map((agent) => {
+                  const runtimeView = projectAgentRuntimeViewById.get(agent.id);
+                  const runtimeState = runtimeView?.state ?? "ready";
+                  const runtimeLabel = runtimeView?.label ?? agentRuntimeStateLabel("ready");
+                  return (
+                    <button
+                      className={[
+                        "agent-row session-agent-row",
+                        currentAgent.id === agent.id ? "active" : "",
+                        agentRuntimeStateClass(runtimeState),
+                      ].join(" ")}
+                      key={agent.id}
+                      onClick={() => onSelectAgent(agent.id)}
+                      type="button"
+                    >
+                      <span className="agent-avatar" style={{ backgroundColor: agent.accent }}>
+                        {agent.name[0]}
+                      </span>
+                      <span>
+                        <strong>{agent.name}</strong>
+                        <small>{agent.role}</small>
+                      </span>
+                      <StatusPill status={runtimeState} label={runtimeLabel} />
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -331,18 +371,20 @@ function WorkbenchReady({
                 <span>当前任务进度</span>
               </div>
               <div className="task-progress-meter" aria-label="Agent 快速选择">
-                {projectAgents.map((agent) => (
-                  <button
-                    aria-label={`选择 ${agent.name} agent`}
-                    className={[
-                      agentCardStateClass(agent),
-                    ].join(" ")}
-                    key={agent.id}
-                    title={`${agent.name} · ${agent.role} · ${agent.status}`}
-                    type="button"
-                    onClick={() => onSelectAgent(agent.id)}
-                  />
-                ))}
+                {projectAgents.map((agent) => {
+                  const runtimeView = projectAgentRuntimeViewById.get(agent.id);
+                  const runtimeState = runtimeView?.state ?? "ready";
+                  return (
+                    <button
+                      aria-label={`选择 ${agent.name} agent`}
+                      className={agentRuntimeStateClass(runtimeState)}
+                      key={agent.id}
+                      title={`${agent.name} · ${agent.role} · ${runtimeState}`}
+                      type="button"
+                      onClick={() => onSelectAgent(agent.id)}
+                    />
+                  );
+                })}
               </div>
               <div className="task-progress-counts" aria-label="Agent 状态汇总">
                 {progressCounts.map((item) => (
@@ -363,7 +405,7 @@ function WorkbenchReady({
             <span className="eyebrow">terminal-backed conversation</span>
             <h2>{currentAgent.name} 对话 Terminal</h2>
             <div className="conversation-meta">
-              <StatusPill status={currentAgent.status} />
+              <StatusPill status={currentAgentRuntimeView.state} label={currentAgentRuntimeView.label} />
               <strong>{currentAgent.role}</strong>
               <span>{selectedTask.title}</span>
             </div>
@@ -466,12 +508,6 @@ function WorkbenchReady({
       </section>
     </section>
   );
-}
-
-function agentCardStateClass(agent: Agent) {
-  if (agent.status === "working" || agent.status === "review") return "state-running";
-  if (agent.status === "waiting") return "state-decision";
-  return "state-neutral";
 }
 
 function agentBelongsToTask(agent: Agent, task: Task) {

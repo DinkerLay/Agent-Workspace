@@ -18,6 +18,7 @@ describe("Conductor system prompt", () => {
     expect(prompt).toContain("route that fix as a new call_session assignment");
     expect(prompt).toContain("do not apply the fix yourself");
     expect(prompt).toContain("Worker sessions are provider-native terminals");
+    expect(prompt).toContain("Available Agent Workspace tools: call_session, read_task_state, read_session, claim_task_completion.");
     expect(prompt).toContain("Use call_session to assign session-level work");
     expect(prompt).toContain("includes one 6-character dispatchId");
     expect(prompt).toContain("match the result to the relevant dispatchId");
@@ -25,6 +26,8 @@ describe("Conductor system prompt", () => {
     expect(prompt).toContain("After a successful call_session result, end this Conductor turn");
     expect(prompt).toContain("Use read_task_state at the start of a Runtime-triggered turn");
     expect(prompt).toContain("Use read_session to inspect Shell-owned provider-extracted session results");
+    expect(prompt).toContain("Use claim_task_completion only after durable worker result evidence and required review context support final task completion");
+    expect(prompt).toContain("claim_task_completion records a structured task.completion_claim");
     expect(prompt).toContain("Allowed worker target roles:");
     expect(prompt).not.toContain("finish_task_claim");
     expect(prompt).not.toContain("Use ask_user");

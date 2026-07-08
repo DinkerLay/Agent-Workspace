@@ -91,9 +91,9 @@ describe("Shell Session Store", () => {
 
     const view = store.readSession({ taskId: "task-1", sessionId: "task-1-researcher", sinceCursor: 0, maxChars: 1000 });
 
-    expect(view.state).toBe("idle");
+    expect(view.state).toBe("ready");
     expect(view.cleanTranscriptTail).toBe("");
-    expect(view.events.map((event) => event.type)).toEqual(["session.started", "session.idle"]);
+    expect(view.events.map((event) => event.type)).toEqual(["session.started"]);
     expect(fs.existsSync(path.join(root, "task-1", "sessions", "task-1-researcher", "transcript.raw.log"))).toBe(false);
     expect(fs.existsSync(path.join(root, "task-1", "sessions", "task-1-researcher", "transcript.clean.log"))).toBe(false);
     expect(fs.existsSync(path.join(root, "task-1", "sessions", "task-1-researcher", "snapshots", "latest.txt"))).toBe(false);
@@ -141,7 +141,7 @@ describe("Shell Session Store", () => {
 
     const view = store.readSession({ taskId: "task-1", sessionId: "task-1-reviewer" });
 
-    expect(view.events.map((event) => event.type)).toEqual(["session.started", "session.blocked", "session.idle"]);
+    expect(view.events.map((event) => event.type)).toEqual(["session.started", "session.blocked", "session.ready"]);
   });
 
   it("does not reset session state to running when PTY output arrives", () => {
@@ -196,10 +196,10 @@ describe("Shell Session Store", () => {
 
     store.recordState(session, "idle", "Prompt visible.");
 
-    expect(store.readEvents({ taskId: "task-1" }).map((event) => event.type)).toEqual(["session.started", "session.idle"]);
+    expect(store.readEvents({ taskId: "task-1" }).map((event) => event.type)).toEqual(["session.started"]);
     const view = store.readSession({ taskId: "task-1", sessionId: "task-1-researcher" });
-    expect(view.events.map((event) => event.type)).toEqual(["session.started", "session.idle"]);
-    expect(view.cursor).toBe(201);
+    expect(view.events.map((event) => event.type)).toEqual(["session.started"]);
+    expect(view.cursor).toBe(200);
   });
 
   it("records dispatches without waiting for worker completion", () => {
@@ -270,6 +270,205 @@ describe("Shell Session Store", () => {
     expect(view.events.map((event) => event.type)).toEqual(["dispatch.created", "dispatch.delivered"]);
   });
 
+  it("projects a single runtime state from session and dispatch lifecycle", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-runtime-state-"));
+    const store = createSessionStore({ root });
+    const session = {
+      taskId: "task-1",
+      sessionId: "task-1-reviewer",
+      command: "opencode",
+      cwd: root,
+      provider: "opencode",
+    };
+
+    store.startSession(session);
+    expect(store.readSession({ taskId: "task-1", sessionId: "task-1-reviewer" }).state).toBe("ready");
+
+    const dispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: "task-1-reviewer",
+      assignment: "Review the research output.",
+    });
+    expect(store.readSession({ taskId: "task-1", sessionId: "task-1-reviewer" }).state).toBe("queued");
+
+    store.markDispatchDelivered({
+      taskId: "task-1",
+      sessionId: "task-1-reviewer",
+      dispatchId: dispatch.dispatchId,
+    });
+    expect(store.readSession({ taskId: "task-1", sessionId: "task-1-reviewer" }).state).toBe("delivered_pending");
+
+    store.recordDispatchResult({
+      taskId: "task-1",
+      sessionId: "task-1-reviewer",
+      dispatchId: dispatch.dispatchId,
+      reason: "provider-turn-completed",
+      provider: "opencode",
+      providerSessionId: "ses_reviewer",
+      providerMessageId: "msg_review",
+      answerText: "Review pass.",
+      source: "opencode-message-parts",
+    });
+
+    const view = store.readTaskState({ taskId: "task-1" });
+    expect(view.sessions[0]).toMatchObject({
+      sessionId: "task-1-reviewer",
+      state: "result_available",
+    });
+    expect(view.dispatches[0]).toMatchObject({
+      dispatchId: dispatch.dispatchId,
+      status: "result_available",
+    });
+  });
+
+  it("keeps result facts visible when a later dispatch fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-runtime-composite-state-"));
+    const store = createSessionStore({ root });
+    const sessionId = "task-1-researcher";
+    const firstDispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: sessionId,
+      assignment: "Research the first pass.",
+    });
+    store.markDispatchDelivered({
+      taskId: "task-1",
+      sessionId,
+      dispatchId: firstDispatch.dispatchId,
+    });
+    const firstResult = store.recordDispatchResult({
+      taskId: "task-1",
+      sessionId,
+      dispatchId: firstDispatch.dispatchId,
+      reason: "provider-answer-available",
+      provider: "opencode",
+      providerSessionId: "ses_worker",
+      providerMessageId: "msg_first",
+      answerText: "First pass result is available.",
+      source: "opencode-message-parts",
+    });
+    const secondDispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: sessionId,
+      assignment: "Research the second pass.",
+    });
+    store.markDispatchFailed({
+      taskId: "task-1",
+      sessionId,
+      dispatchId: secondDispatch.dispatchId,
+      reason: "target_session_delivery_timeout",
+      message: "Target session did not confirm delivery.",
+    });
+
+    const taskState = store.readTaskState({ taskId: "task-1" });
+    const session = taskState.sessions.find((item) => item.sessionId === sessionId);
+    const resultDecision = taskState.pendingDecisions.find((item) => item.type === "worker_result_available");
+    const failedDecision = taskState.pendingDecisions.find((item) => item.type === "session_delivery_failed");
+
+    expect(session).toMatchObject({
+      sessionId,
+      state: "delivery_failed",
+      activeDispatchId: secondDispatch.dispatchId,
+      lastResultId: firstResult.resultId,
+      resultCount: 1,
+      unresolvedFailureDispatchId: secondDispatch.dispatchId,
+      assignmentReadinessHint: "ready",
+    });
+    expect(session.attentionHints).toContain("delivery_failed");
+    expect(session.attentionHints).toContain("result_available");
+    expect(resultDecision).toMatchObject({
+      type: "worker_result_available",
+      dispatchId: firstDispatch.dispatchId,
+      sessionId,
+      resultId: firstResult.resultId,
+      severity: "info",
+    });
+    expect(failedDecision).toMatchObject({
+      type: "session_delivery_failed",
+      dispatchId: secondDispatch.dispatchId,
+      sessionId,
+      severity: "blocking",
+      actionHint: "recover_delivery",
+      relatedDispatchIds: [firstDispatch.dispatchId, secondDispatch.dispatchId],
+    });
+  });
+
+  it("keeps pure delivery failures non-deliverable when no prior result exists", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-runtime-pure-delivery-failure-"));
+    const store = createSessionStore({ root });
+    const sessionId = "task-1-researcher";
+    const dispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: sessionId,
+      assignment: "Research without a prior result.",
+    });
+    store.markDispatchFailed({
+      taskId: "task-1",
+      sessionId,
+      dispatchId: dispatch.dispatchId,
+      reason: "target_session_delivery_timeout",
+      message: "Target session did not confirm delivery.",
+    });
+
+    const taskState = store.readTaskState({ taskId: "task-1" });
+    const session = taskState.sessions.find((item) => item.sessionId === sessionId);
+
+    expect(session).toMatchObject({
+      sessionId,
+      state: "delivery_failed",
+      resultCount: 0,
+      unresolvedFailureDispatchId: dispatch.dispatchId,
+      assignmentReadinessHint: "not_ready",
+    });
+  });
+
+  it("keeps result facts visible when the provider process later exits", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-runtime-result-then-exit-"));
+    const store = createSessionStore({ root });
+    const session = {
+      taskId: "task-1",
+      sessionId: "task-1-reviewer",
+      command: "opencode",
+      cwd: root,
+      provider: "opencode",
+    };
+    store.startSession(session);
+    const dispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: session.sessionId,
+      assignment: "Review the report.",
+    });
+    store.markDispatchDelivered({
+      taskId: "task-1",
+      sessionId: session.sessionId,
+      dispatchId: dispatch.dispatchId,
+    });
+    const result = store.recordDispatchResult({
+      taskId: "task-1",
+      sessionId: session.sessionId,
+      dispatchId: dispatch.dispatchId,
+      reason: "provider-answer-available",
+      answerText: "Review result is available.",
+    });
+    store.recordState(session, "exited", "PTY exited after result.");
+
+    const taskState = store.readTaskState({ taskId: "task-1" });
+    const sessionSummary = taskState.sessions.find((item) => item.sessionId === session.sessionId);
+
+    expect(sessionSummary).toMatchObject({
+      sessionId: session.sessionId,
+      state: "exited",
+      lastResultId: result.resultId,
+      resultCount: 1,
+      assignmentReadinessHint: "not_ready",
+    });
+    expect(sessionSummary.attentionHints).toContain("result_available");
+    expect(taskState.pendingDecisions.find((item) => item.type === "worker_result_available")).toMatchObject({
+      dispatchId: dispatch.dispatchId,
+      resultId: result.resultId,
+      severity: "info",
+    });
+  });
+
   it("marks dispatches failed in the session view", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-dispatch-failed-"));
     const store = createSessionStore({ root });
@@ -296,6 +495,57 @@ describe("Shell Session Store", () => {
       failureMessage: "Target session could not be started.",
     });
     expect(view.events.map((event) => event.type)).toEqual(["dispatch.created", "dispatch.failed"]);
+  });
+
+  it("records pre-dispatch route validation failures as task runtime evidence", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-dispatch-route-failed-"));
+    const store = createSessionStore({ root });
+
+    const event = store.recordDispatchFailure({
+      taskId: "task-1",
+      toSessionId: "task-1-forbidden",
+      assignment: "Bypass route policy.",
+      reason: "route-not-allowed",
+      message: "Dispatch target is outside the allowed worker set.",
+    });
+
+    const view = store.readTaskState({ taskId: "task-1" });
+
+    expect(event).toMatchObject({
+      taskId: "task-1",
+      sessionId: "task-1-forbidden",
+      type: "dispatch.failed",
+      data: {
+        dispatchId: "",
+        toSessionId: "task-1-forbidden",
+        reason: "route-not-allowed",
+        message: "Dispatch target is outside the allowed worker set.",
+      },
+    });
+    expect(view.events.map((item) => item.type)).toEqual(["dispatch.failed"]);
+  });
+
+  it("records Conductor messages and task completion claims as task events", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-conductor-message-"));
+    const store = createSessionStore({ root });
+
+    store.recordConductorMessage({
+      taskId: "task-1",
+      sessionId: "task-1-conductor",
+      message: "两分支均通过，任务收口。",
+      summary: "Conductor final summary",
+    });
+    store.recordTaskCompletionClaim({
+      taskId: "task-1",
+      sessionId: "task-1-conductor",
+      message: "任务完成，等待 Review gate。",
+    });
+
+    const view = store.readTaskState({ taskId: "task-1" });
+
+    expect(view.events.map((item) => item.type)).toEqual(["conductor.message", "task.completion_claim"]);
+    expect(view.events[0].data.message).toBe("两分支均通过，任务收口。");
+    expect(view.events[1].data.message).toBe("任务完成，等待 Review gate。");
   });
 
   it("does not expose the legacy result-available marker without provider answer text", () => {
@@ -475,7 +725,7 @@ describe("Shell Session Store", () => {
 
     const events = store.readEvents({ taskId: "task-1", sinceCursor: 0 });
 
-    expect(events.map((event) => event.type)).toEqual(["session.started", "session.idle"]);
+    expect(events.map((event) => event.type)).toEqual(["session.started"]);
   });
 
   it("records user-visible task execution events in the runtime task index and optional session stream", () => {
@@ -511,6 +761,35 @@ describe("Shell Session Store", () => {
     expect(sessionView.events).toEqual([event]);
     expect(fs.existsSync(path.join(root, "task-1", "events.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(root, "task-1", "sessions", "task-1-conductor", "events.jsonl"))).toBe(true);
+  });
+
+  it("bounds JSONL event view reads to a tail window without truncating durable task events", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-task-event-tail-"));
+    const store = createSessionStore({ root, jsonlReadTailBytes: 260 });
+
+    for (let index = 0; index < 20; index += 1) {
+      store.recordTaskEvent({
+        taskId: "task-1",
+        sessionId: "task-1-conductor",
+        cwd: root,
+        type: "user.intervention",
+        summary: `event ${index}`,
+        data: {
+          message: `message ${index} ${"x".repeat(40)}`,
+        },
+      });
+    }
+
+    const taskState = store.readTaskState({ taskId: "task-1" });
+    const events = store.readEvents({ taskId: "task-1", sinceCursor: 0 });
+    const taskEventsPath = path.join(root, "task-1", "events.jsonl");
+    const durableEventLines = fs.readFileSync(taskEventsPath, "utf8").trim().split("\n");
+
+    expect(durableEventLines).toHaveLength(20);
+    expect(taskState.events.at(-1)).toMatchObject({ cursor: 20, summary: "event 19" });
+    expect(events.at(-1)).toMatchObject({ cursor: 20, summary: "event 19" });
+    expect(taskState.events[0].cursor).toBeGreaterThan(1);
+    expect(events[0].cursor).toBeGreaterThan(1);
   });
 
   it("removes OpenTUI string control sequences from clean transcript text", () => {

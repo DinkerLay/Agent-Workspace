@@ -10,6 +10,7 @@ import browserImage from "../docs/research/assets/agentsroom/browser-automation.
 import {
   browserRuntimeStatus,
   appendNativeTaskEvent,
+  callNativeSession,
   defaultOpencodeRunModel,
   generateNativeTaskDraft,
   getNativePtySession,
@@ -30,6 +31,7 @@ import { createRuntimeWorkspaceState } from "./runtime/opencode";
 import { getActiveRunForTask, prototypeReducer } from "./lib/taskMachine";
 import { CapabilityMap } from "./pages/CapabilityMap";
 import { TaskBoard } from "./pages/TaskBoard";
+import type { AgentSessionRecoveryRequest } from "./pages/TaskBoard";
 import { Workbench } from "./pages/Workbench";
 import { LoopConsole } from "./pages/LoopConsole";
 import { Review } from "./pages/Review";
@@ -48,12 +50,15 @@ import { buildWorkspaceAuditTrail } from "./lib/auditTrail";
 import { defaultAgentLaunchCommand } from "./lib/agentLaunchCommand";
 import {
   appendPtyReadinessBuffer,
+  cleanupNativePtySessionTracking,
   formatPtyInput,
   isLiveNativePtySession,
   isOpencodeTuiReady,
   mergeNativePtySession,
   normalizeNativePtySession,
+  waitForNativePtySessionStop,
 } from "./app/ptySessionUtils";
+import { writeNativePtyDataWithRuntimeEvidence } from "./app/nativePtyTimeline";
 import { deliveryEntries, loopStages, moreGroups, navItems, type ShellEntry } from "./app/shellConfig";
 import {
   buildOpencodeTuiCommand,
@@ -131,6 +136,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const startingNativePtySessionIdsRef = useRef<Set<string>>(new Set());
   const autoStartedTaskIdsRef = useRef<Set<string>>(new Set());
   const seededTaskRuntimeEventIdsRef = useRef<Set<string>>(new Set());
+  const processedRuntimeCompletionClaimIdsRef = useRef<Set<string>>(new Set());
   const initialPtyInputFlushedIdsRef = useRef<Set<string>>(new Set());
   const outputAfterInitialPtyInputIdsRef = useRef<Set<string>>(new Set());
   const pendingInitialPtyInputsRef = useRef<Record<string, { sessionId: string; input: string; agent: Agent }>>({});
@@ -256,6 +262,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     startingNativePtySessionIdsRef.current.clear();
     autoStartedTaskIdsRef.current.clear();
     seededTaskRuntimeEventIdsRef.current.clear();
+    processedRuntimeCompletionClaimIdsRef.current.clear();
     setNativePtySessionsByKey({});
     setNativeTaskStatesByRuntimeTaskId({});
     setNativeTerminalSizesByKey({});
@@ -309,6 +316,26 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const storeNativeTaskState = (taskState: ReadTaskStateResult | undefined) => {
     if (!taskState?.taskId) return;
     setNativeTaskStatesByRuntimeTaskId((current) => ({ ...current, [taskState.taskId]: taskState }));
+    routeRuntimeCompletionClaims(taskState);
+  };
+
+  const routeRuntimeCompletionClaims = (taskState: ReadTaskStateResult) => {
+    const completionClaims = taskState.events?.filter((event) => event.type === "task.completion_claim") ?? [];
+    if (completionClaims.length === 0) return;
+
+    const task = state.tasks.find((item) => getTaskRuntimeId(item) === taskState.taskId);
+    if (!task) return;
+
+    for (const event of completionClaims) {
+      const eventKey = `${taskState.taskId}:${event.id || event.cursor}`;
+      if (processedRuntimeCompletionClaimIdsRef.current.has(eventKey)) continue;
+
+      processedRuntimeCompletionClaimIdsRef.current.add(eventKey);
+      if (task.status === "pending-review" || task.status === "done") continue;
+
+      dispatch({ type: "agent-claims-done", taskId: task.id });
+      break;
+    }
   };
 
   const refreshNativeTaskStateForTask = (task: Task | undefined = selectedTask) => {
@@ -449,6 +476,18 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
         stoppedSession,
         nativePtyAgentsByIdRef.current[event.id] ?? activeSelectedAgent,
         resolveNativeSessionRef(event.id)?.taskId ?? selectedTask?.id,
+      );
+      cleanupNativePtySessionTracking(
+        {
+          sessionKeysById: nativePtySessionKeysByIdRef.current,
+          agentsById: nativePtyAgentsByIdRef.current,
+          readinessBuffersById: nativePtyReadinessBuffersByIdRef.current,
+          pendingEventsById: pendingNativePtyEventsByIdRef.current,
+          initialInputFlushedIds: initialPtyInputFlushedIdsRef.current,
+          outputAfterInitialInputIds: outputAfterInitialPtyInputIdsRef.current,
+          pendingInitialInputsByKey: pendingInitialPtyInputsRef.current,
+        },
+        { sessionId: event.id, sessionKey },
       );
     });
   };
@@ -710,30 +749,32 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   };
 
   const writeRawToNativePtySession = (data: string) => {
-    if (!nativePtySession || nativePtySession.status !== "running") return;
-    void writeNativePtySession(nativePtySession.id, data).then((session) => {
-      storeNativePtySession(session, { attach: false, agent: activeSelectedAgent });
+    void writeNativePtyDataWithRuntimeEvidence({
+      session: nativePtySession,
+      task: selectedTask,
+      data,
+      source: "ide-terminal",
+      summary: "User intervention sent from IDE terminal",
+      writePtySession: writeNativePtySession,
+      storePtySession: (session) => {
+        storeNativePtySession(session, { attach: false, agent: activeSelectedAgent });
+      },
     });
   };
 
   const writeRawToSelectedTaskConductorPtySession = (data: string) => {
-    if (!conductorNativePtySession || conductorNativePtySession.status !== "running") return;
-    void writeNativePtySession(conductorNativePtySession.id, data).then((session) => {
-      storeNativePtySession(session, { attach: false, agent: selectedTaskConductorAgent });
-      const message = data.trim();
-      if (selectedTask && message) {
-        void recordNativeTaskRuntimeEvent({
-          task: selectedTask,
-          sessionId: conductorNativePtySession.id,
-          type: "user.intervention",
-          summary: "User intervention sent to Conductor",
-          data: {
-            message,
-            source: "task-composer",
-            targetSessionId: conductorNativePtySession.id,
-          },
-        });
-      }
+    void writeNativePtyDataWithRuntimeEvidence({
+      session: conductorNativePtySession,
+      task: selectedTask,
+      data,
+      ptyData: formatPtyInput(data.trimEnd()),
+      source: "task-composer",
+      summary: "User intervention sent to Conductor",
+      writePtySession: writeNativePtySession,
+      storePtySession: (session) => {
+        storeNativePtySession(session, { attach: false, agent: selectedTaskConductorAgent });
+      },
+      recordRuntimeEvent: recordNativeTaskRuntimeEvent,
     });
   };
 
@@ -768,6 +809,65 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
         agent: selectedTaskConductorAgent,
       });
     });
+  };
+
+  const recoverAgentSession = (input: AgentSessionRecoveryRequest) => {
+    const task = state.tasks.find((item) => item.id === input.taskId);
+    const taskState = nativeTaskStatesByRuntimeTaskId[input.runtimeTaskId];
+    const failedDispatch =
+      taskState?.dispatches.find((dispatch) => dispatch.dispatchId === input.failedDispatchId) ??
+      [...(taskState?.dispatches ?? [])]
+        .reverse()
+        .find((dispatch) => dispatch.toSessionId === input.sessionId && dispatch.status === "failed");
+    if (!task || !failedDispatch?.assignment) return;
+    const assignment = failedDispatch.assignment;
+    const contextRefs = failedDispatch.contextRefs;
+    const expectedOutput = failedDispatch.expectedOutput;
+    const priority =
+      failedDispatch.priority === "low" || failedDispatch.priority === "high" || failedDispatch.priority === "normal"
+        ? failedDispatch.priority
+        : undefined;
+
+    const recoverySummary = agentRecoveryActionSummary(input.actionId);
+    void (async () => {
+      await appendNativeTaskEvent({
+        taskId: input.runtimeTaskId,
+        sessionId: input.sessionId,
+        cwd: selectedProject.path,
+        type: "user.intervention",
+        summary: recoverySummary,
+        data: {
+          source: "agent-recovery-action",
+          actionId: input.actionId,
+          agentId: input.agentId,
+          failedDispatchId: failedDispatch.dispatchId,
+        },
+      });
+
+      if (recoveryActionStopsSession(input.actionId)) {
+        const stoppedSession = await waitForNativePtySessionStop({
+          sessionId: input.sessionId,
+          stopSession: stopNativePtySession,
+          getSession: getNativePtySession,
+        });
+        storeNativePtySession(stoppedSession, {
+          attach: stoppedSession?.status === "stopped",
+          agent: state.agents.find((agent) => agent.id === input.agentId),
+          taskId: task.id,
+        });
+      }
+
+      await callNativeSession({
+        taskId: input.runtimeTaskId,
+        toSessionId: input.sessionId,
+        assignment,
+        contextRefs,
+        expectedOutput,
+        priority,
+        force: recoveryActionForcesDispatch(input.actionId),
+      });
+      refreshNativeTaskStateForTask(task);
+    })();
   };
 
   const runVerificationForTask = (taskId: string) => {
@@ -962,6 +1062,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
             scratchpadSavedAt={state.scratchpadSavedAt}
             nativeRuntimeStatus={nativeRuntimeStatus}
             nativePtySession={nativePtySession}
+            taskRuntimeState={selectedTaskRuntimeState}
             agentLaunchCommand={selectedAgentLaunchCommand}
             defaultAgentLaunchCommand={defaultAgentLaunchCommand(activeSelectedAgent?.model ?? defaultOpencodeRunModel)}
             onAgentClaimsDone={() => {
@@ -1010,6 +1111,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
             onResizeConductorPty={resizeSelectedTaskConductorPtySession}
             onStopConductorPty={stopSelectedTaskConductorPtySession}
             onOpenAgentTerminal={openAgentTerminal}
+            onRecoverAgentSession={recoverAgentSession}
           />
         )}
         {state.activeView === "loops" && (
@@ -1325,6 +1427,8 @@ function buildConductorKickoffPrompt(input: {
     "After call_session returns ok true, end this Conductor turn and wait for a runtime wakeup. Do not synchronously wait, poll, or block on a just-dispatched worker result.",
     "If call_session returns ok false, correct the target/config if obvious; otherwise ask the user and stop.",
     "Use read_session only after the runtime reports that provider output is available or when you need to inspect existing session evidence.",
+    "Use claim_task_completion only after durable worker result evidence and required review context support final task completion.",
+    "claim_task_completion records a structured task.completion_claim; normal terminal text is not a completion trigger.",
     "Do not wait for another instruction before beginning. Do not paste hidden protocol text into workers.",
   ].join("\n");
 }
@@ -1366,6 +1470,24 @@ function primaryViewFor(view: View): View {
     return "delivery";
   }
   return "more";
+}
+
+function agentRecoveryActionSummary(actionId: AgentSessionRecoveryRequest["actionId"]) {
+  const labels: Record<AgentSessionRecoveryRequest["actionId"], string> = {
+    retry_delivery: "User requested agent dispatch retry",
+    stop_then_retry: "User requested stop agent session then retry dispatch",
+    restart_fresh_then_retry: "User requested fresh agent session retry",
+    force_retry: "User requested force dispatch retry",
+  };
+  return labels[actionId];
+}
+
+function recoveryActionStopsSession(actionId: AgentSessionRecoveryRequest["actionId"]) {
+  return actionId === "stop_then_retry" || actionId === "restart_fresh_then_retry";
+}
+
+function recoveryActionForcesDispatch(actionId: AgentSessionRecoveryRequest["actionId"]) {
+  return actionId === "force_retry";
 }
 
 function EmptyRuntimePanel({ onOpenTaskHome }: { onOpenTaskHome: () => void }) {

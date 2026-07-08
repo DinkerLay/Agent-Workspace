@@ -28,7 +28,7 @@ Task Home and Task Draft Assistant produce an editable Task Session Plan before 
 ```text
 Conductor Session
   -> Agent Workspace MCP tools
-  -> call_session / read_task_state / read_session
+  -> call_session / read_task_state / read_session / claim_task_completion
   -> Shell Session Manager
   -> provider-native delegated sessions
   -> Shell-owned session store
@@ -193,7 +193,7 @@ The first Conductor MCP should be small and explicit.
 
 Send a large, session-level assignment to another provider session. This is asynchronous.
 
-If the target session is not running, Shell starts it as a plain provider-native PTY using the task template's target launch profile, waits until the provider terminal can receive input, then writes the normal assignment text. `call_session` returns success only after Shell has confirmed delivery to the target terminal. If Shell cannot start the target session or cannot confirm delivery before the delivery timeout, it returns a structured failure and records the reason in the Session Store.
+If the target session is not running, Shell starts it as a plain provider-native PTY using the task template's target launch profile, waits until the provider terminal can receive input, then writes the normal assignment text. `call_session` returns success only after Shell has confirmed delivery to the target provider session. For opencode, delivery confirmation means the provider adapter can find the exact `[Agent Workspace] Dispatch ID <dispatchId>` marker in opencode's structured session database for the target workspace after the dispatch was created. If Shell cannot start the target session or cannot confirm delivery before the delivery timeout, it returns a structured failure and records the reason in the Session Store.
 
 `call_session` is a pure dispatch tool. It does not own loop progression, does not decide when Conductor should run again, and does not wait for the target session result. Runtime wakeup and loop scheduling are separate Task Runtime responsibilities. The assignment body should include the full context needed for that session turn, such as the full Reviewer text when routing a fix, but the tool input must remain generic and must not grow business-specific fields such as `review_result`, `fix_dispatch`, or `required_next_action`.
 
@@ -224,7 +224,7 @@ Output:
   "toSessionId": "task-123-researcher",
   "status": "delivered",
   "deliveryState": "delivered",
-  "targetSessionState": "running",
+  "targetSessionState": "delivered_pending",
   "resultState": "pending",
   "async": true,
   "turnPolicy": "stop_after_dispatch",
@@ -252,7 +252,11 @@ Failure output:
 }
 ```
 
-`call_session` must not wait for the target session to finish. A successful `delivered` result only means the assignment has reached the target terminal. The target session may take seconds, minutes, or longer; it may also use its own provider-native subagents, tools, permission flows, and iteration controls.
+`call_session` must not wait for the target session to finish. A successful `delivered` result only means the assignment has reached the target provider session and has been recorded by the provider adapter's delivery-confirmation path. The target session may take seconds, minutes, or longer; it may also use its own provider-native subagents, tools, permission flows, and iteration controls.
+
+A later failed dispatch does not necessarily make the worker session permanently unavailable. If the same session has retained result context from an earlier dispatch and no active queued/delivered dispatch remains, Shell may treat the composite `delivery_failed` + result state as a retry candidate. The retry still follows the normal `call_session` delivery path: the target provider terminal must be input-ready, the assignment must be written as a normal dispatch, and the provider adapter must confirm the new dispatch marker before Shell records `delivered`.
+
+User-visible recovery controls must be state-derived and use Shell-owned dispatch records. When a user selects retry, stop-then-retry, restart-fresh-then-retry, or force-retry, Shell should reuse the unresolved failed dispatch assignment and call `call_session` again instead of asking the user or Conductor to paste hidden protocol text. Stop/restart/force actions require confirmation and must be recorded as `user.intervention` runtime evidence. Restarting a fresh provider session must not erase historical Session Store evidence.
 
 Parallel fan-out should not rely on a model choosing to chain multiple ambiguous `call_session` calls after each dispatch. If a task template needs deterministic parallel fan-out, add a separate batch primitive such as `call_sessions` or a Shell-side template step that creates multiple dispatches atomically. Single `call_session` remains `stop_after_dispatch`.
 
@@ -282,7 +286,7 @@ Output:
   "sessions": [
     {
       "sessionId": "task-123-researcher",
-      "state": "idle",
+      "state": "result_available",
       "cursor": 57,
       "lastStateSummary": "Provider result available."
     }
@@ -336,7 +340,7 @@ Output:
 ```json
 {
   "sessionId": "task-123-researcher",
-  "state": "idle",
+  "state": "result_available",
   "cursor": 57,
   "cleanTranscriptTail": "",
   "events": [],
@@ -492,12 +496,13 @@ Loop stop conditions:
 - required artifacts exist and pass template checks,
 - Review gate passes,
 - Conductor states delivery readiness and no required check remains,
+- Conductor records a structured `claim_task_completion` event and Review gate can verify it,
 - user decision is required,
 - permission is denied,
 - max rounds, time, or budget limits are reached,
 - provider adapter reports unrecoverable blocked/exited state.
 
-Model claims are not enough to stop a loop. A worker or Conductor saying "done" is only a claim. The Task Runtime must verify expected artifacts, provider result availability, route policy, and Review gate evidence before moving a task to Done.
+Model claims are not enough to stop a loop. A worker or Conductor saying "done" is only a claim. Conductor must use `claim_task_completion` to record a durable `task.completion_claim`; the Task Runtime must then verify expected artifacts, provider result availability, route policy, and Review gate evidence before moving a task to Done.
 
 ## Runtime Injection Strategy
 
