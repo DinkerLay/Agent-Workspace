@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
+  findProviderSessionForConductorTask,
   findProviderSessionForDispatch,
   getDispatchAssistantAnswer,
   getLastEffectiveAssistantAnswer,
@@ -28,6 +32,23 @@ function nodeExpect(actual) {
 }
 
 describe("opencode session adapter", () => {
+  it("binds a Conductor to its own provider session from the task kickoff marker", async () => {
+    const queries = [];
+    const result = await findProviderSessionForConductorTask({
+      cwd: "/tmp/project",
+      taskId: "task-abc123",
+      query: async (sql) => {
+        queries.push(sql);
+        return [{ sessionId: "ses_conductor", taskMessageCreatedAt: 7000 }];
+      },
+    });
+
+    expect(result).toEqual({ providerSessionId: "ses_conductor", taskMessageCreatedAt: 7000 });
+    expect(queries[0].includes("Start this Agent Workspace task now.")).toBe(true);
+    expect(queries[0].includes("Task id: task-abc123")).toBe(true);
+    expect(queries[0].includes("/tmp/project")).toBe(true);
+  });
+
   it("finds the provider session that received a dispatch assignment", async () => {
     const rows = [];
     const query = async (sql) => {
@@ -47,6 +68,27 @@ describe("opencode session adapter", () => {
     });
     expect(rows[0].includes("A1B2C3")).toBe(true);
     expect(rows[0].includes("/tmp/project")).toBe(true);
+  });
+
+  it("matches both the supplied cwd and its filesystem-realpath", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-session-adapter-"));
+    const realpath = fs.realpathSync.native?.(root) ?? fs.realpathSync(root);
+    const queries = [];
+    try {
+      await findProviderSessionForDispatch({
+        dispatchId: "REALPATH1",
+        cwd: root,
+        query: async (sql) => {
+          queries.push(sql);
+          return [];
+        },
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(queries[0].includes(root)).toBe(true);
+    expect(queries[0].includes(realpath)).toBe(true);
   });
 
   it("matches the worker assignment marker after the dispatch creation time", async () => {

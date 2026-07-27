@@ -2,11 +2,55 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
+function createSessionStore({
+  root,
+  jsonlReadTailBytes = 2 * 1024 * 1024,
+  terminalLogMaxBytes = 8 * 1024 * 1024,
+}) {
   if (!root) {
     throw new Error("Session Store requires root.");
   }
   const taskRoots = new Map();
+  // Semantic changes are a separate channel from raw PTY output.  Consumers
+  // use this to re-read durable state; they never receive or infer state from
+  // a terminal chunk.
+  const taskChangeListeners = new Set();
+
+  function onTaskChange(listener) {
+    if (typeof listener !== "function") throw new Error("Task change listener must be a function.");
+    taskChangeListeners.add(listener);
+    return () => taskChangeListeners.delete(listener);
+  }
+
+  function notifyTaskChange(change) {
+    const taskId = String(change?.taskId ?? "");
+    if (!taskId) return;
+    const payload = {
+      taskId,
+      sessionId: change?.sessionId ? String(change.sessionId) : undefined,
+      type: String(change?.type ?? "runtime.state_changed"),
+      cursor: Number.isFinite(change?.cursor) ? change.cursor : undefined,
+    };
+    for (const listener of taskChangeListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Store persistence must never depend on a live desktop subscriber.
+      }
+    }
+  }
+
+  // Dynamic project roots are a durable Task fact, not merely a side effect of
+  // starting a terminal.  Electron may restart before a historical Run is
+  // opened, so callers that recovered a Task from durable storage can restore
+  // this routing fact before any cwd-less Session Store read.
+  function bindTaskRoot(input = {}) {
+    const taskId = String(input.taskId ?? "");
+    const cwd = String(input.cwd ?? "");
+    if (!taskId) throw new Error("Session Store root binding requires taskId.");
+    if (!cwd) throw new Error("Session Store root binding requires cwd.");
+    return resolveRoot({ taskId, cwd });
+  }
 
   function startSession(session) {
     ensureSessionDir(session);
@@ -17,17 +61,60 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
       cwd: session.cwd,
       provider: session.provider,
       model: session.model,
+      incarnationId: session.incarnationId,
+      generation: session.generation,
       cursor,
       updatedAt: new Date().toISOString(),
     });
   }
 
-  function recordOutput(session) {
-    ensureSessionDir(session);
+  function recordOutput(session, chunk = "") {
+    const dir = ensureSessionDir(session);
+    const raw = Buffer.from(String(chunk ?? ""), "utf8");
+    let terminalLogBytes = 0;
+    let terminalLogTruncated = false;
+    if (raw.length) {
+      const logPath = path.join(dir, "terminal.raw.log");
+      fs.appendFileSync(logPath, raw);
+      const retained = retainTerminalLogTail(logPath, terminalLogMaxBytes);
+      terminalLogBytes = retained.bytes;
+      terminalLogTruncated = retained.truncated;
+    } else {
+      const logPath = path.join(dir, "terminal.raw.log");
+      terminalLogBytes = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
+    }
     writeState(session, {
       lastOutputAt: new Date().toISOString(),
+      terminalLogBytes,
+      terminalLogTruncated,
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  function readTerminalLog(input = {}) {
+    const session = { taskId: String(input.taskId ?? ""), sessionId: String(input.sessionId ?? ""), cwd: input.cwd };
+    if (!session.taskId || !session.sessionId) throw new Error("Terminal log requires taskId and sessionId.");
+    const dir = path.join(resolveRoot(session), safeSegment(session.taskId), "sessions", safeSegment(session.sessionId));
+    const logPath = path.join(dir, "terminal.raw.log");
+    if (!fs.existsSync(logPath)) return { sessionId: session.sessionId, content: "", bytes: 0, truncated: false };
+    const totalBytes = fs.statSync(logPath).size;
+    const requested = Number(input.maxBytes);
+    const maxBytes = Number.isSafeInteger(requested) && requested > 0 ? requested : terminalLogMaxBytes;
+    const start = Math.max(0, totalBytes - maxBytes);
+    const handle = fs.openSync(logPath, "r");
+    try {
+      const buffer = Buffer.alloc(totalBytes - start);
+      fs.readSync(handle, buffer, 0, buffer.length, start);
+      const state = readJson(path.join(dir, "state.json")) ?? {};
+      return {
+        sessionId: session.sessionId,
+        content: buffer.toString("utf8"),
+        bytes: totalBytes,
+        truncated: start > 0 || Boolean(state.terminalLogTruncated),
+      };
+    } finally {
+      fs.closeSync(handle);
+    }
   }
 
   function recordState(session, state, summary, data = {}) {
@@ -35,6 +122,9 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
     const current = readJson(path.join(ensureSessionDir(session), "state.json")) ?? {};
     if (normalizeSessionRuntimeState(current.state) === runtimeState) {
       const cursor = latestKnownEventCursor(session, current.cursor ?? 0);
+      const stateDetailChanged =
+        current.lastStateSummary !== summary ||
+        JSON.stringify(current.lastStateData ?? {}) !== JSON.stringify(data ?? {});
       writeState(session, {
         state: runtimeState,
         cursor,
@@ -42,6 +132,12 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
         lastStateData: data,
         updatedAt: new Date().toISOString(),
       });
+      // Provider polling may observe the same state repeatedly. Persisting a
+      // heartbeat is useful, but re-reading the whole Workbench is only useful
+      // when its semantic state changed. Raw PTY output is never on this path.
+      if (stateDetailChanged) {
+        notifyTaskChange({ taskId: session.taskId, sessionId: session.sessionId, type: `session.${runtimeState}`, cursor });
+      }
       return cursor;
     }
     const cursor = appendEvent(session, `session.${runtimeState}`, undefined, summary, data);
@@ -63,9 +159,15 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
       dispatchId,
       taskId: input.taskId,
       toSessionId: input.toSessionId,
+      ...(input.agentId ? { agentId: String(input.agentId) } : {}),
       conductorSessionId: input.conductorSessionId ? String(input.conductorSessionId) : "",
       assignment: input.assignment,
       contextRefs: input.contextRefs ?? [],
+      // A context packet is a durable snapshot resolved by the Runtime when
+      // the Conductor explicitly cites a semantic Session result.  Retaining
+      // the snapshot makes a dispatched worker prompt auditable and stable if
+      // later Provider state changes or the app is restarted.
+      contextPackets: input.contextPackets ?? [],
       expectedOutput: input.expectedOutput ?? "",
       priority: input.priority ?? "normal",
       status: "queued",
@@ -76,6 +178,8 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
     appendEvent(session, "dispatch.created", undefined, `Dispatch ${dispatchId} created`, {
       dispatchId,
       conductorSessionId: record.conductorSessionId,
+      contextRefs: record.contextRefs,
+      contextResultIds: record.contextPackets.map((packet) => packet?.resultId).filter(Boolean),
     });
     writeState(session, {
       state: "queued",
@@ -86,23 +190,121 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
   }
 
   function markDispatchDelivered(input) {
+    return markDispatchProviderReceived(input);
+  }
+
+  // Transport acceptance and Provider receipt are distinct durable facts. A
+  // terminal write may succeed while OpenCode never records the assignment.
+  function markDispatchInputAccepted(input) {
+    return updateDispatchStatus(input, {
+      from: new Set(["queued", "input_accepted"]),
+      status: "input_accepted",
+      timestampField: "inputAcceptedAt",
+      eventType: "dispatch.input_accepted",
+      eventSummary: `Dispatch ${input.dispatchId} accepted by Terminal Runtime`,
+      sessionState: "queued",
+      stateSummary: "Terminal Runtime accepted serialized dispatch input; awaiting OpenCode receipt.",
+      data: {
+        transport: input.transport ? String(input.transport) : "terminal_runtime",
+        incarnationId: input.incarnationId ? String(input.incarnationId) : undefined,
+        generation: input.generation ? String(input.generation) : undefined,
+      },
+    });
+  }
+
+  function markDispatchProviderReceived(input) {
+    return updateDispatchStatus(input, {
+      from: new Set(["queued", "input_accepted", "delivered"]),
+      status: "delivered",
+      timestampField: "providerReceivedAt",
+      eventType: "dispatch.provider.received",
+      eventSummary: `Dispatch ${input.dispatchId} recorded by OpenCode`,
+      sessionState: "delivered_pending",
+      stateSummary: "OpenCode recorded the exact dispatch marker; awaiting Provider outcome.",
+      data: {
+        provider: input.provider ? String(input.provider) : "opencode",
+        providerSessionId: input.providerSessionId ? String(input.providerSessionId) : undefined,
+        providerMessageId: input.providerMessageId ? String(input.providerMessageId) : undefined,
+        dispatchMessageCreatedAt: Number.isFinite(input.dispatchMessageCreatedAt) ? input.dispatchMessageCreatedAt : undefined,
+      },
+      dispatchPatch: {
+        provider: input.provider ? String(input.provider) : "opencode",
+        providerSessionId: input.providerSessionId ? String(input.providerSessionId) : undefined,
+        providerMessageId: input.providerMessageId ? String(input.providerMessageId) : undefined,
+        dispatchMessageCreatedAt: Number.isFinite(input.dispatchMessageCreatedAt) ? input.dispatchMessageCreatedAt : undefined,
+      },
+    });
+  }
+
+  function recordDispatchProviderFailure(input) {
+    return updateDispatchStatus(input, {
+      from: new Set(["delivered", "input_accepted", "queued"]),
+      status: "provider_failed",
+      timestampField: "providerFailedAt",
+      eventType: "dispatch.provider.failed",
+      eventSummary: input.message ?? `Dispatch ${input.dispatchId} reached a terminal Provider failure`,
+      sessionState: input.state === "exited" ? "exited" : "blocked",
+      stateSummary: input.message ?? "Provider reached a terminal failure without a usable result.",
+      data: {
+        reason: input.reason ? String(input.reason) : "provider_terminal_failure",
+        provider: input.provider ? String(input.provider) : "opencode",
+        providerSessionId: input.providerSessionId ? String(input.providerSessionId) : undefined,
+        providerMessageId: input.providerMessageId ? String(input.providerMessageId) : undefined,
+        providerStepFinishId: input.providerStepFinishId ? String(input.providerStepFinishId) : undefined,
+        stepFinishReason: input.stepFinishReason ? String(input.stepFinishReason) : undefined,
+      },
+      dispatchPatch: {
+        failureReason: input.reason ? String(input.reason) : "provider_terminal_failure",
+        failureMessage: input.message ? String(input.message) : undefined,
+        provider: input.provider ? String(input.provider) : "opencode",
+        providerSessionId: input.providerSessionId ? String(input.providerSessionId) : undefined,
+        providerMessageId: input.providerMessageId ? String(input.providerMessageId) : undefined,
+        providerStepFinishId: input.providerStepFinishId ? String(input.providerStepFinishId) : undefined,
+        stepFinishReason: input.stepFinishReason ? String(input.stepFinishReason) : undefined,
+      },
+    });
+  }
+
+  function updateDispatchStatus(input, transition) {
     const session = { taskId: input.taskId, sessionId: input.sessionId };
     const dispatchesPath = pathFor(session, "dispatches.jsonl");
     let updated;
+    let changed = false;
     const dispatches = readJsonLines(dispatchesPath).map((dispatch) => {
       if (dispatch.dispatchId !== input.dispatchId) return dispatch;
-      updated = { ...dispatch, status: "delivered", deliveredAt: new Date().toISOString() };
+      if (dispatch.status === transition.status) {
+        updated = dispatch;
+        return dispatch;
+      }
+      if (transition.from && !transition.from.has(dispatch.status)) {
+        updated = dispatch;
+        return dispatch;
+      }
+      changed = true;
+      updated = {
+        ...dispatch,
+        status: transition.status,
+        [transition.timestampField]: new Date().toISOString(),
+        ...(transition.dispatchPatch ?? {}),
+      };
       return updated;
     });
-    writeJsonLines(dispatchesPath, dispatches);
-    appendEvent(session, "dispatch.delivered", undefined, `Dispatch ${input.dispatchId} delivered`, {
-      dispatchId: input.dispatchId,
-    });
-    writeState(session, {
-      state: "delivered_pending",
-      activeDispatchId: input.dispatchId,
-      updatedAt: new Date().toISOString(),
-    });
+    if (!updated) return { dispatchId: input.dispatchId, status: "missing", changed: false };
+    if (changed) {
+      writeJsonLines(dispatchesPath, dispatches);
+      appendEvent(session, transition.eventType, undefined, transition.eventSummary, {
+        dispatchId: input.dispatchId,
+        ...(transition.data ?? {}),
+      });
+      writeState(session, {
+        state: transition.sessionState,
+        activeDispatchId: input.dispatchId,
+        lastStateSummary: transition.stateSummary,
+        lastStateData: { dispatchId: input.dispatchId, ...(transition.data ?? {}) },
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return { dispatchId: input.dispatchId, status: updated.status, changed };
   }
 
   function markDispatchFailed(input) {
@@ -413,6 +615,7 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
       appendJsonLine(pathFor({ taskId, sessionId, cwd: input?.cwd ? String(input.cwd) : undefined }, "events.jsonl"), event);
     }
     appendJsonLine(taskEventsPath, event);
+    notifyTaskChange(event);
     return event;
   }
 
@@ -436,6 +639,7 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
 
     appendJsonLine(pathFor(session, "events.jsonl"), event);
     appendJsonLine(taskEventsPath, event);
+    notifyTaskChange(event);
     return nextCursor;
   }
 
@@ -493,12 +697,18 @@ function createSessionStore({ root, jsonlReadTailBytes = 2 * 1024 * 1024 }) {
   }
 
   return {
+    bindTaskRoot,
+    onTaskChange,
     startSession,
     recordOutput,
+    readTerminalLog,
     recordState,
     recordDispatch,
+    markDispatchInputAccepted,
     markDispatchDelivered,
+    markDispatchProviderReceived,
     markDispatchFailed,
+    recordDispatchProviderFailure,
     recordDispatchFailure,
     recordDispatchResult,
     recordConductorMessage,
@@ -572,8 +782,8 @@ function buildTaskPendingDecisions({ sessions, dispatches, results, permissions 
 function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
   const state = normalizeSessionRuntimeState(rawState);
   const resultDispatches = dispatches.filter((dispatch) => dispatch.status === "result_available");
-  const activeDispatches = dispatches.filter((dispatch) => dispatch.status === "queued" || dispatch.status === "delivered");
-  const failedDispatches = dispatches.filter((dispatch) => dispatch.status === "failed");
+  const activeDispatches = dispatches.filter((dispatch) => ["queued", "input_accepted", "delivered"].includes(dispatch.status));
+  const failedDispatches = dispatches.filter((dispatch) => ["failed", "provider_failed"].includes(dispatch.status));
   const latestActiveDispatch = activeDispatches.at(-1);
   const latestResultDispatch = resultDispatches.at(-1);
   const latestFailedDispatch = failedDispatches.at(-1);
@@ -591,10 +801,12 @@ function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
     projectedState = state;
   } else if (latestActiveDispatch?.status === "queued") {
     projectedState = "queued";
+  } else if (latestActiveDispatch?.status === "input_accepted") {
+    projectedState = "queued";
   } else if (latestActiveDispatch?.status === "delivered") {
     projectedState = state === "running" ? "running" : "delivered_pending";
   } else if (unresolvedFailureDispatch) {
-    projectedState = "delivery_failed";
+    projectedState = unresolvedFailureDispatch.status === "provider_failed" ? "blocked" : "delivery_failed";
   } else if (latestResultDispatch || latestResult) {
     projectedState = "result_available";
   }
@@ -773,6 +985,21 @@ function appendJsonLine(file, value) {
 function writeJsonLines(file, values) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, values.map((value) => JSON.stringify(value)).join("\n").concat(values.length ? "\n" : ""));
+}
+
+function retainTerminalLogTail(file, maxBytes) {
+  const limit = Number.isSafeInteger(maxBytes) && maxBytes > 0 ? maxBytes : 8 * 1024 * 1024;
+  const size = fs.statSync(file).size;
+  if (size <= limit) return { bytes: size, truncated: false };
+  const buffer = Buffer.alloc(limit);
+  const descriptor = fs.openSync(file, "r");
+  try {
+    fs.readSync(descriptor, buffer, 0, limit, size - limit);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  fs.writeFileSync(file, buffer);
+  return { bytes: limit, truncated: true };
 }
 
 function readJson(file) {

@@ -59,11 +59,11 @@ describe("Conductor tool contracts", () => {
       targetSessionState: "delivered_pending",
       resultState: "pending",
       async: true,
-      turnPolicy: "stop_after_dispatch",
+      turnPolicy: "continue_dispatching_or_wait",
       nextAllowedAction: "wait_for_runtime_wakeup",
       cannotReadResultUntil: "provider_result_available",
       message:
-        "Assignment delivered to target session. End this Conductor turn now and wait for a runtime wakeup before reading the result.",
+        "Assignment delivered to a native Session Agent. You may dispatch other independent work, or wait for a semantic Runtime wakeup before using its result.",
     };
     const taskState: ReadTaskStateResult = {
       taskId: "task-1",
@@ -94,7 +94,7 @@ describe("Conductor tool contracts", () => {
       pendingDecisions: [{ type: "worker_result_available", dispatchId: "A1B2C3", sessionId: "task-1-researcher" }],
     };
 
-    expect(callResult.turnPolicy).toBe("stop_after_dispatch");
+    expect(callResult.turnPolicy).toBe("continue_dispatching_or_wait");
     expect(taskState.messages[0]?.dispatchId).toBe("A1B2C3");
     expect(taskState.pendingDecisions[0]?.type).toBe("worker_result_available");
   });

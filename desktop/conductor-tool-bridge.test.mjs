@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  createConductorToolBridge,
+  createConductorToolBridge as createRuntimeConductorToolBridge,
   formatInteractivePtyInput,
   startConductorToolBridgeHttpServer,
 } from "./conductor-tool-bridge.cjs";
@@ -24,12 +24,32 @@ function nodeExpect(actual) {
   };
 }
 
+function createConductorToolBridge(input) {
+  const ptyManager = input.ptyManager ?? {};
+  return createRuntimeConductorToolBridge({
+    ...input,
+    activateWorkerSession:
+      input.activateWorkerSession ??
+      (async ({ taskId, sessionId, operationId }) => {
+        const session = input.startWorkerSession
+          ? await input.startWorkerSession({ taskId, sessionId, operationId })
+          : ptyManager.get?.(sessionId);
+        return { session };
+      }),
+    enqueueWorkerInput:
+      input.enqueueWorkerInput ??
+      (async ({ sessionId, payload }) => ({
+        result: ptyManager.write?.(sessionId, payload),
+      })),
+  });
+}
+
 describe("Conductor tool bridge", () => {
   it("formats multiline worker input as a complete bracketed paste submit", () => {
     expect(formatInteractivePtyInput("line 1\nline 2")).toBe("\x1b[200~line 1\nline 2\x1b[201~\r");
   });
 
-  it("returns a clear delivered contract after writing a normal assignment to the target PTY", async () => {
+  it("returns an input-accepted receipt after writing a normal assignment to the target PTY", async () => {
     const writes = [];
     const store = {
       recordDispatch(input) {
@@ -82,30 +102,118 @@ describe("Conductor tool bridge", () => {
       dispatchId: "A1B2C3",
       taskId: "task-1",
       toSessionId: "task-1-researcher",
-      status: "delivered",
-      deliveryState: "delivered",
-      targetSessionState: "delivered_pending",
+      status: "accepted",
+      deliveryState: "input_accepted",
+      targetSessionState: "queued",
       resultState: "pending",
-      turnPolicy: "stop_after_dispatch",
-      nextAllowedAction: "wait_for_runtime_wakeup",
+      turnPolicy: "conductor_decides_turn_boundary",
+      nextAllowedAction: "dispatch_more_or_end_decision_turn",
       cannotReadResultUntil: "provider_result_available",
       message:
-        "Assignment delivered to target session. End this Conductor turn now and wait for a runtime wakeup before reading the result.",
+        "Dispatch command and terminal input were accepted. This is not Provider delivery yet. Continue dispatching bounded work or end this decision; Runtime will wake you only after a Provider receipt, result, attention, failure, or exit fact.",
     });
     expect(result.canContinueCurrentTurn).toBe(undefined);
-    expect(result.turnBoundary).toBe("dispatch");
-    expect(result.shouldEndTurn).toBe(true);
+    expect(result.turnBoundary).toBe("none");
+    expect(result.shouldEndTurn).toBe(false);
     expect(result.shouldWaitForWakeup).toBe(undefined);
     expect(writes[0].id).toBe("task-1-researcher");
     expect(writes[0].text).toContain("Research dynamic workflow.");
     expect(writes[0].text).toContain("[Agent Workspace] Dispatch ID A1B2C3");
-    expect(writes[0].text).toContain("When complete, answer in this session with:");
-    expect(writes[0].text).toContain("- Dispatch ID: A1B2C3");
-    expect(writes[0].text).toContain("- artifact paths you created or changed");
-    expect(writes[0].text).toContain("- concise result summary");
-    expect(writes[0].text).toContain('Do not answer only "done" or "complete".');
+    expect(writes[0].text).toContain("Return your normal native OpenCode answer");
+    expect(writes[0].text).toContain("Do not use or invent an Agent Workspace handoff protocol");
     expect(writes[0].text).not.toContain("Dispatch Key");
     expect(writes[0].text).not.toContain("Workspace Session Message");
+  });
+
+  it("forwards a Conductor-selected Provider result verbatim through a result context reference", async () => {
+    const writes = [];
+    const sourceAnswer = "# needs changes\n\nThe cited figure lacks a primary source; obtain VERIFIED_EVIDENCE.";
+    const dispatchInputs = [];
+    const store = {
+      recordDispatch(input) {
+        dispatchInputs.push(input);
+        return { ...input, dispatchId: "CTX01", status: "queued", createdAt: "2026-07-27T00:00:00.000Z" };
+      },
+      markDispatchDelivered() {},
+      readSession() {
+        return { sessionId: "task-1-searcher", state: "ready", cursor: 1, cleanTranscriptTail: "", events: [], dispatches: [], permissions: [], artifacts: [] };
+      },
+    };
+    const bridge = createConductorToolBridge({
+      sessionStore: store,
+      ptyManager: {
+        get: () => ({ id: "task-1-searcher", status: "running" }),
+        write: (id, text) => { writes.push({ id, text }); return { id, status: "running" }; },
+      },
+      prepareDispatchContext: ({ contextRefs }) => ({
+        contextRefs,
+        contextPackets: [{
+          kind: "provider_result",
+          resultId: "review-1",
+          sourceAgentId: "reviewer",
+          sourceDispatchId: "REVIEW01",
+          answerText: sourceAnswer,
+        }],
+      }),
+    });
+
+    const result = await bridge.callSession({
+      taskId: "task-1",
+      toSessionId: "task-1-searcher",
+      assignment: "Verify the factual gap in the attached review.",
+      contextRefs: ["result:review-1"],
+    });
+
+    expect(result).toMatchObject({ ok: true, dispatchId: "CTX01" });
+    expect(dispatchInputs[0].contextRefs).toEqual(["result:review-1"]);
+    expect(dispatchInputs[0].contextPackets[0].answerText).toBe(sourceAnswer);
+    expect(writes[0].text).toContain("Forwarded semantic result from reviewer (result:review-1):");
+    expect(writes[0].text).toContain(sourceAnswer);
+  });
+
+  it("writes immediately after daemon input acceptance without parsing TUI text", async () => {
+    const session = { id: "task-transport-publisher", status: "running", backend: "pty", lastOutputAt: undefined };
+    const writes = [];
+    const dispatches = [];
+    const store = {
+      recordDispatch(input) {
+        const dispatch = {
+          dispatchId: "TRANSPORT1",
+          taskId: input.taskId,
+          toSessionId: input.toSessionId,
+          assignment: input.assignment,
+          contextRefs: [],
+          expectedOutput: "",
+          priority: "normal",
+          status: "queued",
+          createdAt: "2026-07-25T00:00:00.000Z",
+        };
+        dispatches.push(dispatch);
+        return dispatch;
+      },
+      readSession() {
+        return { state: "ready", dispatches, events: [], permissions: [], artifacts: [] };
+      },
+      markDispatchInputAccepted({ dispatchId }) {
+        const dispatch = dispatches.find((item) => item.dispatchId === dispatchId);
+        dispatch.status = "input_accepted";
+      },
+    };
+    const bridge = createConductorToolBridge({
+      sessionStore: store,
+      ptyManager: {
+        get: () => session,
+        write: (_id, payload) => {
+          writes.push(payload);
+          return session;
+        },
+      },
+    });
+
+    const queued = await bridge.callSession({ taskId: "task-transport", toSessionId: session.id, assignment: "Create final.md" });
+    expect(queued).toMatchObject({ ok: true, status: "accepted", deliveryState: "input_accepted" });
+    assert.equal(writes.length, 1);
+    expect(writes[0]).toContain("[Agent Workspace] Dispatch ID TRANSPORT1");
   });
 
   it("records the live Conductor session id with each dispatch", async () => {
@@ -169,7 +277,7 @@ describe("Conductor tool bridge", () => {
       ok: true,
       dispatchId: "E5F6A7",
       toSessionId: workerId,
-      status: "delivered",
+      status: "accepted",
     });
     expect(dispatchInputs[0]).toMatchObject({
       taskId,
@@ -178,6 +286,58 @@ describe("Conductor tool bridge", () => {
       assignment: "Research Micron.",
     });
     expect(writes[0].id).toBe(workerId);
+  });
+
+  it("accepts independent Conductor contracts as one asynchronous batch", async () => {
+    const writes = [];
+    let sequence = 0;
+    const store = {
+      recordDispatch(input) {
+        sequence += 1;
+        return {
+          dispatchId: `BATCH${sequence}`,
+          taskId: input.taskId,
+          toSessionId: input.toSessionId,
+          assignment: input.assignment,
+          contextRefs: input.contextRefs ?? [],
+          expectedOutput: input.expectedOutput ?? "",
+          priority: input.priority ?? "normal",
+          status: "queued",
+          createdAt: "2026-07-25T00:00:00.000Z",
+        };
+      },
+      markDispatchDelivered() {},
+      readSession({ sessionId }) {
+        return { sessionId, state: "ready", cursor: 1, events: [], dispatches: [], results: [], permissions: [], artifacts: [] };
+      },
+    };
+    const bridge = createConductorToolBridge({
+      sessionStore: store,
+      ptyManager: {
+        get: (id) => ({ id, status: "running" }),
+        write: (id, text) => { writes.push({ id, text }); return { id, status: "running" }; },
+      },
+    });
+
+    const result = await bridge.callSessions({
+      taskId: "task-1",
+      dispatches: [
+        { toSessionId: "task-1-research-a", assignment: "Find primary sources.", expectedOutput: "Markdown evidence." },
+        { toSessionId: "task-1-research-b", assignment: "Find counterexamples.", expectedOutput: "Markdown evidence." },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: true, status: "accepted", turnPolicy: "conductor_decides_turn_boundary", shouldEndTurn: false });
+    assert.equal(result.results.length, 2);
+    assert.equal(writes.length, 2);
+    const duplicate = await bridge.callSessions({
+      taskId: "task-1",
+      dispatches: [
+        { toSessionId: "task-1-research-a", assignment: "one" },
+        { toSessionId: "task-1-research-a", assignment: "two" },
+      ],
+    });
+    expect(duplicate).toMatchObject({ ok: false, errorCode: "duplicate-batch-target" });
   });
 
   it("records structured task completion claims without parsing provider output text", async () => {
@@ -218,8 +378,8 @@ describe("Conductor tool bridge", () => {
       sessionId: "task-1-conductor",
       status: "completion_claim_recorded",
       eventType: "task.completion_claim",
-      turnPolicy: "stop_for_review_gate",
-      nextAllowedAction: "wait_for_review_gate",
+      turnPolicy: "wait_for_user_delivery_confirmation",
+      nextAllowedAction: "wait_for_user_to_inspect_artifact",
     });
     assert.deepStrictEqual(recordedClaims, [
       {
@@ -289,12 +449,12 @@ describe("Conductor tool bridge", () => {
 
     expect(result).toMatchObject({
       dispatchId: "B2C3D4",
-      status: "delivered",
-      turnPolicy: "stop_after_dispatch",
+      status: "accepted",
+      turnPolicy: "conductor_decides_turn_boundary",
     });
     expect(result.canContinueCurrentTurn).toBe(undefined);
-    expect(result.turnBoundary).toBe("dispatch");
-    expect(result.shouldEndTurn).toBe(true);
+    expect(result.turnBoundary).toBe("none");
+    expect(result.shouldEndTurn).toBe(false);
     expect(starts[0]).toMatchObject({ taskId: "task-1", sessionId: "task-1-reviewer" });
     expect(writes[0].text).toContain("Review the research note.");
     expect(writes[0].text).not.toContain("Workspace Session Message");
@@ -342,25 +502,26 @@ describe("Conductor tool bridge", () => {
     expect(result).toMatchObject({
       ok: true,
       dispatchId: "C3D4E5",
-      status: "delivered",
-      deliveryState: "delivered",
-      targetSessionState: "delivered_pending",
+      status: "accepted",
+      deliveryState: "input_accepted",
+      targetSessionState: "queued",
       resultState: "pending",
-      turnPolicy: "stop_after_dispatch",
+      turnPolicy: "conductor_decides_turn_boundary",
       message:
-        "Assignment delivered to target session. End this Conductor turn now and wait for a runtime wakeup before reading the result.",
+        "Dispatch command and terminal input were accepted. This is not Provider delivery yet. Continue dispatching bounded work or end this decision; Runtime will wake you only after a Provider receipt, result, attention, failure, or exit fact.",
     });
     expect(writes.length).toBe(1);
     expect(writes[0].text).toContain("Research after prompt.");
   });
 
-  it("does not report delivery when the provider never confirms the dispatch marker", async () => {
+  it("does not claim Provider delivery when terminal input is accepted", async () => {
     const writes = [];
     const delivered = [];
+    const queuedDispatches = [];
     const failed = [];
     const store = {
       recordDispatch(input) {
-        return {
+        const dispatch = {
           dispatchId: "C0FFEE",
           taskId: input.taskId,
           toSessionId: input.toSessionId,
@@ -371,6 +532,8 @@ describe("Conductor tool bridge", () => {
           status: "queued",
           createdAt: "2026-06-29T00:00:00.000Z",
         };
+        queuedDispatches.push(dispatch);
+        return dispatch;
       },
       markDispatchDelivered(input) {
         delivered.push(input);
@@ -385,7 +548,7 @@ describe("Conductor tool bridge", () => {
           cursor: 1,
           cleanTranscriptTail: "",
           events: [],
-          dispatches: [],
+          dispatches: queuedDispatches,
           permissions: [],
           artifacts: [],
         };
@@ -418,24 +581,18 @@ describe("Conductor tool bridge", () => {
     });
 
     expect(result).toMatchObject({
-      ok: false,
+      ok: true,
       dispatchId: "C0FFEE",
-      status: "failed",
-      deliveryState: "failed",
-      targetSessionState: "ready",
-      errorCode: "target_session_delivery_timeout",
+      status: "accepted",
+      deliveryState: "input_accepted",
+      targetSessionState: "queued",
     });
     expect(writes.length).toBe(1);
     expect(delivered.length).toBe(0);
-    expect(failed[0]).toMatchObject({
-      taskId: "task-1",
-      sessionId: "task-1-researcher",
-      dispatchId: "C0FFEE",
-      reason: "target_session_delivery_timeout",
-    });
+    expect(failed).toHaveLength(0);
   });
 
-  it("does not write a worker assignment before the provider terminal can receive input", async () => {
+  it("writes to a managed worker Session without interpreting boot text as a readiness gate", async () => {
     const writes = [];
     const store = {
       recordDispatch(input) {
@@ -485,24 +642,20 @@ describe("Conductor tool bridge", () => {
     const result = await bridge.callSession({
       taskId: "task-1",
       toSessionId: "task-1-researcher",
-      assignment: "Do not send before the prompt is ready.",
+      assignment: "Send through the managed PTY; the provider adapter will confirm delivery.",
     });
 
     expect(result).toMatchObject({
-      ok: false,
+      ok: true,
       dispatchId: "A11CED",
-      status: "failed",
-      targetSessionState: "ready",
-      errorCode: "target_session_delivery_timeout",
+      status: "accepted",
+      targetSessionState: "queued",
     });
-    expect(writes.length).toBe(0);
-    expect(store.failed).toMatchObject({
-      dispatchId: "A11CED",
-      reason: "target_session_delivery_timeout",
-    });
+    expect(writes.length).toBe(1);
+    expect(store.failed).toBeUndefined();
   });
 
-  it("does not write a worker assignment while opencode is interruptible and actively running", async () => {
+  it("does not classify an interruptible-looking TUI repaint as a control-plane state", async () => {
     const writes = [];
     const store = {
       recordDispatch(input) {
@@ -557,30 +710,26 @@ describe("Conductor tool bridge", () => {
     const result = await bridge.callSession({
       taskId: "task-1",
       toSessionId: "task-1-researcher",
-      assignment: "Do not send while opencode is still interruptible.",
+      assignment: "Send the bounded assignment; provider state decides later recovery.",
     });
 
     expect(result).toMatchObject({
-      ok: false,
+      ok: true,
       dispatchId: "BADA55",
-      status: "failed",
-      targetSessionState: "ready",
-      errorCode: "target_session_delivery_timeout",
+      status: "accepted",
+      targetSessionState: "queued",
     });
-    expect(writes.length).toBe(0);
-    expect(store.failed).toMatchObject({
-      dispatchId: "BADA55",
-      reason: "target_session_delivery_timeout",
-    });
+    expect(writes.length).toBe(1);
+    expect(store.failed).toBeUndefined();
   });
 
-  it("marks delivery only after the provider confirms the dispatch marker", async () => {
+  it("does not synchronously inspect a Provider marker after terminal input acceptance", async () => {
     const writes = [];
     const delivered = [];
-    let confirmCalls = 0;
+    const queuedDispatches = [];
     const store = {
       recordDispatch(input) {
-        return {
+        const dispatch = {
           dispatchId: "BEE123",
           taskId: input.taskId,
           toSessionId: input.toSessionId,
@@ -591,6 +740,8 @@ describe("Conductor tool bridge", () => {
           status: "queued",
           createdAt: "2026-06-29T00:00:00.000Z",
         };
+        queuedDispatches.push(dispatch);
+        return dispatch;
       },
       markDispatchDelivered(input) {
         delivered.push(input);
@@ -602,7 +753,7 @@ describe("Conductor tool bridge", () => {
           cursor: 1,
           cleanTranscriptTail: "",
           events: [],
-          dispatches: [],
+          dispatches: queuedDispatches,
           permissions: [],
           artifacts: [],
         };
@@ -623,12 +774,6 @@ describe("Conductor tool bridge", () => {
           return { id, status: "running" };
         },
       },
-      confirmWorkerAssignmentDelivery: async () => {
-        confirmCalls += 1;
-        return confirmCalls >= 3 ? { providerSessionId: "ses_worker", dispatchMessageCreatedAt: 123 } : undefined;
-      },
-      deliveryTimeoutMs: 100,
-      deliveryPollIntervalMs: 5,
     });
 
     const result = await bridge.callSession({
@@ -640,16 +785,12 @@ describe("Conductor tool bridge", () => {
     expect(result).toMatchObject({
       ok: true,
       dispatchId: "BEE123",
-      status: "delivered",
-      targetSessionState: "delivered_pending",
+      status: "accepted",
+      deliveryState: "input_accepted",
+      targetSessionState: "queued",
     });
     expect(writes.length).toBe(1);
-    expect(confirmCalls).toBe(3);
-    expect(delivered[0]).toMatchObject({
-      taskId: "task-1",
-      sessionId: "task-1-researcher",
-      dispatchId: "BEE123",
-    });
+    expect(delivered).toHaveLength(0);
   });
 
   it("uses session-store runtime state rather than terminal prompt text for re-dispatch readiness", async () => {
@@ -709,22 +850,17 @@ describe("Conductor tool bridge", () => {
     expect(result).toMatchObject({
       ok: true,
       dispatchId: "F6A7B8",
-      status: "delivered",
-      targetSessionState: "delivered_pending",
+      status: "accepted",
+      targetSessionState: "queued",
     });
     expect(writes.length).toBe(1);
     expect(writes[0].text).toContain("Run the second review pass.");
-    expect(delivered[0]).toMatchObject({
-      taskId: "task-1",
-      sessionId: "task-1-reviewer",
-      dispatchId: "F6A7B8",
-    });
+    expect(delivered).toHaveLength(0);
   });
 
-  it("retries dispatch after a delivery failure when a prior result exists and provider input is ready", async () => {
+  it("accepts an explicit Conductor follow-up after an earlier delivery failure", async () => {
     const writes = [];
     const delivered = [];
-    const confirmCalls = [];
     const store = {
       recordDispatch(input) {
         return {
@@ -778,12 +914,6 @@ describe("Conductor tool bridge", () => {
           return { id, status: "running" };
         },
       },
-      confirmWorkerAssignmentDelivery: async ({ dispatch }) => {
-        confirmCalls.push(dispatch.dispatchId);
-        return { providerSessionId: "ses_retry" };
-      },
-      deliveryTimeoutMs: 25,
-      deliveryPollIntervalMs: 5,
     });
 
     const result = await bridge.callSession({
@@ -795,20 +925,15 @@ describe("Conductor tool bridge", () => {
     expect(result).toMatchObject({
       ok: true,
       dispatchId: "R3TRY1",
-      status: "delivered",
-      targetSessionState: "delivered_pending",
+      status: "accepted",
+      targetSessionState: "queued",
     });
     expect(writes).toHaveLength(1);
     expect(writes[0].text).toContain("Retry with narrowed scope after reading the prior result.");
-    expect(confirmCalls).toEqual(["R3TRY1"]);
-    expect(delivered[0]).toMatchObject({
-      taskId: "task-1",
-      sessionId: "task-1-researcher",
-      dispatchId: "R3TRY1",
-    });
+    expect(delivered).toHaveLength(0);
   });
 
-  it("force retries through the normal provider confirmation path", async () => {
+  it("accepts an explicit forced follow-up without a Provider confirmation in the tool turn", async () => {
     const writes = [];
     const delivered = [];
     const store = {
@@ -873,19 +998,15 @@ describe("Conductor tool bridge", () => {
     expect(result).toMatchObject({
       ok: true,
       dispatchId: "F0RCE1",
-      status: "delivered",
-      targetSessionState: "delivered_pending",
+      status: "accepted",
+      targetSessionState: "queued",
     });
     expect(writes).toHaveLength(1);
     expect(writes[0].text).toContain("Force retry after explicit user confirmation.");
-    expect(delivered[0]).toMatchObject({
-      taskId: "task-1",
-      sessionId: "task-1-researcher",
-      dispatchId: "F0RCE1",
-    });
+    expect(delivered).toHaveLength(0);
   });
 
-  it("does not treat queued session state alone as deliverability proof", async () => {
+  it("does not use a previous queued session state to suppress a new explicit Conductor dispatch", async () => {
     const writes = [];
     const store = {
       recordDispatch(input) {
@@ -944,20 +1065,16 @@ describe("Conductor tool bridge", () => {
     });
 
     expect(result).toMatchObject({
-      ok: false,
+      ok: true,
       dispatchId: "Q0EDED",
-      status: "failed",
+      status: "accepted",
       targetSessionState: "queued",
-      errorCode: "target_session_delivery_timeout",
     });
-    expect(writes.length).toBe(0);
-    expect(store.failed).toMatchObject({
-      dispatchId: "Q0EDED",
-      reason: "target_session_delivery_timeout",
-    });
+    expect(writes.length).toBe(1);
+    expect(store.failed).toBeUndefined();
   });
 
-  it("delivers the active queued dispatch after live provider input readiness is confirmed", async () => {
+  it("accepts input for an active queued dispatch without treating it as Provider delivery", async () => {
     const writes = [];
     const delivered = [];
     const store = {
@@ -1020,14 +1137,11 @@ describe("Conductor tool bridge", () => {
     expect(result).toMatchObject({
       ok: true,
       dispatchId: "Q0EDED",
-      status: "delivered",
-      targetSessionState: "delivered_pending",
+      status: "accepted",
+      targetSessionState: "queued",
     });
     expect(writes).toHaveLength(1);
-    expect(delivered[0]).toMatchObject({
-      dispatchId: "Q0EDED",
-      sessionId: "task-1-reviewer",
-    });
+    expect(delivered).toHaveLength(0);
   });
 
   it("returns a structured failure when the target session cannot become deliverable", async () => {
@@ -1177,6 +1291,40 @@ describe("Conductor tool bridge", () => {
         message: "route-not-allowed",
       },
     ]);
+  });
+
+  it("resolves the public agentId to a Runtime-owned Session without exposing that Session to Conductor", async () => {
+    const dispatches = [];
+    const bridge = createConductorToolBridge({
+      sessionStore: {
+        recordDispatch(input) {
+          dispatches.push(input);
+          return { ...input, dispatchId: "AGENT01", status: "queued", createdAt: "2026-07-25T00:00:00.000Z" };
+        },
+        markDispatchDelivered() {},
+        readSession() {
+          return { state: "ready", dispatches: [], results: [] };
+        },
+      },
+      ptyManager: {
+        get: (id) => ({ id, taskId: "task-1", provider: "opencode", status: "running", incarnationId: "inc-1" }),
+        list: () => [{ id: "internal:conductor", taskId: "task-1", status: "running" }],
+      },
+      resolveAgentSession: ({ taskId, agentId }) =>
+        taskId === "task-1" && agentId === "researcher"
+          ? { agentId: "researcher", sessionId: "internal:worker:researcher" }
+          : undefined,
+      getTaskAgentMap: () => ({ "internal:worker:researcher": "researcher", "internal:conductor": "conductor" }),
+      validateDispatch: ({ agentId, toSessionId }) => ({ ok: agentId === "researcher" && toSessionId === "internal:worker:researcher" }),
+      enqueueWorkerInput: async () => ({ result: { id: "internal:worker:researcher" } }),
+      confirmWorkerAssignmentDelivery: async () => ({ providerSessionId: "ses-worker" }),
+    });
+
+    const result = await bridge.callSession({ taskId: "task-1", agentId: "researcher", assignment: "Collect primary evidence." });
+
+    expect(result).toMatchObject({ ok: true, agentId: "researcher" });
+    expect(result).not.toHaveProperty("toSessionId");
+    expect(dispatches[0]).toMatchObject({ agentId: "researcher", toSessionId: "internal:worker:researcher" });
   });
 
   it("exposes tool calls through the local authenticated HTTP bridge", async () => {

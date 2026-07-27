@@ -1,6 +1,6 @@
 # Conductor-Centric Session Communication Implementation Plan
 
-> **Status: Implemented / Deprecated after completion.** This plan is retained as historical execution evidence. Current product truth lives in `docs/superworks/spec/conductor-session-communication.md` and `docs/superworks/spec/product-interaction-map.md`. Later implementation removed the old `src/orchestration/session-communication` route helper and template `routes` field in favor of Conductor worker target allowlists plus provider adapter result extraction.
+> **Status: Implemented / Deprecated after completion.** This plan is retained as historical execution evidence. Current product truth lives in `docs/superworks/spec/agent-loop-v1.md`, `docs/superworks/spec/agent-loop-conductor-guidance.md`, and `docs/superworks/spec/product-interaction-map.md`. The old communication spec was archived at `docs/superworks/spec/archive/2026-06-28-conductor-session-communication.md`. Later implementation removed the old `src/orchestration/session-communication` route helper and template `routes` field in favor of Conductor worker target allowlists plus provider adapter result extraction.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

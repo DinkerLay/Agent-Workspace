@@ -11,6 +11,7 @@ const { ensureNodePtySpawnHelperExecutable } = require("../../desktop/node-pty-r
 const { getDispatchAssistantAnswer } = require("../../desktop/opencode/session-adapter.cjs");
 const { getRuntimeStatus, resolveOpencodePath } = require("../../desktop/opencode-runner.cjs");
 const { createPtyManager } = require("../../desktop/pty-manager.cjs");
+const { createSessionAuthority } = require("../../desktop/runtime/session-authority.cjs");
 const { createSessionWakeupMonitor } = require("../../desktop/session-wakeup-monitor.cjs");
 const { createSessionStore } = require("../../desktop/session-store.cjs");
 
@@ -58,14 +59,24 @@ async function createElectronSimulationHarness(options = {}) {
     spawn,
     sessionStore,
   });
+  const rawPtyStart = ptyManager.start;
   const rawPtyWrite = ptyManager.write;
-  ptyManager.write = (id, text) => {
+  ptyManager.start = (input) => {
+    ptyStarts.push({
+      ...input,
+      command: input.provider === "opencode" ? "opencode" : input.command,
+    });
+    return rawPtyStart(input);
+  };
+  ptyManager.write = (id, text, writeOptions) => {
     ptyWrites.push({ id: String(id ?? ""), text: String(text ?? "") });
-    return rawPtyWrite(id, text);
+    return rawPtyWrite(id, text, writeOptions);
   };
   const openWindows = new Set();
+  const sessionAuthority = createSessionAuthority({ ptyManager });
 
   ptyManager.onEvent((event) => {
+    sessionAuthority.handlePtyEvent(event);
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send("native:pty-event", event);
     }
@@ -74,27 +85,21 @@ async function createElectronSimulationHarness(options = {}) {
   const conductorToolBridge = createConductorToolBridge({
     sessionStore,
     ptyManager,
-    startWorkerSession: async ({ taskId, sessionId }) => {
-      const startInput = {
-        id: sessionId,
-        taskId,
-        command: "opencode",
-        args: ["--model", options.model ?? "opencode-go/deepseek-v4-flash"],
-        resolvedCommand: opencodePath,
-        resolvedArgs: ["--model", options.model ?? "opencode-go/deepseek-v4-flash"],
-        cwd: projectPath,
-        model: options.model ?? "opencode-go/deepseek-v4-flash",
-        cols: 100,
-        rows: 30,
-        requirePty: Boolean(realPtyAvailable.pty),
-      };
-      ptyStarts.push(startInput);
-      return ptyManager.start({
-        ...startInput,
-        command: opencodePath,
-        args: startInput.resolvedArgs,
-      });
-    },
+    activateWorkerSession: ({ sessionId, operationId }) =>
+      sessionAuthority.activateSession({
+        workspaceSessionId: sessionId,
+        operationId,
+        callerId: "simulation-conductor",
+        reason: "conductor-dispatch",
+      }),
+    enqueueWorkerInput: ({ sessionId, expectedIncarnationId, payload, idempotencyKey }) =>
+      sessionAuthority.enqueueInput({
+        workspaceSessionId: sessionId,
+        expectedIncarnationId,
+        source: "dispatch",
+        payload,
+        idempotencyKey,
+      }),
     validateDispatch: ({ taskId, toSessionId }) => {
       if (!taskId || !toSessionId) return { ok: false, reason: "missing-task-or-session" };
       if (options.validateDispatch) return options.validateDispatch({ taskId, toSessionId });
@@ -124,6 +129,7 @@ async function createElectronSimulationHarness(options = {}) {
     opencodePath,
     model: options.model,
     ptyManager,
+    sessionAuthority,
     ptyStarts,
     ptyWrites,
     conductorToolBridge,
@@ -177,12 +183,13 @@ async function createElectronSimulationHarness(options = {}) {
     await conductorToolBridgeHttpServer.close().catch(() => undefined);
     ipcMain.removeHandler("native:get-runtime-status");
     ipcMain.removeHandler("native:list-opencode-agents");
-    ipcMain.removeHandler("native:start-pty");
-    ipcMain.removeHandler("native:get-pty");
-    ipcMain.removeHandler("native:read-pty");
-    ipcMain.removeHandler("native:write-pty");
-    ipcMain.removeHandler("native:resize-pty");
-    ipcMain.removeHandler("native:stop-pty");
+    sessionAuthority.close();
+    ipcMain.removeHandler("native:register-workspace-session-profile");
+    ipcMain.removeHandler("native:activate-workspace-session");
+    ipcMain.removeHandler("native:read-workspace-session");
+    ipcMain.removeHandler("native:enqueue-terminal-input");
+    ipcMain.removeHandler("native:resize-workspace-session");
+    ipcMain.removeHandler("native:stop-workspace-session");
     ipcMain.removeHandler("native:call-session");
     ipcMain.removeHandler("native:read-task-state");
     ipcMain.removeHandler("native:read-session");
@@ -194,6 +201,7 @@ async function createElectronSimulationHarness(options = {}) {
     projectPath,
     opencodePath,
     ptyManager,
+    sessionAuthority,
     sessionStore,
     conductorToolBridge,
     sessionWakeupMonitor,
@@ -216,49 +224,62 @@ function registerIpcHandlers(input) {
     }),
   );
   ipcMain.handle("native:list-opencode-agents", () => ({ ok: true, agents: [] }));
-  ipcMain.handle("native:start-pty", (_event, request) => {
-    const requestedCommand = String(request?.command ?? "opencode");
-    const args = Array.isArray(request?.args) ? request.args.map(String) : [];
-    const resolvedCommand = resolvePtyCommand(requestedCommand, input.opencodePath);
-    const sessionId = String(request?.id ?? `pty-${Date.now()}`);
-    const startInput = {
-      id: sessionId,
-      taskId: request?.taskId ? String(request.taskId) : taskIdFromWorkspaceSessionId(sessionId),
-      command: requestedCommand,
-      args,
-      resolvedCommand,
-      resolvedArgs: args,
+  ipcMain.handle("native:register-workspace-session-profile", (_event, request) => {
+    const workspaceSessionId = String(request?.workspaceSessionId ?? "");
+    const model = request?.model ? String(request.model) : input.model ?? "opencode-go/deepseek-v4-flash";
+    return input.sessionAuthority.registerLaunchProfile({
+      workspaceSessionId,
+      taskId: String(request?.taskId ?? taskIdFromWorkspaceSessionId(workspaceSessionId) ?? ""),
+      command: input.opencodePath,
+      args: ["--model", model],
       cwd: String(request?.cwd ?? input.projectPath),
+      provider: "opencode",
+      model,
       cols: Number(request?.cols ?? 100),
       rows: Number(request?.rows ?? 30),
-      stdin: request?.stdin === "ignore" ? "ignore" : "pipe",
-      model: request?.model ? String(request.model) : input.model,
-      requirePty: request?.requirePty !== false,
+      stdin: "pipe",
+      requirePty: Boolean(input.realPtyAvailable),
       env: request?.env && typeof request.env === "object" ? request.env : undefined,
       runtimeFiles: Array.isArray(request?.runtimeFiles) ? request.runtimeFiles : [],
-    };
-    input.ptyStarts.push(startInput);
-    return input.ptyManager.start({
-      ...startInput,
-      command: resolvedCommand,
-      args,
     });
   });
-  ipcMain.handle("native:get-pty", (_event, request) => input.ptyManager.get(String(request?.id ?? "")));
-  ipcMain.handle("native:read-pty", (_event, request) =>
-    input.ptyManager.read(String(request?.id ?? ""), Number(request?.cursor ?? 0)),
+  ipcMain.handle("native:activate-workspace-session", (_event, request) =>
+    input.sessionAuthority.activateSession({
+      workspaceSessionId: String(request?.workspaceSessionId ?? ""),
+      operationId: String(request?.operationId ?? ""),
+      callerId: "simulation-renderer",
+      reason: "user-or-task-runtime",
+    }),
   );
-  ipcMain.handle("native:write-pty", (_event, request) => {
-    const write = { id: String(request?.id ?? ""), text: String(request?.text ?? "") };
-    return input.ptyManager.write(write.id, write.text);
-  });
-  ipcMain.handle("native:resize-pty", (_event, request) =>
-    input.ptyManager.resize(String(request?.id ?? ""), {
+  ipcMain.handle("native:read-workspace-session", (_event, request) =>
+    input.sessionAuthority.readSession({
+      workspaceSessionId: String(request?.workspaceSessionId ?? ""),
+      cursor: Number(request?.cursor ?? 0),
+    }),
+  );
+  ipcMain.handle("native:enqueue-terminal-input", (_event, request) =>
+    input.sessionAuthority.enqueueInput({
+      workspaceSessionId: String(request?.workspaceSessionId ?? ""),
+      expectedIncarnationId: String(request?.expectedIncarnationId ?? ""),
+      source: String(request?.source ?? ""),
+      payload: String(request?.payload ?? ""),
+      idempotencyKey: request?.idempotencyKey ? String(request.idempotencyKey) : undefined,
+    }),
+  );
+  ipcMain.handle("native:resize-workspace-session", (_event, request) =>
+    input.sessionAuthority.resizeSession({
+      workspaceSessionId: String(request?.workspaceSessionId ?? ""),
+      expectedIncarnationId: request?.expectedIncarnationId ? String(request.expectedIncarnationId) : undefined,
       cols: Number(request?.cols ?? 100),
       rows: Number(request?.rows ?? 30),
     }),
   );
-  ipcMain.handle("native:stop-pty", (_event, request) => input.ptyManager.stop(String(request?.id ?? "")));
+  ipcMain.handle("native:stop-workspace-session", (_event, request) =>
+    input.sessionAuthority.stopSession({
+      workspaceSessionId: String(request?.workspaceSessionId ?? ""),
+      expectedIncarnationId: request?.expectedIncarnationId ? String(request.expectedIncarnationId) : undefined,
+    }),
+  );
   ipcMain.handle("native:call-session", (_event, request) => input.conductorToolBridge.callSession(request));
   ipcMain.handle("native:read-task-state", (_event, request) => input.conductorToolBridge.readTaskState(request));
   ipcMain.handle("native:read-session", (_event, request) => input.conductorToolBridge.readSession(request));
@@ -315,11 +336,6 @@ function closeWindowQuietly(window) {
     });
     window.close();
   });
-}
-
-function resolvePtyCommand(command, opencodePath) {
-  if (path.basename(command) === "opencode" || command === "opencode") return opencodePath;
-  return command;
 }
 
 function loadNodePtyAvailable() {

@@ -76,6 +76,8 @@ async function main() {
     env: {
       ...process.env,
       AGENT_WORKSPACE_DEV_SERVER_URL: devServerUrl,
+      AGENT_WORKSPACE_PROJECT_PATH: process.cwd(),
+      AGENT_WORKSPACE_PROJECT_NAME: path.basename(process.cwd()),
     },
   });
 }

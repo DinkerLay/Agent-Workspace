@@ -186,9 +186,9 @@ describe("desktop PTY manager", () => {
     });
   });
 
-  it("caps retained transcript chunks while preserving a monotonic cursor", () => {
+  it("caps retained transcript bytes while preserving a monotonic cursor", () => {
     const fake = createFakePty();
-    const manager = createPtyManager({ pty: fake.pty, maxTranscriptChunks: 3 });
+    const manager = createPtyManager({ pty: fake.pty, maxOutputBytes: Buffer.byteLength("chunk-3\nchunk-4\nchunk-5\n") });
 
     const session = manager.start({
       id: "pty-retained-tail",
@@ -286,12 +286,16 @@ describe("desktop PTY manager", () => {
         id: session.id,
         chunk: "first chunk\n",
         cursor: 1,
+        incarnationId: session.incarnationId,
+        generation: session.generation,
       },
       {
         type: "data",
         id: session.id,
         chunk: "second chunk\n",
         cursor: 2,
+        incarnationId: session.incarnationId,
+        generation: session.generation,
       },
     ]);
     expect(manager.read(session.id, 0)).toMatchObject({
@@ -348,6 +352,8 @@ describe("desktop PTY manager", () => {
         id: session.id,
         chunk: "before exit\n",
         cursor: 1,
+        incarnationId: session.incarnationId,
+        generation: session.generation,
       },
       {
         type: "exit",
@@ -356,6 +362,8 @@ describe("desktop PTY manager", () => {
         exitCode: 0,
         signal: 0,
         cursor: 1,
+        incarnationId: session.incarnationId,
+        generation: session.generation,
       },
     ]);
   });

@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Workspace · Desktop Mock</title>
+    <script>window.location.replace("./agent-workspace-pages-corrected.html");</script>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --bg: #101317;
+        --bg-deep: #0b0e11;
+        --rail: #12171d;
+        --surface: #171d24;
+        --surface-raised: #1c242d;
+        --surface-hover: #222c37;
+        --terminal: #0b0f13;
+        --line: #2a3540;
+        --line-strong: #3a4958;
+        --ink: #e7edf5;
+        --muted: #92a0af;
+        --dim: #637080;
+        --blue: #4c9bff;
+        --blue-soft: #153757;
+        --green: #55c58d;
+        --green-soft: #153c2b;
+        --amber: #f0b85a;
+        --amber-soft: #4a3715;
+        --red: #ef7777;
+        --red-soft: #4b2227;
+        --violet: #ad8cff;
+        --violet-soft: #312556;
+        --shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+      }
+
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg: #f5f7fa;
+        --bg-deep: #edf1f5;
+        --rail: #fbfcfd;
+        --surface: #ffffff;
+        --surface-raised: #f8fafc;
+        --surface-hover: #eef3f8;
+        --terminal: #10151b;
+        --line: #d9e1ea;
+        --line-strong: #b9c6d3;
+        --ink: #17212d;
+        --muted: #5f6f80;
+        --dim: #8491a0;
+        --blue: #1769d1;
+        --blue-soft: #e6f1ff;
+        --green: #167b47;
+        --green-soft: #e8f8ef;
+        --amber: #a56400;
+        --amber-soft: #fff5dc;
+        --red: #bb3c49;
+        --red-soft: #feecef;
+        --violet: #6f4ec7;
+        --violet-soft: #f0eaff;
+        --shadow: 0 16px 40px rgba(34, 50, 66, 0.1);
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body { margin: 0; min-height: 100%; }
+
+      body {
+        min-width: 980px;
+        background: var(--bg);
+        color: var(--ink);
+      }
+
+      button, input, textarea { font: inherit; }
+
+      button {
+        cursor: pointer;
+        border: 0;
+      }
+
+      button:focus-visible, input:focus-visible, textarea:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 2px;
+      }
+
+      h1, h2, h3, p { margin: 0; }
+
+      code, .mono {
+        font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: 56px 256px minmax(0, 1fr);
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .icon-rail {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+        padding: 10px 7px;
+        border-right: 1px solid var(--line);
+        background: var(--bg-deep);
+      }
+
+      .brand, .nav-icon, .icon-action {
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--muted);
+      }
+
+      .brand {
+        margin-bottom: 9px;
+        background: var(--blue);
+        color: #fff;
+        font-size: 16px;
+        font-weight: 900;
+      }
+
+      .nav-icon { font-size: 17px; }
+      .nav-icon:hover, .icon-action:hover { background: var(--surface-hover); color: var(--ink); }
+      .nav-icon.active { border-color: rgba(76, 155, 255, 0.5); background: var(--blue-soft); color: var(--blue); }
+      .rail-spacer { flex: 1; }
+
+      .context-rail {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        border-right: 1px solid var(--line);
+        background: var(--rail);
+      }
+
+      .workspace-switcher {
+        display: grid;
+        gap: 3px;
+        padding: 14px 14px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .workspace-switcher strong { font-size: 13px; }
+      .workspace-switcher small { color: var(--muted); font-size: 11px; }
+
+      .context-heading, .section-caption {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 28px;
+        padding: 0 14px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .context-heading { margin-top: 11px; }
+      .context-heading button { color: var(--muted); background: none; font-size: 16px; }
+
+      .task-list, .template-list, .session-list { display: grid; gap: 1px; padding: 0 7px; }
+
+      .task-row, .template-row, .session-row {
+        display: grid;
+        width: 100%;
+        min-width: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--ink);
+        text-align: left;
+      }
+
+      .task-row {
+        grid-template-columns: 8px minmax(0, 1fr) auto;
+        gap: 7px;
+        align-items: center;
+        min-height: 48px;
+        padding: 6px 7px;
+      }
+
+      .task-row:hover, .template-row:hover, .session-row:hover { background: var(--surface-hover); }
+      .task-row.active, .template-row.active, .session-row.active { background: var(--blue-soft); box-shadow: inset 2px 0 0 var(--blue); }
+      .task-row strong, .template-row strong, .session-row strong { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+      .task-row small, .template-row small, .session-row small { display: block; overflow: hidden; margin-top: 2px; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+
+      .state-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+      .state-dot.running { background: var(--green); }
+      .state-dot.waiting { background: var(--amber); }
+      .state-dot.review { background: var(--violet); }
+      .state-dot.blocked { background: var(--red); }
+      .state-dot.done { background: var(--dim); }
+
+      .rail-footer {
+        display: grid;
+        gap: 5px;
+        margin-top: auto;
+        padding: 11px 14px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .main-area { min-width: 0; overflow: hidden; background: var(--bg); }
+      .page { display: none; height: 100%; min-width: 0; }
+      .page.active { display: grid; }
+
+      .page-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 49px;
+        gap: 12px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+      }
+
+      .page-header h1 { font-size: 15px; font-weight: 700; }
+      .page-header p { margin-top: 2px; color: var(--muted); font-size: 11px; }
+      .header-left, .header-actions, .inline, .chip-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+      .header-actions { justify-content: flex-end; }
+
+      .button, .select-button, .tool-button, .tab-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-height: 28px;
+        padding: 0 9px;
+        border: 1px solid var(--line-strong);
+        border-radius: 5px;
+        background: var(--surface-raised);
+        color: var(--ink);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .button:hover, .select-button:hover, .tool-button:hover, .tab-button:hover { background: var(--surface-hover); }
+      .button.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+      .button.primary:hover { filter: brightness(1.08); }
+      .button.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+      .button.warning { border-color: rgba(240, 184, 90, 0.6); background: var(--amber-soft); color: var(--amber); }
+      .button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+      .theme-toggle { min-width: 30px; padding: 0; font-size: 15px; }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 20px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        color: var(--muted);
+        background: var(--surface-raised);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+      }
+
+      .pill.running { color: var(--green); background: var(--green-soft); }
+      .pill.waiting { color: var(--amber); background: var(--amber-soft); }
+      .pill.review { color: var(--violet); background: var(--violet-soft); }
+      .pill.blocked { color: var(--red); background: var(--red-soft); }
+      .pill.agent-loop { color: var(--green); background: var(--green-soft); }
+      .pill.workflow { color: var(--violet); background: var(--violet-soft); }
+
+      .panel { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+      .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 37px; padding: 0 11px; border-bottom: 1px solid var(--line); }
+      .panel-head strong { font-size: 12px; }
+      .panel-head small { color: var(--muted); font-size: 10px; }
+      .panel-body { padding: 11px; }
+
+      /* Template Studio */
+      .template-page { grid-template-rows: 50px minmax(0, 1fr); }
+      .template-layout { display: grid; grid-template-columns: minmax(0, 1fr) 310px; min-height: 0; overflow: hidden; }
+      .template-main { display: grid; grid-template-rows: 232px minmax(0, 1fr); gap: 10px; min-width: 0; padding: 11px; overflow: auto; }
+      .template-top { display: grid; grid-template-columns: minmax(330px, 0.8fr) minmax(390px, 1.2fr); gap: 10px; }
+      .template-description { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; }
+      .template-description textarea {
+        width: 100%; resize: none; min-height: 124px; padding: 10px; border: 1px solid var(--line-strong); border-radius: 5px;
+        background: var(--bg); color: var(--ink); font-size: 12px; line-height: 1.5;
+      }
+      .generated-summary { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 8px 12px; align-content: start; }
+      .generated-summary dt { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+      .generated-summary dd { margin: 0; color: var(--ink); font-size: 12px; }
+      .outline-stack { display: grid; gap: 8px; }
+      .outline-section { border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+      .outline-section > header { display: flex; align-items: center; justify-content: space-between; min-height: 33px; padding: 0 10px; background: var(--surface-raised); }
+      .outline-section > header strong { font-size: 11px; }
+      .outline-section > div { padding: 8px 10px; }
+      .role-table, .key-value-list { display: grid; gap: 1px; }
+      .role-line, .policy-line { display: grid; grid-template-columns: 96px 116px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 27px; border-bottom: 1px solid var(--line); font-size: 11px; }
+      .role-line:last-child { border-bottom: 0; }
+      .role-line span:last-child, .policy-line span:last-child { color: var(--muted); }
+      .policy-code { color: var(--green); font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+      .template-inspector { border-left: 1px solid var(--line); background: var(--rail); overflow: auto; }
+      .inspector-tabs { display: flex; height: 38px; border-bottom: 1px solid var(--line); }
+      .tab-button { flex: 1; min-height: 38px; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 10px; }
+      .tab-button.active { color: var(--blue); box-shadow: inset 0 -2px 0 var(--blue); }
+      .inspector-section { display: grid; gap: 9px; padding: 12px; border-bottom: 1px solid var(--line); }
+      .inspector-section h2 { font-size: 12px; }
+      .inspector-section p { color: var(--muted); font-size: 11px; line-height: 1.5; }
+      .blueprint { display: grid; gap: 5px; }
+      .blueprint-step { padding: 8px; border: 1px solid var(--line-strong); border-radius: 4px; font-size: 11px; }
+      .blueprint-step.live { border-color: var(--green); color: var(--green); }
+      .blueprint-step.optional { border-color: var(--violet); color: var(--violet); }
+
+      /* Task */
+      .task-page { grid-template-rows: 50px minmax(0, 1fr); }
+      .task-layout { display: grid; grid-template-columns: minmax(0, 1fr) 286px; min-height: 0; overflow: hidden; }
+      .task-main { display: grid; grid-template-rows: auto 39px minmax(0, 1fr); min-width: 0; overflow: auto; }
+      .task-identity { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 0.55fr) 170px auto; gap: 12px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); background: var(--surface); }
+      .task-name { min-width: 0; }
+      .task-name h2 { overflow: hidden; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+      .task-name p, .task-metric small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+      .task-metric strong { font-size: 12px; }
+      .sub-tabs { display: flex; gap: 2px; padding: 0 11px; border-bottom: 1px solid var(--line); background: var(--surface); }
+      .sub-tabs button { min-height: 38px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; }
+      .sub-tabs button.active { border-bottom-color: var(--blue); color: var(--blue); }
+      .execution-table { min-width: 740px; padding: 11px; }
+      .execution-row { display: grid; grid-template-columns: 42px minmax(140px, 1.25fr) 104px minmax(130px, 1fr) 136px 122px 58px; align-items: center; min-height: 48px; gap: 8px; padding: 6px 9px; border-bottom: 1px solid var(--line); font-size: 11px; }
+      .execution-row.header { min-height: 27px; color: var(--muted); background: var(--surface-raised); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+      .execution-row.selected { background: var(--blue-soft); box-shadow: inset 2px 0 0 var(--blue); }
+      .unit-name strong { display: block; font-size: 12px; }
+      .unit-name small { color: var(--blue); font-size: 10px; }
+      .unit-type { color: var(--muted); }
+      .workflow-unit { color: var(--violet); }
+      .empty-pty { color: var(--dim); }
+      .task-inspector { border-left: 1px solid var(--line); background: var(--rail); overflow: auto; }
+      .timeline-entry { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; padding: 8px 12px; font-size: 11px; }
+      .timeline-entry p { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+      .timeline-line { position: relative; width: 2px; background: var(--line-strong); }
+      .timeline-line::before { position: absolute; top: 2px; left: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); content: ""; }
+      .timeline-entry.result .timeline-line::before { background: var(--green); }
+
+      /* Workbench */
+      .workbench-page { grid-template-rows: 50px minmax(0, 1fr); }
+      .workbench-header { position: relative; }
+      .task-picker { position: relative; }
+      .task-picker-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 10; display: none; width: 260px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); }
+      .task-picker-menu.open { display: grid; gap: 2px; }
+      .task-picker-menu p { padding: 7px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+      .picker-task { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 7px; align-items: center; width: 100%; min-height: 36px; padding: 5px 7px; border-radius: 4px; background: transparent; color: var(--ink); text-align: left; }
+      .picker-task:hover, .picker-task.active { background: var(--blue-soft); }
+      .picker-task span:last-child { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .workbench-layout { display: grid; grid-template-columns: 196px minmax(0, 1fr) 300px; min-height: 0; overflow: hidden; }
+      .workbench-sessions { padding: 8px; border-right: 1px solid var(--line); background: var(--rail); overflow: auto; }
+      .session-row { grid-template-columns: 20px minmax(0, 1fr) 7px; align-items: center; gap: 8px; min-height: 49px; padding: 6px 7px; }
+      .session-row .terminal-glyph { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 11px; }
+      .session-row.aggregate { grid-template-columns: 20px minmax(0, 1fr); margin-top: 8px; border: 1px solid var(--violet); background: var(--violet-soft); }
+      .session-row.aggregate .terminal-glyph { color: var(--violet); }
+      .session-row.aggregate small { color: var(--red); }
+      .workbench-center { display: grid; grid-template-rows: 39px minmax(0, 1fr) 250px; min-width: 0; overflow: hidden; }
+      .terminal-tabs { display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--surface); }
+      .terminal-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 9px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; }
+      .terminal-tab.active { border-color: var(--line-strong); background: var(--surface-raised); color: var(--ink); }
+      .terminal-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.95fr); min-height: 0; }
+      .terminal-pane { min-width: 0; border-right: 1px solid var(--line); background: var(--terminal); color: #d7e2e8; overflow: auto; }
+      .terminal-pane:last-child { border-right: 0; }
+      .terminal-pane header { display: flex; align-items: center; justify-content: space-between; min-height: 32px; padding: 0 10px; border-bottom: 1px solid #26303a; color: #9eb0bd; font-size: 11px; }
+      .terminal-output { padding: 10px; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+      .term-green { color: #8fdfaa; } .term-blue { color: #7bb8ff; } .term-amber { color: #f1c66f; } .term-red { color: #f18b91; } .term-muted { color: #81909c; }
+      .activity-panel { min-width: 0; border-top: 1px solid var(--line); background: var(--surface); overflow: auto; }
+      .activity-table { min-width: 620px; }
+      .activity-row { display: grid; grid-template-columns: 76px 90px 84px minmax(160px, 1fr) 90px; gap: 8px; align-items: center; min-height: 29px; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+      .activity-row.header { color: var(--dim); font-weight: 800; text-transform: uppercase; }
+      .activity-row .ok { color: var(--green); } .activity-row .pending { color: var(--amber); }
+      .workbench-inspector { border-left: 1px solid var(--line); background: var(--rail); overflow: auto; }
+      .inspector-definition { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 12px; font-size: 11px; }
+      .inspector-definition span { color: var(--muted); }
+      .notice { margin: 12px; padding: 9px; border: 1px solid rgba(240, 184, 90, 0.65); border-radius: 5px; background: var(--amber-soft); color: var(--amber); font-size: 11px; line-height: 1.45; }
+
+      /* Modal */
+      .modal-backdrop { position: fixed; inset: 0; z-index: 30; display: none; place-items: center; padding: 24px; background: rgba(0, 0, 0, 0.46); backdrop-filter: blur(2px); }
+      .modal-backdrop.open { display: grid; }
+      .result-modal { width: min(650px, calc(100vw - 48px)); max-height: min(680px, calc(100vh - 48px)); overflow: auto; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); }
+      .modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 0 13px; border-bottom: 1px solid var(--line); }
+      .modal-header h2 { font-size: 14px; }
+      .modal-meta { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 13px; border-bottom: 1px solid var(--line); }
+      .result-block { margin: 10px 13px; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+      .result-block header { display: flex; align-items: center; justify-content: space-between; min-height: 29px; padding: 0 9px; background: var(--surface-raised); font-size: 11px; font-weight: 800; }
+      .result-block p { padding: 9px; color: var(--ink); font-size: 12px; line-height: 1.55; }
+      .result-block code { display: block; padding: 9px; color: var(--blue); font-size: 11px; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 12px 13px; border-top: 1px solid var(--line); }
+
+      @media (max-width: 1400px) {
+        .app-shell { grid-template-columns: 56px 224px minmax(0, 1fr); }
+        .template-layout { grid-template-columns: minmax(0, 1fr) 260px; }
+        .template-top { grid-template-columns: minmax(250px, 0.72fr) minmax(330px, 1.28fr); }
+        .task-layout { grid-template-columns: minmax(0, 1fr) 250px; }
+        .workbench-layout { grid-template-columns: 170px minmax(0, 1fr) 260px; }
+      }
+
+      @media (max-width: 1120px) {
+        body { min-width: 820px; }
+        .app-shell { grid-template-columns: 56px 208px minmax(0, 1fr); }
+        .template-layout { grid-template-columns: minmax(0, 1fr) 260px; }
+        .template-top { grid-template-columns: 1fr; }
+        .template-main { grid-template-rows: 420px minmax(0, 1fr); }
+        .task-layout { grid-template-columns: minmax(0, 1fr) 240px; }
+        .task-identity { grid-template-columns: minmax(0, 1fr) 130px auto; }
+        .task-identity .task-metric:nth-child(3) { display: none; }
+        .workbench-layout { grid-template-columns: 174px minmax(0, 1fr) 250px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <nav class="icon-rail" aria-label="主导航">
+        <div class="brand" title="Agent Workspace">AW</div>
+        <button class="nav-icon" data-page-target="task" title="任务">▣</button>
+        <button class="nav-icon" data-page-target="template" title="模板">⌘</button>
+        <button class="nav-icon" data-page-target="workbench" title="运行工作台">›_</button>
+        <button class="nav-icon" title="Review（本轮未实现）">✓</button>
+        <div class="rail-spacer"></div>
+        <button class="icon-action" data-theme-toggle title="亮色/暗色">☼</button>
+        <button class="icon-action" title="设置">⚙</button>
+      </nav>
+
+      <aside class="context-rail" aria-label="当前上下文">
+        <div class="workspace-switcher"><strong>runtime-platform</strong><small>~/workspaces/runtime-platform</small></div>
+        <div class="context-heading"><span>项目任务</span><button type="button" title="新建任务">+</button></div>
+        <div class="task-list" id="contextTaskList"></div>
+        <div class="context-heading"><span>已保存模板</span><button type="button" data-page-target="template" title="打开模板">+</button></div>
+        <div class="template-list" id="contextTemplateList"></div>
+        <div class="rail-footer"><span>● Runtime healthy</span><span>SQLite · local-first</span></div>
+      </aside>
+
+      <main class="main-area">
+        <section class="page template-page" data-page="template" aria-label="Template Studio">
+          <header class="page-header">
+            <div class="header-left"><div><h1>Template Studio</h1><p>描述想重复的工作，生成并保存可复用的执行蓝图。</p></div></div>
+            <div class="header-actions"><span class="pill" id="templateSavedPill">v0.3 · 已保存</span><button class="button" data-template-mode>切换到 Workflow</button><button class="button primary" data-save-template>保存版本</button><button class="button theme-toggle" data-theme-toggle title="亮色/暗色">☼</button></div>
+          </header>
+          <div class="template-layout">
+            <div class="template-main">
+              <div class="template-top">
+                <article class="panel template-description">
+                  <div class="panel-head"><strong>1. 描述你想标准化的工作</strong><small id="generationState">草稿</small></div>
+                  <div class="panel-body"><textarea id="templatePrompt">实现一项高风险后端变更：先调研影响，再修改代码并运行测试，审查 diff；涉及数据库迁移时必须等用户确认。</textarea></div>
+                  <div class="panel-head"><span class="mono" id="promptCount">76 / 2000</span><button class="button primary" data-generate-template>✦ 生成 Template</button></div>
+                </article>
+                <article class="panel">
+                  <div class="panel-head"><strong>2. 生成的模板摘要</strong><span class="pill agent-loop" id="templateModePill">AGENT LOOP</span></div>
+                  <dl class="panel-body generated-summary">
+                    <dt>目标</dt><dd>安全完成变更，并由可验证的证据进入 Review。</dd>
+                    <dt>主路径</dt><dd>Conductor 持续读取有效结果，决定下一个 Session Demand。</dd>
+                    <dt>Session Plan</dt><dd>Conductor · Implementer · Reviewer</dd>
+                    <dt>Review</dt><dd>测试、diff 与人工审批缺一不可。</dd>
+                    <dt>Workflow</dt><dd id="templateWorkflowSummary">可选，仅用于稳定、有限的重复步骤。</dd>
+                  </dl>
+                </article>
+              </div>
+              <div class="outline-stack">
+                <article class="outline-section"><header><strong>Session Plan · 3 agents</strong><button class="button">编辑角色</button></header><div class="role-table"><div class="role-line"><span>Conductor</span><span class="mono">agent_conductor</span><span>规划、调度、读证据、提出下一步。</span></div><div class="role-line"><span>Implementer</span><span class="mono">agent_implementer</span><span>实现、测试、产出 diff 与工件。</span></div><div class="role-line"><span>Reviewer</span><span class="mono">agent_reviewer</span><span>核查证据与变更，提出通过或返工。</span></div></div></article>
+                <article class="outline-section"><header><strong>Orchestration policy</strong><button class="button">编辑策略</button></header><div class="policy-code mono">mode: <span id="policyMode">agent_loop</span>
+on_result: wake_conductor
+on_review: require_evidence
+session_demand: reuse_then_launch_approved</div></article>
+                <article class="outline-section"><header><strong>Review gate</strong><button class="button">编辑 Gate</button></header><div class="role-table"><div class="policy-line"><span>条件</span><span>verification</span><span>测试已记录，diff 已审阅，人工已批准。</span></div><div class="policy-line"><span>不通过</span><span>return</span><span>Conductor 携带 Review 结果回到负责 Session。</span></div></div></article>
+                <article class="outline-section"><header><strong>Workflow blocks</strong><button class="button" data-template-mode id="workflowButton">启用 Workflow</button></header><div id="workflowBlock" class="policy-code mono">disabled: 仅适用于有边界、可重复、可恢复的步骤。</div></article>
+              </div>
+            </div>
+            <aside class="template-inspector">
+              <div class="inspector-tabs"><button class="tab-button active">概览</button><button class="tab-button">Session Plan</button><button class="tab-button">Workflow</button><button class="tab-button">版本</button></div>
+              <section class="inspector-section"><h2>Reliable Code Change</h2><span class="pill" id="inspectorSaveState">SAVED · v0.3</span><p>Template 是可复用蓝图。开始任务后，会产生独立的 Task Session Plan 与 Workflow Instance；不会复用另一任务的 Session、PTY 或结果。</p></section>
+              <section class="inspector-section"><h2>生成链路</h2><div class="blueprint"><div class="blueprint-step">Template · reusable</div><div class="blueprint-step live">Task Session Plan · task-scoped</div><div class="blueprint-step optional">Workflow Instance · optional</div></div></section>
+              <section class="inspector-section"><h2>版本</h2><p class="mono">v0.3 · just now</p><p class="mono">v0.2 · 2 days ago</p><p class="mono">v0.1 · initial</p></section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="page task-page" data-page="task" aria-label="任务">
+          <header class="page-header"><div><h1>Tasks</h1><p>以 Task、执行单元、返回结果和证据为中心。</p></div><div class="header-actions"><button class="button">＋ 新建 Task</button><button class="button theme-toggle" data-theme-toggle title="亮色/暗色">☼</button></div></header>
+          <div class="task-layout">
+            <div class="task-main">
+              <div class="task-identity"><div class="task-name"><h2 id="taskTitle">Workflow Runtime Recovery</h2><p id="taskGoal">恢复失败的 Workflow，并确保后续节点仍可前进。</p></div><div class="task-metric"><small>来自 Template</small><strong id="taskTemplate">Reliable Code Change v0.3</strong></div><div class="task-metric"><small>编排模式</small><span class="pill agent-loop" id="taskMode">AGENT LOOP</span></div><button class="button" data-page-target="workbench">打开 Workbench ↗</button></div>
+              <nav class="sub-tabs" aria-label="任务详情"><button>概览</button><button class="active">执行单元</button><button>证据</button><button>Activity</button><button>Review</button></nav>
+              <div class="execution-table" id="executionTable"></div>
+            </div>
+            <aside class="task-inspector"><div class="inspector-tabs"><button class="tab-button active">Timeline</button><button class="tab-button">详情</button><button class="tab-button">Evidence</button></div><section class="inspector-section"><h2>当前选择</h2><p id="taskInspectorText">点击有返回结果的 Session，可读取该次 Provider 结果与工件。</p></section><div id="taskTimeline"></div><section class="inspector-section"><h2>Review gate</h2><span class="pill waiting">验证待运行</span><p>完成声明不会直接变为 Done；仍需验证记录与人工 Review。</p></section></aside>
+          </div>
+        </section>
+
+        <section class="page workbench-page" data-page="workbench" aria-label="运行工作台">
+          <header class="page-header workbench-header">
+            <div class="header-left">
+              <div class="task-picker"><button class="select-button" data-task-picker><span id="workbenchTaskLabel">Task: Workflow Runtime Recovery</span>⌄</button><div class="task-picker-menu" id="taskPickerMenu"></div></div>
+              <span class="pill agent-loop" id="workbenchMode">AGENT LOOP</span><span class="mono" id="workbenchPath">~/worktrees/runtime-recovery</span><span class="inline" style="color: var(--green); font-size: 11px;">● Runtime healthy</span>
+            </div>
+            <div class="header-actions"><button class="tool-button">▯ Split</button><button class="tool-button">↗ Focus</button><button class="tool-button">◉ Inspect</button><button class="button theme-toggle" data-theme-toggle title="亮色/暗色">☼</button></div>
+          </header>
+          <div class="workbench-layout">
+            <aside class="workbench-sessions"><div class="section-caption"><span>Execution units</span><span id="unitCount">4</span></div><div class="session-list" id="workbenchSessionList"></div></aside>
+            <section class="workbench-center"><div class="terminal-tabs" id="terminalTabs"></div><div class="terminal-grid"><article class="terminal-pane"><header><span id="primaryTerminalTitle">Implementer · session-4f92</span><span>⋮</span></header><div class="terminal-output mono" id="primaryTerminal"></div></article><article class="terminal-pane"><header><span>Conductor · session-7c2e</span><span>⋮</span></header><div class="terminal-output mono" id="conductorTerminal"></div></article></div><section class="activity-panel"><div class="panel-head"><strong>Evidence / Activity</strong><div class="inline"><span class="pill running">● Auto-scroll</span><button class="button ghost">Filter</button></div></div><div class="activity-table" id="activityTable"></div></section></section>
+            <aside class="workbench-inspector"><div class="inspector-tabs"><button class="tab-button active">Task</button><button class="tab-button">Units</button><button class="tab-button">Graph</button><button class="tab-button">Evidence</button><button class="tab-button">Review</button></div><section class="inspector-section"><h2 id="workbenchInspectorTitle">Workflow Runtime Recovery</h2><span class="pill running">RUNNING</span></section><div class="notice">Workflow segment 是聚合执行单元；选择其中实际拥有 PTY 的子 Session 才能打开 Terminal。</div><section class="inspector-section"><h2>当前选择</h2><div id="currentSelection"></div></section><section class="inspector-section"><h2>Review gate</h2><span class="pill waiting">PENDING</span><p>等待验证命令、结果证据和人工审批。</p></section></aside>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="resultModal" role="dialog" aria-modal="true" aria-labelledby="resultModalTitle">
+      <article class="result-modal"><header class="modal-header"><h2 id="resultModalTitle">Researcher — returned result</h2><button class="button ghost" data-close-result aria-label="关闭">×</button></header><div class="modal-meta"><span class="pill running">provider result available</span><span class="pill mono">dispatch-91af</span><span class="pill mono">session-8b31</span><span class="pill">10:18:47</span></div><section class="result-block"><header><span>Researcher answer</span><span class="mono">result#05</span></header><p>失败的 workflow 在节点重启后保留了陈旧 heartbeat lease。新的执行无法重新认领，Conductor 因而把它们误判为仍在运行。问题只影响升级前创建的 execution。</p></section><section class="result-block"><header><span>Cited artifact</span><span>1.8 KB</span></header><code>analysis/workflow-runtime-heartbeat-issue.md</code></section><section class="result-block"><header><span>Next-action recommendation</span></header><p>补齐 lease reacquisition patch，针对 FAILED_LEASE 回放受影响的 run，再进入 Reviewer 验证。</p></section><footer class="modal-actions"><button class="button" data-page-target="workbench" data-close-result>Open in Run Workbench ↗</button><button class="button" data-copy-result>Copy result</button><button class="button" data-close-result>Close</button></footer></article>
+    </div>
+
+    <script>
+      const tasks = [
+        { id: "runtime", title: "Workflow Runtime Recovery", template: "Reliable Code Change v0.3", mode: "agent_loop", goal: "恢复失败的 Workflow，并确保后续节点仍可前进。", path: "~/worktrees/runtime-recovery", state: "running", sessions: [
+          { id: "conductor", name: "Conductor", session: "session-7c2e", dispatch: "dispatch-91af", state: "waiting", role: "任务负责人", pty: "pty-7c2e", terminal: "conductor" },
+          { id: "researcher", name: "Researcher", session: "session-8b31", dispatch: "dispatch-91af", state: "done", role: "根因调研", pty: "pty-8b31", returned: true },
+          { id: "implementer", name: "Implementer", session: "session-4f92", dispatch: "dispatch-91af", state: "running", role: "恢复实现", pty: "pty-4f92", terminal: "implementer" },
+          { id: "reviewer", name: "Reviewer", session: "session-9ad7", dispatch: "dispatch-91af", state: "waiting", role: "验证审查", pty: "pty-9ad7" },
+          { id: "fanout", name: "verification fan-out", state: "waiting", role: "3 nodes running · not returned to Conductor", aggregate: true }
+        ]},
+        { id: "pipeline", title: "Data Pipeline Backfill", template: "Backfill Safety v0.2", mode: "workflow", goal: "完成分区回填，控制资源并保留审核点。", path: "~/worktrees/pipeline-backfill", state: "waiting", sessions: [
+          { id: "conductor", name: "Conductor", session: "session-a1", dispatch: "dispatch-b512", state: "waiting", role: "等待审批", pty: "pty-a1", terminal: "conductor" },
+          { id: "implementer", name: "Backfill Runner", session: "session-a2", dispatch: "dispatch-b512", state: "running", role: "执行分区", pty: "pty-a2", terminal: "implementer" },
+          { id: "fanout", name: "partition workflow", state: "waiting", role: "12 nodes running · not returned to Conductor", aggregate: true }
+        ]},
+        { id: "policy", title: "Policy Drift Remediation", template: "Policy Audit v0.5", mode: "agent_loop", goal: "核对漂移配置并提交修复建议。", path: "~/worktrees/policy-drift", state: "review", sessions: [
+          { id: "conductor", name: "Conductor", session: "session-c1", dispatch: "dispatch-c1", state: "waiting", role: "等待 Review", pty: "pty-c1", terminal: "conductor" },
+          { id: "reviewer", name: "Reviewer", session: "session-c2", dispatch: "dispatch-c1", state: "done", role: "结果已返回", pty: "pty-c2", returned: true }
+        ]}
+      ];
+
+      const templates = [
+        ["reliable", "Reliable Code Change", "Code Change · v0.3"],
+        ["research", "Evidence-led Research", "Research · v0.4"],
+        ["migration", "Safe Data Migration", "Workflow · v0.2"],
+        ["incident", "Incident Triage", "Agent Loop · v0.1"]
+      ];
+
+      const state = { page: "task", theme: "dark", taskId: "runtime", sessionId: "implementer", pickerOpen: false, modalOpen: false, generated: false, saved: true, workflowMode: false };
+
+      const element = (id) => document.getElementById(id);
+      const currentTask = () => tasks.find((task) => task.id === state.taskId) ?? tasks[0];
+      const currentSession = () => currentTask().sessions.find((session) => session.id === state.sessionId && !session.aggregate) ?? currentTask().sessions.find((session) => !session.aggregate);
+      const defaultSessionIdFor = (task) => task.sessions.find((session) => !session.aggregate && session.id !== "conductor")?.id ?? task.sessions.find((session) => !session.aggregate)?.id;
+      const stateLabel = (value) => ({ running: "RUNNING", waiting: "WAITING", review: "REVIEW", blocked: "BLOCKED", done: "RETURNED" }[value] ?? "IDLE");
+      const modeLabel = (mode) => mode === "workflow" ? "WORKFLOW" : "AGENT LOOP";
+
+      function renderContext() {
+        element("contextTaskList").innerHTML = tasks.map((task) => `<button class="task-row ${task.id === state.taskId ? "active" : ""}" data-select-task="${task.id}"><span class="state-dot ${task.state}"></span><span><strong>${task.title}</strong><small>${modeLabel(task.mode)} · ${task.template}</small></span><span class="pill ${task.state === "running" ? "running" : task.state === "review" ? "review" : "waiting"}">${stateLabel(task.state)}</span></button>`).join("");
+        element("contextTemplateList").innerHTML = templates.map(([id, title, detail]) => `<button class="template-row ${id === "reliable" ? "active" : ""}" data-page-target="template"><strong>${title}</strong><small>${detail}</small></button>`).join("");
+      }
+
+      function renderPages() {
+        document.querySelectorAll(".page").forEach((page) => page.classList.toggle("active", page.dataset.page === state.page));
+        document.querySelectorAll(".nav-icon[data-page-target]").forEach((button) => button.classList.toggle("active", button.dataset.pageTarget === state.page));
+      }
+
+      function renderTask() {
+        const task = currentTask();
+        element("taskTitle").textContent = task.title;
+        element("taskGoal").textContent = task.goal;
+        element("taskTemplate").textContent = task.template;
+        element("taskMode").textContent = modeLabel(task.mode);
+        element("taskMode").className = `pill ${task.mode === "workflow" ? "workflow" : "agent-loop"}`;
+        const rows = [
+          `<div class="execution-row header"><span>#</span><span>Unit / Dispatch</span><span>类型</span><span>角色 / Segment</span><span>状态</span><span>Provider / PTY</span><span>结果</span></div>`,
+          ...task.sessions.map((unit, index) => {
+            const selected = unit.id === state.sessionId ? "selected" : "";
+            const type = unit.aggregate ? "Workflow segment" : "Session";
+            const status = unit.aggregate ? "not returned" : stateLabel(unit.state);
+            const pty = unit.aggregate ? `<span class="empty-pty">—</span>` : `<span class="mono">${unit.pty}</span>`;
+            const action = unit.returned ? `<button class="button" data-open-result="${unit.id}">查看返回</button>` : unit.aggregate ? `<button class="button" data-inspect-aggregate>Inspect</button>` : `<button class="button" data-open-session="${unit.id}">选择</button>`;
+            return `<div class="execution-row ${selected}"><span>${index + 1}</span><span class="unit-name"><strong>${unit.name}</strong>${unit.aggregate ? "" : `<small>${unit.dispatch}</small>`}</span><span class="unit-type ${unit.aggregate ? "workflow-unit" : ""}">${type}</span><span>${unit.role}</span><span class="pill ${unit.state === "running" ? "running" : unit.state === "done" ? "running" : "waiting"}">${status}</span>${pty}<span>${action}</span></div>`;
+          })
+        ];
+        element("executionTable").innerHTML = rows.join("");
+        element("taskTimeline").innerHTML = `<div class="timeline-entry"><span class="timeline-line"></span><div><strong>dispatch-91af delivered</strong><p>Conductor 将恢复任务交给 Implementer。</p></div></div><div class="timeline-entry result"><span class="timeline-line"></span><div><strong>Researcher result available</strong><p>已有可读的 Provider 结果与工件。</p></div></div><div class="timeline-entry"><span class="timeline-line"></span><div><strong>Workflow segment running</strong><p>Verification fan-out 尚未抵达返回给 Conductor 的节点。</p></div></div>`;
+      }
+
+      function renderWorkbench() {
+        const task = currentTask();
+        const session = currentSession();
+        element("workbenchTaskLabel").textContent = `Task: ${task.title}`;
+        element("workbenchMode").textContent = modeLabel(task.mode);
+        element("workbenchMode").className = `pill ${task.mode === "workflow" ? "workflow" : "agent-loop"}`;
+        element("workbenchPath").textContent = task.path;
+        element("workbenchInspectorTitle").textContent = task.title;
+        element("unitCount").textContent = task.sessions.length;
+        element("taskPickerMenu").classList.toggle("open", state.pickerOpen);
+        element("taskPickerMenu").innerHTML = `<p>切换后展示该 Task 的 Session terminals 和 evidence context。</p>${tasks.map((item) => `<button class="picker-task ${item.id === task.id ? "active" : ""}" data-picker-task="${item.id}"><span class="state-dot ${item.state}"></span><span>${item.title}</span></button>`).join("")}`;
+        element("workbenchSessionList").innerHTML = task.sessions.map((item) => item.aggregate ? `<button class="session-row aggregate" data-inspect-aggregate><span class="terminal-glyph">⌘</span><span><strong>Workflow segment — ${item.name}</strong><small>${item.role}</small></span></button>` : `<button class="session-row ${item.id === session.id ? "active" : ""}" data-open-session="${item.id}"><span class="terminal-glyph">›_</span><span><strong>${item.name}</strong><small>${item.session} · ${item.dispatch}</small></span><span class="state-dot ${item.state}"></span></button>`).join("");
+        element("terminalTabs").innerHTML = `<button class="terminal-tab active">›_ ${session.name} terminal ×</button><button class="terminal-tab">›_ Conductor terminal ×</button><button class="terminal-tab">＋</button><span style="margin-left:auto"><button class="button ghost">▯</button></span>`;
+        element("primaryTerminalTitle").textContent = `${session.name} · ${session.session}`;
+        element("primaryTerminal").innerHTML = terminalFor(session, task);
+        element("conductorTerminal").innerHTML = conductorFor(task);
+        element("currentSelection").innerHTML = `<div class="inspector-definition"><span>Session</span><strong>${session.name}</strong></div><div class="inspector-definition"><span>Session ID</span><code>${session.session}</code></div><div class="inspector-definition"><span>PTY incarnation</span><strong>2</strong></div><div class="inspector-definition"><span>Dispatch ID</span><code>${session.dispatch}</code></div><div class="inspector-definition"><span>State</span><strong style="color: var(--${session.state === "running" ? "green" : "amber"})">${stateLabel(session.state)}</strong></div>`;
+        element("activityTable").innerHTML = `<div class="activity-row header"><span>Time</span><span>Unit</span><span>Type</span><span>Summary</span><span>Ref</span></div><div class="activity-row"><span>12:34:51</span><span>Conductor</span><span>decision</span><span class="pending">Review gate pending; awaiting next action</span><span>ev:9b7d4e1</span></div><div class="activity-row"><span>12:34:28</span><span>${session.name}</span><span>result</span><span class="ok">Provider result available</span><span>ev:2d1f4b7</span></div><div class="activity-row"><span>12:34:02</span><span>Conductor</span><span>dispatch</span><span>Delivered to ${session.name} (${session.session})</span><span>ev:91af002</span></div>`;
+      }
+
+      function terminalFor(session, task) {
+        if (session.id === "conductor") return conductorFor(task);
+        if (task.id === "pipeline" && session.id === "implementer") return `<span class="term-muted">$ backfill run --plan partitions/2026-07-24.json</span>\n<span class="term-blue">[plan]</span> 12 partitions accepted · concurrency=3\n<span class="term-green">[done]</span> eu-west-1/2026-07-22 · 8.2M rows\n<span class="term-green">[done]</span> eu-west-1/2026-07-23 · 8.1M rows\n<span class="term-amber">[running]</span> us-east-1/2026-07-24 · 63%\n\n<span class="term-muted">$ backfill verify --sample 200</span>\n<span class="term-green">200 / 200 checks passed</span>\n<span class="term-muted">$</span>`;
+        if (task.id === "policy") return `<span class="term-muted">$ policy audit --compare main</span>\n<span class="term-green">result available</span>\n<span class="term-blue">artifact:</span> reports/policy-drift-summary.md\n<span class="term-amber">awaiting Review gate</span>`;
+        if (session.id === "implementer") return `<span class="term-muted">$ git status -sb</span>\n<span class="term-red">M  src/runtime/recovery/workflow_recoverer.py</span>\n<span class="term-red">M  src/runtime/recovery/state_store.py</span>\n\n<span class="term-muted">$ git diff --unified=3 src/runtime/recovery/workflow_recoverer.py</span>\n<span class="term-blue">@@ -142,7 +142,18 @@ async def recover_run(...)</span>\n<span class="term-red">- return Plan(step=step, reason=error)</span>\n<span class="term-green">+ if state.has_pending_results():</span>\n<span class="term-green">+   return resume_from_result()</span>\n<span class="term-green">+ return Plan(step=step, reason=error)</span>\n\n<span class="term-muted">$ pytest -q tests/test_recovery_logic.py</span>\n<span class="term-green">36 passed in 2.18s</span>\n<span class="term-muted">$</span>`;
+        if (session.id === "researcher") return `<span class="term-muted">$ agentctl research workflow runtime heartbeat</span>\n<span class="term-green">result available</span>\n<span class="term-blue">artifact:</span> analysis/workflow-runtime-heartbeat-issue.md\n<span class="term-amber">waiting for Conductor wakeup</span>`;
+        return `<span class="term-muted">$ agentctl status</span>\n<span class="term-amber">Waiting for an approved dispatch.</span>`;
+      }
+
+      function conductorFor(task) {
+        const worker = task.sessions.find((session) => !session.aggregate && session.id !== "conductor") ?? task.sessions[0];
+        return `<span class="term-muted">$ conductor loop --follow</span>\n12:34:01  <span class="term-blue">[loop]</span> loaded task checkpoint\n12:34:02  <span class="term-blue">[dispatch]</span> selected ${worker.name} (${worker.session})\n12:34:28  <span class="term-green">[result]</span> ${worker.name} ${worker.state === "running" ? "progress recorded" : "result available"}\n12:34:29  <span class="term-blue">[route]</span> evaluating next eligible Session Demand\n12:34:51  <span class="term-amber">[decision]</span> review gate pending\n\n<span class="term-muted">Task:</span> ${task.title}\n<span class="term-muted">Next action:</span> await verification / user decision\n<span class="term-muted">$</span>`;
+      }
+
+      function renderTemplate() {
+        const workflow = state.workflowMode;
+        element("templateModePill").textContent = workflow ? "WORKFLOW" : "AGENT LOOP";
+        element("templateModePill").className = `pill ${workflow ? "workflow" : "agent-loop"}`;
+        element("policyMode").textContent = workflow ? "workflow" : "agent_loop";
+        element("templateWorkflowSummary").textContent = workflow ? "已启用：Fan-out → Join → Review gate。" : "可选，仅用于稳定、有限的重复步骤。";
+        element("workflowBlock").textContent = workflow ? "enabled: verify fan-out → join → review gate" : "disabled: 仅适用于有边界、可重复、可恢复的步骤。";
+        element("workflowButton").textContent = workflow ? "停用 Workflow" : "启用 Workflow";
+        const stateText = state.generated ? "已从描述生成" : "草稿";
+        element("generationState").textContent = stateText;
+        element("templateSavedPill").textContent = state.saved ? "v0.3 · 已保存" : "未保存变更";
+        element("inspectorSaveState").textContent = state.saved ? "SAVED · v0.3" : "DRAFT";
+      }
+
+      function renderModal() { element("resultModal").classList.toggle("open", state.modalOpen); }
+
+      function renderAll() {
+        document.documentElement.dataset.theme = state.theme;
+        document.querySelectorAll("[data-theme-toggle]").forEach((button) => { button.textContent = state.theme === "dark" ? "☼" : "◐"; });
+        renderContext(); renderPages(); renderTask(); renderWorkbench(); renderTemplate(); renderModal();
+      }
+
+      document.addEventListener("click", (event) => {
+        const pageTarget = event.target.closest("[data-page-target]")?.dataset.pageTarget;
+        if (pageTarget) { state.page = pageTarget; state.pickerOpen = false; state.modalOpen = false; renderAll(); return; }
+        if (event.target.closest("[data-theme-toggle]")) { state.theme = state.theme === "dark" ? "light" : "dark"; renderAll(); return; }
+        const taskId = event.target.closest("[data-select-task]")?.dataset.selectTask;
+        if (taskId) { state.taskId = taskId; state.sessionId = defaultSessionIdFor(currentTask()); renderAll(); return; }
+        if (event.target.closest("[data-task-picker]")) { state.pickerOpen = !state.pickerOpen; renderAll(); return; }
+        const pickedTask = event.target.closest("[data-picker-task]")?.dataset.pickerTask;
+        if (pickedTask) { state.taskId = pickedTask; state.sessionId = defaultSessionIdFor(currentTask()); state.pickerOpen = false; renderAll(); return; }
+        const sessionId = event.target.closest("[data-open-session]")?.dataset.openSession;
+        if (sessionId) { state.sessionId = sessionId; renderAll(); return; }
+        if (event.target.closest("[data-open-result]")) { state.modalOpen = true; renderAll(); return; }
+        if (event.target.closest("[data-close-result]")) { state.modalOpen = false; renderAll(); return; }
+        if (event.target.closest("[data-copy-result]")) { event.target.closest("[data-copy-result]").textContent = "Copied"; return; }
+        if (event.target.closest("[data-inspect-aggregate]")) { element("taskInspectorText").textContent = "Workflow segment 是聚合执行单元：它可展示节点状态与 Evidence，但不拥有 PTY。请选择其中的子 Session 打开 Terminal。"; state.page = "task"; renderAll(); return; }
+        if (event.target.closest("[data-generate-template]")) { state.generated = true; state.saved = false; renderAll(); return; }
+        if (event.target.closest("[data-save-template]")) { state.saved = true; renderAll(); return; }
+        if (event.target.closest("[data-template-mode]")) { state.workflowMode = !state.workflowMode; state.saved = false; renderAll(); }
+      });
+
+      element("templatePrompt").addEventListener("input", (event) => { element("promptCount").textContent = `${event.target.value.length} / 2000`; state.saved = false; renderTemplate(); });
+      document.addEventListener("keydown", (event) => { if (event.key === "Escape" && (state.modalOpen || state.pickerOpen)) { state.modalOpen = false; state.pickerOpen = false; renderAll(); } });
+      renderAll();
+    </script>
+  </body>
+</html>

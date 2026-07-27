@@ -43,7 +43,10 @@ export type SessionEventType =
   | "session.exited"
   | "session.start_failed"
   | "dispatch.created"
+  | "dispatch.input_accepted"
   | "dispatch.delivered"
+  | "dispatch.provider.received"
+  | "dispatch.provider.failed"
   | "dispatch.failed"
   | "dispatch.result_available"
   | "conductor.message"
@@ -71,10 +74,20 @@ export type SessionDispatchRecord = {
   conductorSessionId?: string;
   assignment: string;
   contextRefs: string[];
+  /**
+   * Runtime-resolved, immutable copies of Provider semantic results selected
+   * by the Conductor with `result:<resultId>` context references.  This is
+   * deliberately not PTY transcript data and is never a worker-to-worker
+   * control channel.
+   */
+  contextPackets?: SessionResultContextPacket[];
   expectedOutput: string;
   priority: "low" | "normal" | "high";
-  status: "queued" | "delivered" | "result_available" | "failed";
+  status: "queued" | "input_accepted" | "delivered" | "provider_failed" | "result_available" | "failed";
   createdAt: string;
+  inputAcceptedAt?: string;
+  providerReceivedAt?: string;
+  providerFailedAt?: string;
   deliveredAt?: string;
   failedAt?: string;
   failureReason?: string;
@@ -88,6 +101,16 @@ export type SessionDispatchRecord = {
   provider?: string;
   providerSessionId?: string;
   providerMessageId?: string;
+};
+
+export type SessionResultContextPacket = {
+  ref: string;
+  kind: "provider_result";
+  resultId: string;
+  sourceAgentId?: string;
+  sourceDispatchId: string;
+  answerText: string;
+  createdAt?: string;
 };
 
 export type SessionResultRecord = {
@@ -139,19 +162,29 @@ export type CallSessionResult = {
   ok: boolean;
   dispatchId: string;
   taskId: string;
+  /** Stable capability-card id when the active Agent Loop bridge is used. */
+  agentId?: string;
   toSessionId: string;
-  status: "delivered" | "failed";
-  deliveryState: "delivered" | "failed";
+  status: "accepted" | "delivered" | "queued" | "failed";
+  deliveryState: "input_accepted" | "delivered" | "queued" | "failed";
   targetSessionState: AgentRuntimeState | "unknown";
   resultState: "pending" | "none";
   async?: boolean;
-  turnPolicy: "stop_after_dispatch" | "recover_or_stop";
-  turnBoundary?: "dispatch";
+  turnPolicy: "conductor_decides_turn_boundary" | "continue_dispatching_or_wait" | "recover_or_stop";
+  turnBoundary?: "none";
   shouldEndTurn?: boolean;
   cannotReadResultUntil?: "provider_result_available";
-  nextAllowedAction?: "wait_for_runtime_wakeup";
+  nextAllowedAction?: "wait_for_runtime_wakeup" | "dispatch_other_work_or_wait_for_runtime_wakeup" | "dispatch_more_or_end_decision_turn";
   message: string;
-  errorCode?: "route_validation_failed" | "target_session_start_failed" | "target_session_delivery_timeout";
+  errorCode?:
+    | "dispatch_payload_invalid"
+    | "agent_card_not_found"
+    | "route_validation_failed"
+    | "context_reference_invalid"
+    | "task_continuation_failed"
+    | "target_session_start_failed"
+    | "terminal_input_authority_unavailable"
+    | "terminal_input_rejected";
   error?: string;
 };
 
@@ -169,8 +202,8 @@ export type ClaimTaskCompletionResult = {
   status: "completion_claim_recorded" | "failed";
   eventType: "task.completion_claim";
   event?: SessionStoreEvent;
-  turnPolicy: "stop_for_review_gate" | "recover_or_stop";
-  nextAllowedAction?: "wait_for_review_gate";
+  turnPolicy: "wait_for_user_delivery_confirmation" | "continue_loop" | "recover_or_stop";
+  nextAllowedAction?: "wait_for_user_to_inspect_artifact";
   message: string;
   errorCode?: "completion_claim_not_supported";
 };
@@ -228,10 +261,14 @@ export type ReadTaskStateDispatchSummary = {
   conductorSessionId?: string;
   assignment?: string;
   contextRefs?: string[];
+  contextPackets?: SessionResultContextPacket[];
   expectedOutput?: string;
   priority?: "low" | "normal" | "high";
   status: SessionDispatchRecord["status"];
   createdAt?: string;
+  inputAcceptedAt?: string;
+  providerReceivedAt?: string;
+  providerFailedAt?: string;
   deliveredAt?: string;
   failedAt?: string;
   failureReason?: string;

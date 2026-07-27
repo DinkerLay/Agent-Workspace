@@ -1,25 +1,32 @@
 const { spawn } = require("node:child_process");
+const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { ensureNodePtySpawnHelperExecutable } = require("./node-pty-runtime.cjs");
-const { getRuntimeStatus, listOpencodeAgents, resolveOpencodePath, runOpencode } = require("./opencode-runner.cjs");
-const { createPtyManager } = require("./pty-manager.cjs");
+const { getRuntimeStatus, listOpencodeAgents, runOpencode } = require("./opencode-runner.cjs");
+const { createTerminalHost } = require("./runtime/terminal-host.cjs");
+const { createSessionAuthority } = require("./runtime/session-authority.cjs");
 
 let ptyManager;
+let sessionAuthority;
 let ptyBackend = "process-fallback";
 let realPtyAvailable = false;
 
 try {
   ensureNodePtySpawnHelperExecutable();
   const pty = require("node-pty");
-  ptyManager = createPtyManager({ pty, spawn });
-  ptyManager.onEvent(publishPtyEvent);
+  ptyManager = createTerminalHost({ pty, spawn });
   realPtyAvailable = true;
   ptyBackend = "node-pty+process-fallback";
 } catch (error) {
-  ptyManager = createPtyManager({ spawn });
-  ptyManager.onEvent(publishPtyEvent);
+  ptyManager = createTerminalHost({ spawn });
   ptyBackend = `process-fallback:${error instanceof Error ? error.message : "node-pty unavailable"}`;
 }
+
+sessionAuthority = createSessionAuthority({ ptyManager });
+ptyManager.onEvent((event) => {
+  sessionAuthority.handlePtyEvent(event);
+  publishPtyEvent(event);
+});
 
 function registerIpc() {
   ipcMain.handle("native:get-runtime-status", () =>
@@ -40,32 +47,77 @@ function registerIpc() {
     }),
   );
 
-  ipcMain.handle("native:start-pty", (_event, input) =>
-    ptyManager.start({
-      id: String(input?.id ?? `pty-${Date.now()}`),
-      command: String(input?.command ?? "opencode"),
-      args: Array.isArray(input?.args) ? input.args.map(String) : [],
+  ipcMain.handle("native:register-workspace-session-profile", (_event, input) =>
+    sessionAuthority.registerLaunchProfile({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      taskId: String(input?.taskId ?? "electron-smoke-task"),
+      command: "/bin/cat",
+      args: [],
       cwd: String(input?.cwd ?? process.cwd()),
+      provider: "smoke-cat",
       cols: Number(input?.cols ?? 100),
       rows: Number(input?.rows ?? 30),
-      stdin: input?.stdin === "ignore" ? "ignore" : "pipe",
-      model: input?.model ? String(input.model) : undefined,
-      requirePty: input?.requirePty !== false,
+      requirePty: true,
     }),
   );
-
-  ipcMain.handle("native:get-pty", (_event, input) => ptyManager.get(String(input?.id ?? "")));
-  ipcMain.handle("native:read-pty", (_event, input) =>
-    ptyManager.read(String(input?.id ?? ""), Number(input?.cursor ?? 0)),
+  ipcMain.handle("native:activate-workspace-session", (_event, input) =>
+    sessionAuthority.activateSession({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      operationId: String(input?.operationId ?? ""),
+      callerId: "electron-smoke-renderer",
+    }),
   );
-  ipcMain.handle("native:write-pty", (_event, input) => ptyManager.write(String(input?.id ?? ""), String(input?.text ?? "")));
-  ipcMain.handle("native:resize-pty", (_event, input) =>
-    ptyManager.resize(String(input?.id ?? ""), {
+  ipcMain.handle("native:read-workspace-session", (_event, input) =>
+    sessionAuthority.readSession({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      cursor: Number(input?.cursor ?? 0),
+    }),
+  );
+  ipcMain.handle("native:attach-terminal-client", (_event, input) =>
+    ptyManager.attachClient({
+      id: String(input?.sessionId ?? ""),
+      clientId: String(input?.clientId ?? ""),
+      generation: String(input?.generation ?? ""),
+    }),
+  );
+  ipcMain.handle("native:ack-terminal-output", (_event, input) =>
+    ptyManager.acknowledgeOutput({
+      id: String(input?.sessionId ?? ""),
+      clientId: String(input?.clientId ?? ""),
+      generation: String(input?.generation ?? ""),
+      cursor: Number(input?.cursor ?? 0),
+    }),
+  );
+  ipcMain.handle("native:detach-terminal-client", (_event, input) =>
+    ptyManager.detachClient({
+      id: String(input?.sessionId ?? ""),
+      clientId: String(input?.clientId ?? ""),
+      generation: String(input?.generation ?? ""),
+    }),
+  );
+  ipcMain.handle("native:enqueue-terminal-input", (_event, input) =>
+    sessionAuthority.enqueueInput({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      expectedIncarnationId: String(input?.expectedIncarnationId ?? ""),
+      source: String(input?.source ?? ""),
+      payload: String(input?.payload ?? ""),
+      idempotencyKey: input?.idempotencyKey ? String(input.idempotencyKey) : undefined,
+    }),
+  );
+  ipcMain.handle("native:resize-workspace-session", (_event, input) =>
+    sessionAuthority.resizeSession({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      expectedIncarnationId: input?.expectedIncarnationId ? String(input.expectedIncarnationId) : undefined,
       cols: Number(input?.cols ?? 100),
       rows: Number(input?.rows ?? 30),
     }),
   );
-  ipcMain.handle("native:stop-pty", (_event, input) => ptyManager.stop(String(input?.id ?? "")));
+  ipcMain.handle("native:stop-workspace-session", (_event, input) =>
+    sessionAuthority.stopSession({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      expectedIncarnationId: input?.expectedIncarnationId ? String(input.expectedIncarnationId) : undefined,
+    }),
+  );
 }
 
 function publishPtyEvent(event) {
@@ -99,21 +151,44 @@ async function main() {
       const opencodeAgents = await bridge.listOpencodeAgents();
       const ptyEvents = [];
       const unsubscribe = bridge.onPtyEvent?.((event) => ptyEvents.push(event));
-      const session = await bridge.startPty({
-        id: "electron-smoke",
-        command: "/bin/cat",
-        args: [],
+      await bridge.registerWorkspaceSessionProfile({
+        workspaceSessionId: "electron-smoke",
+        taskId: "electron-smoke-task",
+        provider: "opencode",
         cwd,
         cols: 80,
         rows: 24,
-        requirePty: true,
       });
-      const resizedSession = await bridge.resizePty({ id: "electron-smoke", cols: 96, rows: 28 });
-      await bridge.writePty({ id: "electron-smoke", text: "electron-write-ok\\r" });
+      const activation = await bridge.activateWorkspaceSession({
+        workspaceSessionId: "electron-smoke",
+        operationId: "electron-smoke-activate",
+      });
+      const session = activation.session;
+      const resizedSession = await bridge.resizeWorkspaceSession({
+        workspaceSessionId: "electron-smoke",
+        expectedIncarnationId: session.incarnationId,
+        cols: 96,
+        rows: 28,
+      });
+      await bridge.enqueueTerminalInput({
+        workspaceSessionId: "electron-smoke",
+        expectedIncarnationId: session.incarnationId,
+        source: "user",
+        payload: "electron-write-ok\\r",
+      });
       await new Promise((resolve) => setTimeout(resolve, 250));
-      const deltaSession = await bridge.readPty({ id: "electron-smoke", cursor: 0 });
-      const nextSession = await bridge.getPty({ id: "electron-smoke" });
-      await bridge.stopPty({ id: "electron-smoke" });
+      const attached = await bridge.attachTerminalClient({ sessionId: "electron-smoke", clientId: "smoke-panel", generation: "generation-1" });
+      const acknowledged = await bridge.acknowledgeTerminalOutput({
+        sessionId: "electron-smoke",
+        clientId: "smoke-panel",
+        generation: "generation-1",
+        cursor: attached?.snapshot?.cursor ?? 0,
+      });
+      const nextSession = await bridge.readWorkspaceSession({ workspaceSessionId: "electron-smoke", cursor: 0 });
+      await bridge.stopWorkspaceSession({
+        workspaceSessionId: "electron-smoke",
+        expectedIncarnationId: session.incarnationId,
+      });
       unsubscribe?.();
 
       return {
@@ -123,9 +198,9 @@ async function main() {
             session.backend === "pty" &&
             resizedSession?.cols === 96 &&
             resizedSession?.rows === 28 &&
-            deltaSession?.cursor >= 1 &&
-            deltaSession?.transcript?.join("").includes("electron-write-ok") &&
-            nextSession?.transcript?.join("").includes("electron-write-ok") &&
+            attached?.snapshot?.cursor >= 1 &&
+            attached?.snapshot?.ansi.includes("electron-write-ok") &&
+            acknowledged?.accepted &&
             ptyEvents.some((event) => event.type === "data" && event.chunk.includes("electron-write-ok")),
         ),
         status,
@@ -135,8 +210,8 @@ async function main() {
           status: nextSession?.status,
           cols: nextSession?.cols,
           rows: nextSession?.rows,
-          deltaCursor: deltaSession?.cursor,
-          transcript: nextSession?.transcript?.join("") ?? "",
+          snapshotCursor: attached?.snapshot?.cursor,
+          snapshot: attached?.snapshot?.ansi ?? "",
           events: ptyEvents,
         },
       };

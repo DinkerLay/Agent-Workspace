@@ -1,36 +1,85 @@
 # Superworks Spec README
 
-Date: 2026-07-03
+Date: 2026-07-26
 
-This directory contains the active product and runtime specs for Agent Workspace. Research notes are useful inputs, but implementation truth for current product behavior lives in these spec files and the accepted executable plans that reference them.
+This directory contains the current product contract for Agent Workspace.
+Historical material is kept only as implementation evidence. It must not be
+used to revive a second orchestration model, direct Electron-Main PTY ownership,
+or an old terminal-text parser.
 
-## Spec Ownership
+## Current Implementation Authority
 
 | Spec | Owns | Does not own |
 | --- | --- | --- |
-| `product-interaction-map.md` | Visible product surfaces, Task Home / Task Intake behavior, Board-first navigation, Review and audit interaction boundaries | Provider-specific adapter mechanics, Conductor MCP tool internals |
-| `conductor-session-communication.md` | Conductor-centric session communication, `call_session` / `read_task_state` / `read_session` / `claim_task_completion`, Task Session Plan semantics, Conductor runtime prompt boundary | UI layout details, terminal rendering, provider database schema |
-| `provider-session-state-detection.md` | PTY trigger rules, provider adapter state mapping, session-store result extraction, Agent card state source | Task business policy, which workers a task should create |
-| `development-instrumentation.md` | Developer trace, product audit events, diagnostic evidence paths | Runtime decision policy, task status truth |
+| `agent-workspace-architecture-charter.md` | product thesis, one Runtime, owner boundaries, and deferred scope | screen detail or provider queries |
+| `agent-loop-v1.md` | the only live product mode: Conductor-controlled native Session Agents, Template CRUD, Task lifecycle, and Workbench model | Workflow/Graph execution |
+| `agent-loop-conductor-guidance.md` | Conductor Charter generation, agent-card semantics, user follow-ups, cross-session context references, and no-hidden-route rule | Runtime business decisions or terminal transport |
+| `task-template-runtime-model.md` | v1 Template Draft/version, Task Architecture, Task Run, Session, and artifact vocabulary | PTY stream protocol |
+| `product-interaction-map.md` | Templates, Tasks Timeline, Workbench, task tabs, native attention, and artifact inspection interaction | MCP payloads or provider database parsing |
+| `orca-terminal-runtime-adoption.md` | daemon-owned PTY, snapshot/delta/ACK/backpressure, attach/recovery, and transport receipts | task routing or answer-quality judgment |
+| `provider-session-state-detection.md` | OpenCode Adapter facts and Coordinator receipt/result/attention transitions | Conductor next-step selection |
+| `development-instrumentation.md` | durable semantic events, diagnostics, redaction, and E2E evidence | live orchestration policy |
 
-## Cross-Spec Rules
+## Non-Negotiable Boundaries
 
-- Task Home creates an editable task draft and card-based Session Agent Plan. `product-interaction-map.md` owns that user interaction.
-- Task Home is not a default runtime evidence dashboard. Runtime evidence paths belong in explicit Review, Audit Trail, Run detail, or debug surfaces.
-- The confirmed Session Agent Plan is the source for Conductor prompt planning, worker session creation, and target allowlist enforcement. `conductor-session-communication.md` owns that runtime contract.
-- Worker sessions remain provider-native. They do not receive Agent Workspace protocol prompts. Provider-native output is interpreted through adapters and Session Store rules from `provider-session-state-detection.md`.
-- `call_session` stays generic. Business routing such as research, review, fix, and re-review lives in the Session Agent Plan and the generated Conductor prompt, not in special-purpose tool parameters.
-- PTY output is a trigger and live inspection surface, not task-state truth. Agent cards and Conductor wakeups must use provider adapter and Session Store state.
-- Runtime routing uses `runtimeProjectId` and `runtimeTaskId`. Display ids, task titles, cluster names, and visible agent names are labels only. New task creation must create a fresh task-scoped session group, and Workbench must not reuse or fall back to sessions from another runtime task.
-- Runtime state belongs under `.agent-workspace/`. Product intent belongs under `docs/superworks/spec/` and executable plans under `docs/superworks/plans/`.
+```text
+Template description
+  -> generated editable Loop Template Draft
+  -> explicit user save creates a version
+  -> Task snapshots that version
+  -> Conductor decides zero or more dispatches
+  -> Terminal Runtime + Provider Adapter report facts
+  -> Coordinator records facts and wakes Conductor
+  -> user inspects an artifact and may mark the Task achieved
+```
+
+- **Agent Loop is the only current mode.** A Loop Template has a Charter and
+  native Agent Cards; it has no graph, nodes, edges, role order, review gate,
+  repair route, or automatic completion policy.
+- **Conductor is the sole Workspace dispatcher.** Worker sessions remain normal
+  OpenCode sessions and never receive Workspace dispatch capabilities.
+- **Runtime reports facts, never decisions.** It does not choose a card, retry
+  a business task, approve a permission, infer quality from terminal text, or
+  decide that a Task is achieved.
+- **Orca-style terminal transport is separate from Provider semantics.** A host
+  input receipt is not an OpenCode receipt; a Provider result is not an
+  artifact-quality verdict.
+- **Native permissions/questions stay native.** Runtime records attention and
+  wakes Conductor; the user answers in the owning Session terminal.
+- **Timeline is semantic.** Raw PTY output is a bounded diagnostic view, not a
+  Task conversation or state oracle.
 
 ## Change Routing
 
-When changing behavior, update the owning spec first:
+1. Terminal ownership, snapshot, stream, ACK, reconnect, or input change:
+   update `orca-terminal-runtime-adoption.md` first.
+2. OpenCode receipt/result/attention detection change: update
+   `provider-session-state-detection.md` first.
+3. Conductor prompt, Template generation, Agent Card, handoff, or user-message
+   behavior: update `agent-loop-conductor-guidance.md` first.
+4. Template/Task/Run vocabulary or lifecycle change: update
+   `task-template-runtime-model.md` first.
+5. Visible Templates, Tasks, artifact, attention, tab, group, or Workbench
+   behavior: update `product-interaction-map.md` first.
+6. Durable event and verification evidence change: update
+   `development-instrumentation.md` first.
 
-- UI or task creation flow: update `product-interaction-map.md`.
-- Conductor tools, Session Agent Plan, or cross-session communication: update `conductor-session-communication.md`.
-- Terminal/provider state detection: update `provider-session-state-detection.md`.
-- Debugging, traces, and audit evidence paths: update `development-instrumentation.md`.
+## Historical Material
 
-If a change crosses multiple specs, keep one source of truth per responsibility and reference the other spec instead of duplicating requirements.
+- `spec/archive/2026-06-24-product-interaction-map-board-first.md` — retired
+  Board-first interaction proposal.
+- `spec/archive/2026-06-28-conductor-session-communication.md` — earlier
+  Shell-owned Session Plan draft; superseded by the Agent Loop v1 and
+  Conductor Guidance documents.
+- `spec/archive/2026-07-25-opencode-nested-workflow-harness.md` — earlier
+  nested Workflow harness proposal; superseded by the native Agent Loop path.
+- `plans/deprecated/opencode-nested-workflow-harness-v1.plan.md` — historical
+  execution plan for that proposal.
+- `plans/orca-terminal-runtime-control-plane-v0.plan.md` and
+  `plans/terminal-host-orca-migration-v1.plan.md` — migration evidence only;
+  `orca-terminal-runtime-adoption.md` is the active Runtime authority.
+- `design/archive/2026-07-24-pre-task-architecture/` — superseded visual
+  mockups.
+
+Archived documents do not override the current specifications. Runtime machine
+state belongs under `.agent-workspace/`, never inside this directory.

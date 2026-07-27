@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "./App";
 import type { ReadTaskStateResult, SessionStoreEvent } from "./orchestration/conductor-tools";
 import type { NativePtyEvent, NativePtySession, NativeRuntimeStatus } from "./runtime/nativeBridge";
@@ -14,6 +14,10 @@ afterEach(() => {
   cleanup();
   delete window.agentWorkspace;
   window.history.replaceState(null, "", "/");
+});
+
+beforeEach(() => {
+  window.history.replaceState(null, "", "/?surface=legacy");
 });
 
 function createRuntimeTask({
@@ -87,7 +91,18 @@ describe("App information architecture", () => {
     }
   });
 
-  it("keeps the primary navigation focused on four board-first workbench entries", () => {
+  it("uses the Agent Loop surface by default in browser mode instead of selecting the legacy Prototype", () => {
+    window.history.replaceState(null, "", "/?projectName=Browser_preview");
+
+    render(<App />);
+
+    expect(screen.getByText("浏览器预览 · 只读")).toBeTruthy();
+    expect(screen.getByText("同一套 Agent Loop 界面")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新建" })).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("heading", { level: 1, name: "任务主页" })).toBeNull();
+  });
+
+  it("exposes only the live Task and Workbench surfaces", () => {
     const { container } = render(<App />);
 
     expect(container.querySelector(".app-shell.primary-rail-collapsed")).toBeTruthy();
@@ -102,7 +117,7 @@ describe("App information architecture", () => {
       .getAllByRole("button")
       .map((button) => button.textContent?.trim());
 
-    expect(labels).toEqual(["任务主页", "IDE 工作台", "交付门禁", "更多"]);
+    expect(labels).toEqual(["任务主页", "IDE 工作台"]);
     expect(within(nav).queryByRole("button", { name: "能力地图" })).toBeNull();
     expect(within(nav).queryByRole("button", { name: "Loop 控制台" })).toBeNull();
     expect(within(nav).queryByRole("button", { name: "MCP Gateway" })).toBeNull();
@@ -110,45 +125,20 @@ describe("App information architecture", () => {
     expect(within(nav).queryByRole("button", { name: "Projects" })).toBeNull();
   });
 
-  it("groups review, runs, and audit under the delivery gate entry", () => {
+  it("does not expose unimplemented delivery surfaces", () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "交付门禁" }));
-
-    expect(screen.getByRole("heading", { level: 1, name: "交付门禁" })).toBeTruthy();
-    expect(screen.getByText("Review、Runs、Audit 聚合在同一个交付入口。")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开 Review" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开 Runs" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开 Audit Trail" })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "打开 Review" }));
-
-    expect(screen.getByRole("heading", { level: 1, name: "Review / 交付门禁" })).toBeTruthy();
-    expect(
-      within(screen.getByRole("navigation", { name: "Prototype pages" })).getByRole("button", { name: "交付门禁" }).className,
-    ).toContain("active");
+    const nav = within(screen.getByRole("navigation", { name: "Prototype pages" }));
+    expect(nav.queryByRole("button", { name: "交付门禁" })).toBeNull();
+    expect(nav.queryByRole("button", { name: "更多" })).toBeNull();
   });
 
-  it("keeps advanced and design surfaces available behind the more entry", () => {
+  it("keeps planned product pages out of the desktop shell", () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "更多" }));
-
-    expect(screen.getByRole("heading", { level: 1, name: "更多能力" })).toBeTruthy();
-    expect(screen.getByText("项目、资源、自动化和产品地图都保留在二级入口。")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开项目驾驶舱" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开资源库" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开 Loop 控制台" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开 MCP Gateway" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开 Browser Automation" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "打开产品地图" })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "打开产品地图" }));
-
-    expect(screen.getByRole("heading", { level: 1, name: "产品地图" })).toBeTruthy();
-    expect(
-      within(screen.getByRole("navigation", { name: "Prototype pages" })).getByRole("button", { name: "更多" }).className,
-    ).toContain("active");
+    expect(screen.queryByText("更多能力")).toBeNull();
+    expect(screen.queryByRole("button", { name: "打开产品驾驶舱" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "打开 Browser Automation" })).toBeNull();
   });
 
   it("boots Task Home from an empty runtime workspace without a project sidebar", () => {
@@ -199,7 +189,7 @@ describe("App information architecture", () => {
     window.history.replaceState(
       null,
       "",
-      "/?projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
+      "/?surface=legacy&projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
     );
 
     render(<App />);
@@ -247,7 +237,7 @@ describe("App information architecture", () => {
     window.history.replaceState(
       null,
       "",
-      "/?projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
+      "/?surface=legacy&projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
     );
     const startPtyInputs: Array<{ id?: string; cwd: string; args?: string[] }> = [];
     window.agentWorkspace = {
@@ -323,7 +313,7 @@ describe("App information architecture", () => {
     window.history.replaceState(
       null,
       "",
-      "/?projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
+      "/?surface=legacy&projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
     );
     const startPtyInputs: Array<{ id?: string; taskId?: string; cwd: string; args?: string[] }> = [];
     window.agentWorkspace = {
@@ -596,7 +586,7 @@ describe("App information architecture", () => {
     window.history.replaceState(
       null,
       "",
-      "/?projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
+      "/?surface=legacy&projectPath=%2FUsers%2Fdinker%2FCODES%2FTEMP_project%2FAgent_Test&projectName=Agent_Test",
     );
     const startPtyInputs: Array<{
       id?: string;
@@ -689,7 +679,7 @@ describe("App information architecture", () => {
     expect(startPtyInputs.map((input) => input.id)).toEqual([conductorSessionId]);
     expect(startPtyInputs[0]).toMatchObject({
       taskId: expect.stringMatching(/^task-[a-z0-9]{6}$/),
-      command: "/opt/homebrew/bin/opencode",
+      command: "opencode",
       args: [
         "--model",
         "opencode-go/deepseek-v4-flash",
@@ -700,7 +690,7 @@ describe("App information architecture", () => {
     });
     expect(JSON.stringify(startPtyInputs[0].env ?? {})).toContain("AGENT_WORKSPACE_TOOL_BRIDGE_URL");
     expect(JSON.stringify(startPtyInputs[0].env ?? {})).toContain("AGENT_WORKSPACE_TOOL_BRIDGE_TOKEN");
-    expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("Use call_session to assign session-level work");
+    expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("Use call_session for one session-level work contract");
     expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("Use read_task_state");
     expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("claim_task_completion");
     expect(JSON.stringify(startPtyInputs[0].runtimeFiles ?? [])).toContain("task-intake-001-researcher");
@@ -1226,7 +1216,7 @@ describe("App information architecture", () => {
     );
   });
 
-  it("routes runtime completion claims into the Review gate", async () => {
+  it("keeps runtime completion claims on the implemented Task surface", async () => {
     const taskStates = new Map<string, ReadTaskStateResult>();
     const appendTaskEvents: Array<{ taskId: string; type: string }> = [];
     const ptyEventCallbacks: Array<(event: NativePtyEvent) => void> = [];
@@ -1373,7 +1363,8 @@ describe("App information architecture", () => {
       }),
     );
 
-    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: "Review / 交付门禁" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: "任务主页" })).toBeTruthy());
+    expect(screen.queryByRole("heading", { level: 1, name: "Review / 交付门禁" })).toBeNull();
   });
 
   it("keeps native opencode binding controls out of the primary Workbench while preserving task-scoped launches", async () => {
@@ -1514,7 +1505,7 @@ describe("App information architecture", () => {
     expect(startedSessionIds[0]).not.toBe(startedSessionIds[1]);
   });
 
-  it("attaches stopped native PTY deltas with merged transcript evidence", async () => {
+  it("keeps legacy delivery surfaces unavailable when a terminal exits", async () => {
     const ptyEventCallbacks: Array<(event: NativePtyEvent) => void> = [];
     window.agentWorkspace = {
       native: {
@@ -1593,11 +1584,8 @@ describe("App information architecture", () => {
     await waitFor(() => expect(startButton).toHaveProperty("disabled", false));
     fireEvent.click(startButton);
 
-    expect(await screen.findByText("done")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "交付门禁" }));
-    fireEvent.click(screen.getByRole("button", { name: "打开 Runs" }));
-
-    expect(await screen.findByText((_content, element) => element?.tagName === "PRE" && element.textContent === "start\ndone")).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: "IDE 工作台" })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "交付门禁" })).toBeNull();
   });
 
   it("keeps the rendered terminal transcript when write returns metadata-only PTY state", async () => {

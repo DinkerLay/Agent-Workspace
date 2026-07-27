@@ -152,26 +152,28 @@ function runOpencode(input, dependencies = {}) {
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const timeoutMs = input.timeoutMs ?? 120000;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill("SIGTERM");
-      resolve({
-        ok: false,
-        command,
-        cwd,
-        stdout: "",
-        stderr: appendDiagnostic(stderr, `opencode run timed out after ${timeoutMs}ms`),
-        exitCode: null,
-        durationMs: Date.now() - startedAt,
-        error: "timeout",
-        model,
-      });
-    }, timeoutMs);
     let settled = false;
     let stdout = "";
     let stderr = "";
+    const timeoutMs = Number.isFinite(input.timeoutMs) && input.timeoutMs > 0 ? input.timeoutMs : undefined;
+    const timer = timeoutMs
+      ? setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill("SIGTERM");
+          resolve({
+            ok: false,
+            command,
+            cwd,
+            stdout: "",
+            stderr: appendDiagnostic(stderr, `opencode run timed out after ${timeoutMs}ms`),
+            exitCode: null,
+            durationMs: Date.now() - startedAt,
+            error: "timeout",
+            model,
+          });
+        }, timeoutMs)
+      : undefined;
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
@@ -182,7 +184,7 @@ function runOpencode(input, dependencies = {}) {
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve({
         ok: false,
         command,
@@ -198,7 +200,7 @@ function runOpencode(input, dependencies = {}) {
     child.on("close", (exitCode) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve({
         ok: exitCode === 0,
         command,

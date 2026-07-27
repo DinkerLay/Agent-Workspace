@@ -16,6 +16,7 @@ const {
   runOpencode,
 } = require("./opencode-runner.cjs");
 const { createPtyManager } = require("./pty-manager.cjs");
+const { createSessionAuthority } = require("./runtime/session-authority.cjs");
 const { createSessionStore } = require("./session-store.cjs");
 
 const baseTargetUrl = process.env.AGENT_WORKSPACE_SMOKE_URL ?? "http://127.0.0.1:5188/";
@@ -31,6 +32,7 @@ const timeoutMs = Number(process.env.AGENT_WORKSPACE_SMOKE_TIMEOUT_MS ?? 25000);
 const smokeRoot = path.join(os.tmpdir(), "agent-workspace-task-home-native-smoke");
 
 let ptyManager;
+let sessionAuthority;
 let sessionStore;
 let conductorToolBridge;
 let conductorToolBridgeHttpServer;
@@ -127,44 +129,59 @@ function registerIpc() {
       timeoutMs: Number(input?.timeoutMs ?? 120000),
     }),
   );
-  ipcMain.handle("native:start-pty", (_event, input) => {
-    const sessionId = String(input?.id ?? `pty-${Date.now()}`);
-    const startInput = {
-      id: sessionId,
-      command: String(input?.command ?? "opencode"),
-      args: Array.isArray(input?.args) ? input.args.map(String) : [],
-      cwd: String(input?.cwd ?? process.cwd()),
+  ipcMain.handle("native:register-workspace-session-profile", (_event, input) =>
+    sessionAuthority.registerLaunchProfile({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      taskId: String(input?.taskId ?? ""),
+      command: resolvePtyCommand("opencode"),
+      args: input?.model ? ["--model", String(input.model)] : [],
+      cwd: String(input?.cwd ?? targetProjectPath),
+      provider: "opencode",
+      model: input?.model ? String(input.model) : undefined,
       cols: Number(input?.cols ?? 100),
       rows: Number(input?.rows ?? 30),
-      stdin: input?.stdin === "ignore" ? "ignore" : "pipe",
-      model: input?.model ? String(input.model) : undefined,
-      requirePty: input?.requirePty !== false,
-      taskId: input?.taskId ? String(input.taskId) : taskIdFromWorkspaceSessionId(sessionId),
+      stdin: "pipe",
+      requirePty: true,
       env: input?.env && typeof input.env === "object" ? input.env : undefined,
       runtimeFiles: Array.isArray(input?.runtimeFiles) ? input.runtimeFiles : [],
-    };
-    ptyStarts.push(startInput);
-    return ptyManager.start({
-      ...startInput,
-      command: resolvePtyCommand(startInput.command),
-    });
-  });
-  ipcMain.handle("native:get-pty", (_event, input) => ptyManager.get(String(input?.id ?? "")));
-  ipcMain.handle("native:read-pty", (_event, input) =>
-    ptyManager.read(String(input?.id ?? ""), Number(input?.cursor ?? 0)),
+    }),
   );
-  ipcMain.handle("native:write-pty", (_event, input) => {
-    const write = { id: String(input?.id ?? ""), text: String(input?.text ?? "") };
-    ptyWrites.push(write);
-    return ptyManager.write(write.id, write.text);
-  });
-  ipcMain.handle("native:resize-pty", (_event, input) =>
-    ptyManager.resize(String(input?.id ?? ""), {
+  ipcMain.handle("native:activate-workspace-session", (_event, input) =>
+    sessionAuthority.activateSession({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      operationId: String(input?.operationId ?? ""),
+      callerId: "task-home-smoke-renderer",
+    }),
+  );
+  ipcMain.handle("native:read-workspace-session", (_event, input) =>
+    sessionAuthority.readSession({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      cursor: Number(input?.cursor ?? 0),
+    }),
+  );
+  ipcMain.handle("native:enqueue-terminal-input", (_event, input) =>
+    sessionAuthority.enqueueInput({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      expectedIncarnationId: String(input?.expectedIncarnationId ?? ""),
+      source: String(input?.source ?? ""),
+      payload: String(input?.payload ?? ""),
+      idempotencyKey: input?.idempotencyKey ? String(input.idempotencyKey) : undefined,
+    }),
+  );
+  ipcMain.handle("native:resize-workspace-session", (_event, input) =>
+    sessionAuthority.resizeSession({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      expectedIncarnationId: input?.expectedIncarnationId ? String(input.expectedIncarnationId) : undefined,
       cols: Number(input?.cols ?? 100),
       rows: Number(input?.rows ?? 30),
     }),
   );
-  ipcMain.handle("native:stop-pty", (_event, input) => ptyManager.stop(String(input?.id ?? "")));
+  ipcMain.handle("native:stop-workspace-session", (_event, input) =>
+    sessionAuthority.stopSession({
+      workspaceSessionId: String(input?.workspaceSessionId ?? ""),
+      expectedIncarnationId: input?.expectedIncarnationId ? String(input.expectedIncarnationId) : undefined,
+    }),
+  );
   ipcMain.handle("native:call-session", (_event, input) => conductorToolBridge.callSession(input));
   ipcMain.handle("native:read-task-state", (_event, input) => conductorToolBridge.readTaskState(input));
   ipcMain.handle("native:read-session", (_event, input) => conductorToolBridge.readSession(input));
@@ -254,20 +271,39 @@ async function setupRuntime() {
     ptyManager = createPtyManager({ spawn, sessionStore });
     ptyBackend = `process-fallback:${error instanceof Error ? error.message : "node-pty unavailable"}`;
   }
-  ptyManager.onEvent(publishPtyEvent);
+  const startPty = ptyManager.start;
+  const writePty = ptyManager.write;
+  ptyManager.start = (input) => {
+    ptyStarts.push(input);
+    return startPty(input);
+  };
+  ptyManager.write = (id, text, options) => {
+    ptyWrites.push({ id, text });
+    return writePty(id, text, options);
+  };
+  sessionAuthority = createSessionAuthority({ ptyManager });
+  ptyManager.onEvent((event) => {
+    sessionAuthority.handlePtyEvent(event);
+    publishPtyEvent(event);
+  });
 
   conductorToolBridge = createConductorToolBridge({
     sessionStore,
     ptyManager,
-    startWorkerSession: async ({ taskId, sessionId }) =>
-      ptyManager.start({
-        id: sessionId,
-        taskId,
-        command: resolvePtyCommand("opencode"),
-        cwd: targetProjectPath,
-        cols: 100,
-        rows: 30,
-        requirePty: realPtyAvailable,
+    activateWorkerSession: ({ sessionId, operationId }) =>
+      sessionAuthority.activateSession({
+        workspaceSessionId: sessionId,
+        operationId,
+        callerId: "task-home-smoke-conductor",
+        reason: "conductor-dispatch",
+      }),
+    enqueueWorkerInput: ({ sessionId, expectedIncarnationId, payload, idempotencyKey }) =>
+      sessionAuthority.enqueueInput({
+        workspaceSessionId: sessionId,
+        expectedIncarnationId,
+        source: "dispatch",
+        payload,
+        idempotencyKey,
       }),
     validateDispatch: ({ taskId, toSessionId }) => {
       if (!taskId || !toSessionId) return { ok: false, reason: "missing-task-or-session" };
@@ -326,7 +362,7 @@ async function main() {
   const workerSessionId = sessionIds[1];
   await waitFor(
     window,
-    `window.agentWorkspace.native.getPty({ id: ${JSON.stringify(conductorSessionId)} }).then((session) => session?.status === "running")`,
+    `window.agentWorkspace.native.readWorkspaceSession({ workspaceSessionId: ${JSON.stringify(conductorSessionId)}, cursor: 0 }).then((session) => session?.status === "running")`,
     "Conductor PTY running",
   );
   const executionConversationCheck = await window.webContents.executeJavaScript(`
@@ -399,7 +435,7 @@ async function main() {
   await waitUntil(() => ptyStarts.length === 2, "manual worker start");
   await waitFor(
     window,
-    `window.agentWorkspace.native.getPty({ id: ${JSON.stringify(workerSessionId)} }).then((session) => session?.status === "running")`,
+    `window.agentWorkspace.native.readWorkspaceSession({ workspaceSessionId: ${JSON.stringify(workerSessionId)}, cursor: 0 }).then((session) => session?.status === "running")`,
     "Worker PTY running",
   );
   const backendDispatchAssignment = "### 后端派发 smoke\\n- native callSession 已写入 Session Store";
@@ -444,11 +480,17 @@ async function main() {
   `);
 
   await window.webContents.executeJavaScript(
-    `Promise.all(${JSON.stringify([conductorSessionId, workerSessionId])}.map((id) => window.agentWorkspace.native.stopPty({ id })))`,
+    `Promise.all(${JSON.stringify([conductorSessionId, workerSessionId])}.map(async (workspaceSessionId) => {
+      const session = await window.agentWorkspace.native.readWorkspaceSession({ workspaceSessionId, cursor: 0 });
+      return window.agentWorkspace.native.stopWorkspaceSession({
+        workspaceSessionId,
+        expectedIncarnationId: session?.incarnationId,
+      });
+    }))`,
   );
   await waitFor(
     window,
-    `Promise.all(${JSON.stringify([conductorSessionId, workerSessionId])}.map((id) => window.agentWorkspace.native.getPty({ id }))).then((sessions) => sessions.every((session) => session?.status === "stopped"))`,
+    `Promise.all(${JSON.stringify([conductorSessionId, workerSessionId])}.map((workspaceSessionId) => window.agentWorkspace.native.readWorkspaceSession({ workspaceSessionId, cursor: 0 }))).then((sessions) => sessions.every((session) => session?.status === "stopped"))`,
     "PTY sessions stopped",
   );
   const stopped = inspectOpencodeProcesses().length;

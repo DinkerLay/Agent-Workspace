@@ -336,6 +336,7 @@ describe("Session wakeup monitor", () => {
     const monitor = createSessionWakeupMonitor({
       ptyManager,
       sessionStore: store,
+      resolveAgentId: ({ sessionId }) => sessionId === workerId ? "researcher" : undefined,
       dispatchResultReader: ({ dispatch }) => ({
         provider: "opencode",
         providerSessionId: "ses_worker",
@@ -367,15 +368,18 @@ describe("Session wakeup monitor", () => {
     expect(writes[0]).toMatchObject({ id: conductorId });
     const wakeupText = writes[0].text.replace(/\x1b\[200~/g, "").replace(/\x1b\[201~/g, "").trim();
     expect(wakeupText.startsWith("{")).toBe(false);
-    expect(wakeupText).toContain("Runtime wakeup: Researcher result available");
+    expect(wakeupText).toContain("Runtime wakeup: researcher result available");
     expect(wakeupText).toContain(`Task: ${taskId}`);
-    expect(wakeupText).toContain(`Worker session: ${workerId}`);
+    expect(wakeupText).toContain("Agent card: researcher");
+    expect(wakeupText).not.toContain(workerId);
     expect(wakeupText).toContain(`Dispatch ID: ${dispatch.dispatchId}`);
     expect(wakeupText).toContain(`Result ID: ${workerView.results[0].resultId}`);
-    expect(wakeupText).toContain("Researcher answer:");
-    expect(wakeupText).toContain(longAnswerText);
+    expect(wakeupText).toContain("The Provider result is stored durably");
+    expect(wakeupText).toContain("use read_task_state to inspect the Result ID");
+    expect(wakeupText).not.toContain("researcher answer:");
+    expect(wakeupText).not.toContain(longAnswerText);
     expect(writes[0].text).not.toContain("Required next step");
-    expect(writes[0].text).not.toContain("Use read_task_state");
+    expect(writes[0].text).toContain("read_task_state");
     expect(writes[0].text).not.toContain("resultPreview");
   });
 
@@ -613,6 +617,12 @@ describe("Session wakeup monitor", () => {
 
     store.startSession({ taskId, sessionId: conductorId, command: "opencode", cwd: root });
     store.startSession({ taskId, sessionId: workerId, command: "opencode", cwd: root });
+    store.recordState(
+      { taskId, sessionId: conductorId },
+      "running",
+      "Provider reports that Conductor is still in an active turn.",
+      {},
+    );
     const dispatch = store.recordDispatch({ taskId, toSessionId: workerId, assignment: "Review." });
     store.markDispatchDelivered({ taskId, sessionId: workerId, dispatchId: dispatch.dispatchId });
 
@@ -654,5 +664,155 @@ describe("Session wakeup monitor", () => {
     expect(result.wakeupsSent).toBe(0);
     expect(writes).toEqual([]);
     expect(conductorView.events.map((event) => event.type)).toContain("conductor.wakeup.queued");
+  });
+
+  it("delivers a queued worker result after the Provider confirms the busy Conductor ended its turn", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-wakeup-queued-drain-"));
+    const store = createSessionStore({ root });
+    const taskId = "task-queued-drain";
+    const conductorId = "opencode:project-runtime-current:task-queued-drain:task-queued-drain-conductor";
+    const workerId = "opencode:project-runtime-current:task-queued-drain:task-queued-drain-searcher";
+    const writes = [];
+    let conductorTurnComplete = false;
+
+    store.startSession({ taskId, sessionId: conductorId, command: "opencode", cwd: root });
+    store.startSession({ taskId, sessionId: workerId, command: "opencode", cwd: root });
+    store.recordState({ taskId, sessionId: conductorId }, "running", "Conductor is deciding.");
+    const dispatch = store.recordDispatch({ taskId, toSessionId: workerId, conductorSessionId: conductorId, assignment: "Search the source." });
+    store.markDispatchDelivered({ taskId, sessionId: workerId, dispatchId: dispatch.dispatchId });
+    const sessions = [
+      { id: conductorId, taskId, status: "running", provider: "opencode", cwd: root },
+      { id: workerId, taskId, status: "running", provider: "opencode", cwd: root },
+    ];
+    const monitor = createSessionWakeupMonitor({
+      ptyManager: {
+        list: () => sessions,
+        get: (id) => sessions.find((session) => session.id === id),
+        sampleStatus: (id) => ({ id, state: "running", cursor: id === conductorId ? 10 : 20, lastOutputAgeMs: 0 }),
+        write: (id, text) => { writes.push({ id, text }); return { id, status: "running" }; },
+      },
+      sessionStore: store,
+      dispatchResultReader: ({ dispatch: observed }) => ({
+        provider: "opencode",
+        providerSessionId: "ses_searcher",
+        messageId: `msg_${observed.dispatchId}`,
+        stepFinishReason: "stop",
+        completedAt: 7100,
+        answerText: `Search result for ${observed.dispatchId}.`,
+        source: "opencode-message-parts",
+      }),
+      conductorMessageReader: () => conductorTurnComplete ? {
+        provider: "opencode",
+        providerSessionId: "ses_conductor",
+        messageId: "msg_conductor_turn_complete",
+        stepFinishReason: "stop",
+        completedAt: 7200,
+        answerText: "Searcher dispatched; waiting for Runtime wakeup.",
+        source: "opencode-message-parts",
+      } : undefined,
+    });
+
+    const queued = await monitor.tick();
+    expect(queued.wakeupsQueued).toBe(1);
+    expect(writes).toEqual([]);
+
+    conductorTurnComplete = true;
+    const delivered = await monitor.tick();
+    const conductorView = store.readSession({ taskId, sessionId: conductorId });
+    expect(delivered.wakeupsSent).toBe(1);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ id: conductorId });
+    expect(writes[0].text).toContain("Searcher result available");
+    expect(conductorView.events.map((event) => event.type)).toContain("conductor.wakeup.sent");
+  });
+
+  it("wakes Conductor for a native worker question without adding Workspace tools to that worker", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-worker-question-monitor-"));
+    const store = createSessionStore({ root });
+    const taskId = "task-1";
+    const conductorId = "opencode:project-runtime-current:task-1:task-1-conductor";
+    const workerId = "opencode:project-runtime-current:task-1:task-1-researcher";
+    const writes = [];
+
+    store.startSession({ taskId, sessionId: conductorId, command: "opencode", cwd: root });
+    store.startSession({ taskId, sessionId: workerId, command: "opencode", cwd: root });
+    const dispatch = store.recordDispatch({ taskId, toSessionId: workerId, conductorSessionId: conductorId, assignment: "Research." });
+    store.markDispatchDelivered({ taskId, sessionId: workerId, dispatchId: dispatch.dispatchId });
+    const sessions = [
+      { id: conductorId, taskId, status: "running", provider: "opencode", cwd: root },
+      { id: workerId, taskId, status: "running", provider: "opencode", cwd: root },
+    ];
+    const monitor = createSessionWakeupMonitor({
+      ptyManager: {
+        list: () => sessions,
+        sampleStatus: (id) => ({ id, state: "running", cursor: id === conductorId ? 10 : 21, lastOutputAgeMs: id === conductorId ? 6000 : 0 }),
+        write: (id, text) => { writes.push({ id, text }); return { id, status: "running" }; },
+      },
+      sessionStore: store,
+      workerQuestionReader: ({ session }) => session.id === workerId ? {
+        provider: "opencode",
+        providerSessionId: "ses_worker",
+        messageId: "msg_worker_question",
+        questionPartId: "prt_worker_question",
+        questionText: "May I use the network to verify this source?",
+        source: "opencode-question-tool",
+      } : undefined,
+    });
+
+    const result = await monitor.tick();
+    const worker = store.readSession({ taskId, sessionId: workerId });
+    expect(result.wakeupsSent).toBe(1);
+    expect(worker.state).toBe("waiting_input");
+    expect(writes[0].id).toBe(conductorId);
+    expect(writes[0].text).toContain("Researcher needs input");
+    expect(writes[0].text).toContain("May I use the network");
+  });
+
+  it("records Provider receipt then terminal failure and wakes Conductor without retrying the worker", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-provider-failure-monitor-"));
+    const store = createSessionStore({ root });
+    const taskId = "task-provider-failure";
+    const conductorId = "opencode:project-runtime-current:task-provider-failure:task-provider-failure-conductor";
+    const workerId = "opencode:project-runtime-current:task-provider-failure:task-provider-failure-researcher";
+    const writes = [];
+
+    store.startSession({ taskId, sessionId: conductorId, command: "opencode", cwd: root });
+    store.startSession({ taskId, sessionId: workerId, command: "opencode", cwd: root });
+    store.recordState({ taskId, sessionId: conductorId }, "waiting_conductor", "Conductor completed its last decision.");
+    const dispatch = store.recordDispatch({ taskId, toSessionId: workerId, conductorSessionId: conductorId, assignment: "Research the primary source." });
+    store.markDispatchInputAccepted({ taskId, sessionId: workerId, dispatchId: dispatch.dispatchId, transport: "terminal_runtime" });
+    const sessions = [
+      { id: conductorId, taskId, status: "running", provider: "opencode", cwd: root },
+      { id: workerId, taskId, status: "running", provider: "opencode", cwd: root },
+    ];
+    const monitor = createSessionWakeupMonitor({
+      ptyManager: {
+        list: () => sessions,
+        get: (id) => sessions.find((session) => session.id === id),
+        sampleStatus: (id) => ({ id, state: "running", cursor: id === conductorId ? 10 : 23, lastOutputAgeMs: 0 }),
+        write: (id, text) => { writes.push({ id, text }); return { id, status: "running" }; },
+      },
+      sessionStore: store,
+      dispatchStateReader: ({ dispatch: observed }) => observed.dispatchId === dispatch.dispatchId ? {
+        state: "terminal_failure",
+        provider: "opencode",
+        receipt: { providerSessionId: "ses_worker", providerMessageId: "msg_dispatch", dispatchMessageCreatedAt: 100 },
+        failure: { providerMessageId: "msg_failure", providerStepFinishId: "prt_failure", stepFinishReason: "error" },
+      } : undefined,
+    });
+
+    const result = await monitor.tick();
+    const worker = store.readSession({ taskId, sessionId: workerId });
+    const eventTypes = worker.events.map((event) => event.type);
+    expect(result.providerFailures).toBe(1);
+    expect(result.wakeupsSent).toBe(1);
+    expect(worker.dispatches[0]).toMatchObject({ status: "provider_failed", providerSessionId: "ses_worker", providerStepFinishId: "prt_failure" });
+    expect(eventTypes).toContain("dispatch.input_accepted");
+    expect(eventTypes).toContain("dispatch.provider.received");
+    expect(eventTypes).toContain("dispatch.provider.failed");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ id: conductorId });
+    expect(writes[0].text).toContain("Provider failure");
+    expect(writes[0].text).toContain("Runtime did not retry this work");
   });
 });

@@ -1,8 +1,22 @@
-# Conductor-Centric Session Communication Spec
+# Historical: Conductor-Centric Session Communication Spec
 
 Date: 2026-06-28
 
-Status: Draft for next implementation plan.
+Status: Superseded on 2026-07-26. Retained as historical design evidence only.
+The active authority is `../agent-loop-v1.md`,
+`../agent-loop-conductor-guidance.md`, `../provider-session-state-detection.md`,
+and `../orca-terminal-runtime-adoption.md`.
+
+> **Agent Loop v1 override (2026-07-26):**
+> [`agent-loop-conductor-guidance.md`](agent-loop-conductor-guidance.md) is
+> the authority for the active Loop. The Conductor may issue zero or more
+> asynchronous dispatches in one decision turn and decides when to end that
+> turn. Runtime records facts and wakes Conductor; it does not impose role
+> order, repair/review routes, evidence gates, or a completion route. A PTY
+> that is not input-ready leaves a dispatch `queued` and is retried on state
+> change, not failed by a wall-clock worker-execution timeout. `achieved` is a
+> user action after inspecting the actual artifact, not an artificial review
+> gate.
 
 Related sources:
 
@@ -89,25 +103,27 @@ Shell
   -> enforces worker target allowlists and permission policy derived from the confirmed Session Agent Plan
 
 Task Runtime / Scheduler
-  -> owns loop progression and stop conditions
-  -> watches dispatch/result/status/review/schedule/user events
-  -> starts a new Conductor turn only when a decision is needed
+  -> owns event delivery and Conductor wakeup delivery
+  -> watches dispatch/result/status/attention/user events
+  -> starts a new Conductor turn when a durable fact needs a decision
   -> passes a plain-text wake message with the relevant provider-extracted result when a worker answer is ready
 ```
 
 ## Task Session Plan
 
-The Task Session Plan is the user-visible, editable plan for which Workspace Sessions exist for one runtime task and how Conductor should use them. It is produced by Task Draft Assistant or by a selected template, then reviewed by the user before Task Intake creates executable work.
+The Task Session Plan is the user-visible, editable inventory of native Session
+Agent Cards available to one runtime task. The Template's Conductor Charter is
+guidance for how the Conductor may use them; it is not an executable route.
 
 The selected task template is a default seed, not the final authority. A research template may seed one Researcher and one Reviewer, but the assistant or user may change it to two independent Researcher sessions, a separate Source Reviewer, or a different provider/model combination. Multiple sessions may share the same role or display name; after creation, the runtime-generated `sessionId` is the only routing key.
 
 Plan fields should include:
 
 - task-level title, goal, deliverables, labels, project path, model defaults, and artifact paths,
-- a Conductor session entry with provider/model/cwd and task-owner routing guidance,
+- a Conductor session entry with provider/model/cwd and its task-owner Charter,
 - worker session entries with `sessionId` seed, display name, role, provider, model, cwd, launch profile, scope/instructions, and expected outputs,
-- route policy describing which sessions Conductor may call,
-- review/loop guidance expressed as natural-language operating policy for Conductor.
+- available native Session Agent Cards and their profile configuration,
+- natural-language operating guidance for Conductor, without an ordered route.
 
 ### Runtime Identity And Session Scope
 
@@ -130,14 +146,15 @@ opencode:<runtimeProjectId>:<runtimeTaskId>:<agentId>
 
 The exact provider prefix may vary by adapter, but the runtime project and runtime task segments are required. Provider-native session ids remain adapter audit fields; they must not become the product routing truth.
 
-Business orchestration belongs in the Task Session Plan and generated Conductor prompt, not in special-purpose tool parameters. For example, a research task plan may say:
+Business orchestration belongs in the generated Conductor Charter, not in
+special-purpose tool parameters or a Runtime route policy. A research Charter
+may say:
 
 ```text
-Use Researcher Official Docs and Researcher Ecosystem independently.
-After both return, send their full outputs to Reviewer for source challenge.
-If Reviewer asks for changes, pass the complete Review text to the responsible Researcher.
-After fixes, send the fix result and original Review text back to Reviewer.
-Only after Reviewer says pass/no changes may Conductor make the final closeout judgment.
+Use the available research, synthesis, and critique cards whenever they would
+improve the answer. After each return, decide whether there is enough evidence,
+whether another view would reduce uncertainty, or whether a user question
+changes the work. Do not assume a fixed number, order, or re-check loop.
 ```
 
 The Shell must not inject this plan into worker sessions as Agent Workspace protocol. Worker sessions receive only normal provider-native task assignments when Conductor calls `call_session`.
@@ -151,7 +168,8 @@ Conductor is a task-owner agent. It is allowed to use Agent Workspace MCP tools 
 Conductor responsibilities:
 
 - understand the task goal and current context,
-- follow the confirmed Task Session Plan and its route policy,
+- use the confirmed Task intent, Charter, and available Session Agent Cards as
+  context for its own decision,
 - decide which target session should act,
 - send concise session-level assignments to delegated sessions,
 - read delegated session outputs from Shell-owned session stores,
@@ -159,9 +177,9 @@ Conductor responsibilities:
 - ask the user when product, permission, or risk decisions are required,
 - synthesize worker results into task-state summaries and next-step decisions,
 - delegate artifact, code, report, spec, plan, and review-note changes to the responsible worker session,
-- state delivery readiness only with evidence and review context.
+- state delivery readiness with its own recorded rationale and available evidence.
 
-Conductor must not personally create, rewrite, or edit worker-owned deliverables. If a Researcher report needs fixes after Reviewer feedback, Conductor should create another `call_session` assignment for the Researcher or Reviewer. If code needs changes after QA feedback, Conductor should route the fix to Executor. Conductor may write short coordination notes or status summaries in its own terminal, but those notes are not the task deliverable unless a task template explicitly defines a Conductor-owned summary artifact.
+Conductor must not personally create, rewrite, or edit worker-owned deliverables. If a Researcher report, review, QA result, or user follow-up changes the task, Conductor decides whether another `call_session` assignment is useful and which approved card should receive it. Conductor may write short coordination notes or status summaries in its own terminal, but those notes are not the task deliverable unless a task template explicitly defines a Conductor-owned summary artifact.
 
 ### Delegated Sessions
 
@@ -199,7 +217,11 @@ If the target session is not running, Shell starts it as a plain provider-native
 
 Shell generates one communication identifier for each dispatch: `dispatchId`. It is a six-character uppercase hex code, unique within the runtime task, generated by Shell/backend code rather than by the model. The same `dispatchId` is carried in the worker assignment, task/session events, provider-extracted `messages.jsonl`, worker `results.jsonl`, `read_task_state`, `read_session`, and runtime wakeups. There is no separate `displayKey` or `dispatchKey`. Provider ids remain adapter audit fields only; they are not Agent Workspace routing keys.
 
-A successful single `call_session` is a Conductor turn boundary. After Shell returns `ok: true` with `status: "delivered"`, Conductor must end the current turn and wait for a runtime wakeup before reading the worker result. If `call_session` returns `ok: false`, Conductor may correct an obvious target/config issue or ask the user, then stop. This removes ambiguity about whether the Conductor should wait for delegated work or keep reasoning inside the same turn.
+A successful `call_session` is asynchronous; it is not a forced Conductor turn
+boundary. The Conductor may issue further independent dispatches, read durable
+state, or choose to end its decision turn. It must not synchronously wait for
+or infer the in-progress target result. A later provider-derived fact wakes
+Conductor with the relevant context.
 
 Input:
 
@@ -227,10 +249,9 @@ Output:
   "targetSessionState": "delivered_pending",
   "resultState": "pending",
   "async": true,
-  "turnPolicy": "stop_after_dispatch",
-  "nextAllowedAction": "wait_for_runtime_wakeup",
+  "nextAllowedAction": "dispatch_more_or_end_decision_turn",
   "cannotReadResultUntil": "provider_result_available",
-  "message": "Assignment delivered to target session. End this Conductor turn now and wait for a runtime wakeup before reading the result."
+  "message": "Assignment delivered asynchronously. You may dispatch other bounded work or end this decision turn; wait for a Runtime wakeup before treating this target result as available."
 }
 ```
 
@@ -258,9 +279,10 @@ A later failed dispatch does not necessarily make the worker session permanently
 
 User-visible recovery controls must be state-derived and use Shell-owned dispatch records. When a user selects retry, stop-then-retry, restart-fresh-then-retry, or force-retry, Shell should reuse the unresolved failed dispatch assignment and call `call_session` again instead of asking the user or Conductor to paste hidden protocol text. Stop/restart/force actions require confirmation and must be recorded as `user.intervention` runtime evidence. Restarting a fresh provider session must not erase historical Session Store evidence.
 
-Parallel fan-out should not rely on a model choosing to chain multiple ambiguous `call_session` calls after each dispatch. If a task template needs deterministic parallel fan-out, add a separate batch primitive such as `call_sessions` or a Shell-side template step that creates multiple dispatches atomically. Single `call_session` remains `stop_after_dispatch`.
-
-Until a batch primitive exists, Task Session Plan wording should avoid requiring two worker dispatches in the same Conductor turn. It can still plan multiple independent worker sessions; Runtime-triggered Conductor turns will schedule them across turns.
+The Conductor may use several ordinary `call_session` calls for parallel
+fan-out. A later batch helper may improve efficiency, but it must only combine
+Conductor-authored dispatch requests; it must not become a Shell-side template
+step that chooses agents or execution order.
 
 Conductor must not synchronously poll, repeatedly read, or block on the just-dispatched session result. When the provider adapter later records a new result, blocked state, timeout, permission request, scheduled trigger, review failure, or other decision point, Task Runtime may start a new Conductor turn with a plain-text wake message. For provider-result wakeups, that wake message includes the full provider-extracted `answerText` for the matching `dispatchId`; Runtime must not silently truncate this answer body.
 
@@ -454,11 +476,10 @@ Runtime-triggered Conductor turns are used for:
 
 - a worker dispatch has a new provider-extracted result,
 - a worker is blocked, waiting for permission, timed out, or exited unexpectedly,
-- a review, benchmark, test, or validation gate failed,
+- a review, benchmark, test, or validation Session returned a meaningful fact,
 - a schedule trigger fired, such as a daily research task,
-- a task template loop policy says another planning/review/implementation round may be needed,
 - the user provided new input or approved a blocked decision,
-- the task appears ready for a finish claim or post-run reflection.
+- the Conductor has a pending decision from any other durable Runtime fact.
 
 Conductor provider-result wake message shape:
 
@@ -481,28 +502,16 @@ The wake message is plain text, not JSON. It is written only to the Conductor se
 
 ### Loop Ownership And Stop Conditions
 
-Task Runtime owns loop execution. Conductor owns decisions inside each turn.
+Runtime has no business loop-continuation or stop policy. Conductor decides
+whether the Task needs another dispatch, a user question, a delivery summary,
+or no further work. Provider failure and attention are durable facts, not
+automatic stop or recovery routes.
 
-Loop continuation conditions:
-
-- required worker result is missing or insufficient,
-- review found issues that can be routed to a worker,
-- verification, benchmark, or test evidence failed and the task template permits another round,
-- scheduled trigger produced new external inputs,
-- Conductor identifies a concrete next worker action that fits the task template route policy.
-
-Loop stop conditions:
-
-- required artifacts exist and pass template checks,
-- Review gate passes,
-- Conductor states delivery readiness and no required check remains,
-- Conductor records a structured `claim_task_completion` event and Review gate can verify it,
-- user decision is required,
-- permission is denied,
-- max rounds, time, or budget limits are reached,
-- provider adapter reports unrecoverable blocked/exited state.
-
-Model claims are not enough to stop a loop. A worker or Conductor saying "done" is only a claim. Conductor must use `claim_task_completion` to record a durable `task.completion_claim`; the Task Runtime must then verify expected artifacts, provider result availability, route policy, and Review gate evidence before moving a task to Done.
+A Conductor completion statement is a durable delivery claim for the user to
+inspect. Runtime records it with known artifacts and provider results, but does
+not judge route compliance, evidence sufficiency, review outcome, or task
+correctness. The user marks the task `achieved` after inspecting the concrete
+delivery.
 
 ## Runtime Injection Strategy
 
@@ -516,7 +525,7 @@ Conductor gets task-scoped runtime injection:
 - final Task Session Plan,
 - worker target allowlist derived from the final Task Session Plan,
 - permission policy summary,
-- review/done guardrails.
+- user-achieved and delivery-claim semantics.
 
 The injection must occur at process launch using provider-supported configuration or CLI flags. It must not be pasted into the terminal as the first user message.
 
@@ -598,10 +607,11 @@ IDE Workbench:
 - Shell event rail shows session status changes and dispatch history,
 - `read_session` output is visible as Conductor tool result, not as hidden state.
 
-Review:
+Delivery:
 
-- Done remains gated by review evidence.
-- Conductor explains its delivery-readiness judgment in its provider-native terminal; Runtime and Review use stored session results, artifacts, and verification evidence to decide whether the task can move to Review or Done.
+- The Conductor explains its delivery-readiness judgment in its provider-native terminal.
+- Runtime stores session results, artifacts, and verification evidence as facts; it never decides whether the task should take another route or become achieved.
+- The user inspects the concrete deliverable and marks the task achieved, or sends a follow-up to the Conductor.
 
 ## Success Criteria
 

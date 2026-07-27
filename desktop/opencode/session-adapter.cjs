@@ -1,4 +1,5 @@
 const os = require("node:os");
+const fs = require("node:fs");
 const path = require("node:path");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
@@ -30,13 +31,12 @@ async function findProviderSessionForDispatch({
   const assignmentMarker = `[Agent Workspace] Dispatch ID ${dispatch}`;
   const dispatchCreatedAtMs = normalizeOptionalTimestamp(dispatchCreatedAt);
 
-  const cwdClause = cwd
-    ? `and (s.directory = ${sqlString(cwd)} or s.path = ${sqlString(cwd)})`
-    : "";
+  const cwdClause = cwd ? providerDirectoryClause(cwd) : "";
   const createdAtClause = dispatchCreatedAtMs ? `and m.time_created >= ${sqlNumber(dispatchCreatedAtMs)}` : "";
   const sql = `
     select
       m.session_id as sessionId,
+      m.id as dispatchMessageId,
       m.time_created as dispatchMessageCreatedAt
     from message m
     join part p on p.message_id = m.id
@@ -54,7 +54,106 @@ async function findProviderSessionForDispatch({
   if (!row?.sessionId) return undefined;
   return {
     providerSessionId: String(row.sessionId),
+    providerMessageId: row.dispatchMessageId ? String(row.dispatchMessageId) : undefined,
     dispatchMessageCreatedAt: Number(row.dispatchMessageCreatedAt ?? 0),
+  };
+}
+
+/**
+ * Dispatch-bounded Provider observation. This is structured OpenCode storage
+ * only: no terminal prose and no retry/route decision leaks into the adapter.
+ */
+async function inspectDispatchProviderState({
+  dispatchId,
+  cwd,
+  dispatchCreatedAt,
+  query = sqliteJsonQuery,
+  dbPath,
+  sqlitePath,
+}) {
+  const receipt = await findProviderSessionForDispatch({ dispatchId, cwd, dispatchCreatedAt, query, dbPath, sqlitePath });
+  if (!receipt) return { state: "not_received", provider: "opencode" };
+  const failure = await getDispatchTerminalFailureAfter({
+    providerSessionId: receipt.providerSessionId,
+    afterMessageCreatedAt: receipt.dispatchMessageCreatedAt,
+    query,
+    dbPath,
+    sqlitePath,
+  });
+  if (failure) return { state: "terminal_failure", provider: "opencode", receipt, failure };
+  return { state: "received", provider: "opencode", receipt };
+}
+
+async function getDispatchTerminalFailureAfter({
+  providerSessionId,
+  afterMessageCreatedAt = 0,
+  query = sqliteJsonQuery,
+  dbPath,
+  sqlitePath,
+}) {
+  const sessionId = String(providerSessionId ?? "").trim();
+  if (!sessionId) return undefined;
+  const sql = `
+    select
+      m.id as messageId,
+      m.time_created as messageCreatedAt,
+      sf.id as stepFinishId,
+      sf.time_created as stepFinishedAt,
+      json_extract(sf.data, '$.reason') as stepFinishReason
+    from message m
+    join part sf on sf.message_id = m.id
+    where m.session_id = ${sqlString(sessionId)}
+      and json_extract(m.data, '$.role') = 'assistant'
+      and m.time_created >= ${sqlNumber(afterMessageCreatedAt)}
+      and json_extract(sf.data, '$.type') = 'step-finish'
+      and lower(coalesce(json_extract(sf.data, '$.reason'), '')) in ('error', 'failed', 'abort', 'aborted', 'cancelled', 'canceled')
+    order by m.time_created desc, sf.time_created desc
+    limit 1
+  `;
+  const row = (await query(sql, { dbPath, sqlitePath }))[0];
+  if (!row?.messageId) return undefined;
+  return {
+    providerMessageId: String(row.messageId),
+    providerStepFinishId: row.stepFinishId ? String(row.stepFinishId) : undefined,
+    stepFinishReason: row.stepFinishReason ? String(row.stepFinishReason) : "failed",
+    completedAt: normalizeOptionalNumber(row.stepFinishedAt) ?? normalizeOptionalNumber(row.messageCreatedAt),
+  };
+}
+
+async function findProviderSessionForConductorTask({
+  cwd,
+  taskId,
+  query = sqliteJsonQuery,
+  dbPath,
+  sqlitePath,
+}) {
+  const directory = String(cwd ?? "").trim();
+  const task = String(taskId ?? "").trim();
+  if (!directory || !task) return undefined;
+  const startMarker = "Start this Agent Workspace task now.";
+  const taskMarker = `Task id: ${task}`;
+  const sql = `
+    select
+      m.session_id as sessionId,
+      m.time_created as taskMessageCreatedAt
+    from message m
+    join part p on p.message_id = m.id
+    join session s on s.id = m.session_id
+    where 1 = 1
+      ${providerDirectoryClause(directory)}
+      and json_extract(m.data, '$.role') = 'user'
+      and json_extract(p.data, '$.type') = 'text'
+      and instr(coalesce(json_extract(p.data, '$.text'), ''), ${sqlString(startMarker)}) > 0
+      and instr(coalesce(json_extract(p.data, '$.text'), ''), ${sqlString(taskMarker)}) > 0
+    order by m.time_created desc
+    limit 1
+  `;
+  const rows = await query(sql, { dbPath, sqlitePath });
+  const row = rows[0];
+  if (!row?.sessionId) return undefined;
+  return {
+    providerSessionId: String(row.sessionId),
+    taskMessageCreatedAt: Number(row.taskMessageCreatedAt ?? 0),
   };
 }
 
@@ -160,7 +259,8 @@ async function getLastEffectiveAssistantAnswerForDirectory({
       from message m
       join session s on s.id = m.session_id
       join part sf on sf.message_id = m.id
-      where (s.directory = ${sqlString(directory)} or s.path = ${sqlString(directory)})
+      where 1 = 1
+        ${providerDirectoryClause(directory)}
         and json_extract(m.data, '$.role') = 'assistant'
         and m.time_created >= ${sqlNumber(afterTimestamp)}
         and json_extract(sf.data, '$.type') = 'step-finish'
@@ -242,7 +342,8 @@ async function getLastPendingQuestionForDirectory({
       from message m
       join session s on s.id = m.session_id
       join part q on q.message_id = m.id
-      where (s.directory = ${sqlString(directory)} or s.path = ${sqlString(directory)})
+      where 1 = 1
+        ${providerDirectoryClause(directory)}
         and json_extract(m.data, '$.role') = 'assistant'
         and m.time_created >= ${sqlNumber(afterTimestamp)}
         and json_extract(q.data, '$.type') = 'tool'
@@ -294,7 +395,8 @@ async function getLastPendingQuestionForConductorTask({
       from message m
       join session s on s.id = m.session_id
       join part p on p.message_id = m.id
-      where (s.directory = ${sqlString(directory)} or s.path = ${sqlString(directory)})
+      where 1 = 1
+        ${providerDirectoryClause(directory)}
         and json_extract(m.data, '$.role') = 'user'
         and json_extract(p.data, '$.type') = 'text'
         and instr(coalesce(json_extract(p.data, '$.text'), ''), ${sqlString(startMarker)}) > 0
@@ -465,6 +567,27 @@ async function getDispatchAssistantAnswer({
   };
 }
 
+function providerDirectoryClause(cwd) {
+  const candidates = providerDirectoryCandidates(cwd);
+  if (!candidates.length) return "and 1 = 0";
+  const values = candidates.map(sqlString).join(", ");
+  return `and (s.directory in (${values}) or s.path in (${values}))`;
+}
+
+function providerDirectoryCandidates(cwd) {
+  const raw = String(cwd ?? "").trim();
+  if (!raw) return [];
+  const candidates = new Set([raw, path.resolve(raw)]);
+  try {
+    const realpath = fs.realpathSync.native?.(raw) ?? fs.realpathSync(raw);
+    if (realpath) candidates.add(realpath);
+  } catch {
+    // A project can legitimately disappear after a Provider Session has
+    // stopped. Keep the original path match rather than failing inspection.
+  }
+  return [...candidates];
+}
+
 function sqlString(value) {
   return `'${String(value ?? "").replace(/'/g, "''")}'`;
 }
@@ -515,7 +638,9 @@ function createPendingQuestionResult(rows) {
 
 module.exports = {
   defaultOpencodeDbPath,
+  findProviderSessionForConductorTask,
   findProviderSessionForDispatch,
+  inspectDispatchProviderState,
   getDispatchAssistantAnswer,
   getFirstEffectiveAssistantAnswerAfter,
   getLastEffectiveAssistantAnswer,

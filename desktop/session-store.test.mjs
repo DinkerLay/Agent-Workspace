@@ -166,6 +166,30 @@ describe("Shell Session Store", () => {
     expect(view.events.map((event) => event.type)).toEqual(["session.started", "session.blocked"]);
   });
 
+  it("publishes durable semantic invalidations without publishing raw PTY output", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-change-events-"));
+    const store = createSessionStore({ root });
+    const changes = [];
+    const unsubscribe = store.onTaskChange((change) => changes.push(change));
+    const session = {
+      taskId: "task-1",
+      sessionId: "task-1-researcher",
+      command: "opencode",
+      cwd: root,
+      provider: "opencode",
+    };
+
+    store.startSession(session);
+    store.recordOutput(session, "raw terminal repaint");
+    store.recordState(session, "blocked", "Provider needs a decision.");
+    store.recordState(session, "blocked", "Provider needs a decision.");
+    unsubscribe();
+    store.recordState(session, "ready", "No subscriber should observe this.");
+
+    expect(changes.map((change) => change.type)).toEqual(["session.started", "session.blocked"]);
+    expect(changes.every((change) => change.taskId === "task-1" && change.sessionId === "task-1-researcher")).toBe(true);
+  });
+
   it("ignores legacy session.output events and keeps cursors monotonic after compaction gaps", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-legacy-output-"));
     const store = createSessionStore({ root });
@@ -267,7 +291,7 @@ describe("Shell Session Store", () => {
       dispatchId: dispatch.dispatchId,
       status: "delivered",
     });
-    expect(view.events.map((event) => event.type)).toEqual(["dispatch.created", "dispatch.delivered"]);
+    expect(view.events.map((event) => event.type)).toEqual(["dispatch.created", "dispatch.provider.received"]);
   });
 
   it("projects a single runtime state from session and dispatch lifecycle", () => {
@@ -798,7 +822,7 @@ describe("Shell Session Store", () => {
     expect(stripTerminalControls(noisy)).toBe("visiblered\nnext");
   });
 
-  it("does not persist split terminal output as session-store transcript evidence", () => {
+  it("keeps raw terminal bytes outside the semantic transcript", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-split-controls-"));
     const store = createSessionStore({ root });
     const session = {
@@ -814,8 +838,28 @@ describe("Shell Session Store", () => {
     store.recordOutput(session, "[0m\n");
 
     const view = store.readSession({ taskId: "task-1", sessionId: "task-1-conductor" });
+    const log = store.readTerminalLog({ taskId: "task-1", sessionId: "task-1-conductor" });
 
     expect(view.cleanTranscriptTail).toBe("");
     expect(view.events.map((event) => event.type)).toEqual(["session.started"]);
+    expect(log.content).toBe("\u001b[31mhello\u001b[0m\n");
+    expect(log.truncated).toBe(false);
+  });
+
+  it("bounds persisted raw terminal output without creating semantic events", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-terminal-log-bound-"));
+    const store = createSessionStore({ root, terminalLogMaxBytes: 8 });
+    const session = { taskId: "task-1", sessionId: "task-1-worker", command: "opencode", cwd: root };
+
+    store.startSession(session);
+    store.recordOutput(session, "12345");
+    store.recordOutput(session, "67890");
+
+    expect(store.readTerminalLog({ taskId: "task-1", sessionId: "task-1-worker" })).toMatchObject({
+      content: "34567890",
+      bytes: 8,
+      truncated: true,
+    });
+    expect(store.readSession({ taskId: "task-1", sessionId: "task-1-worker" }).events.map((event) => event.type)).toEqual(["session.started"]);
   });
 });

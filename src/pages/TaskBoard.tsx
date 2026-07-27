@@ -4,9 +4,10 @@ import {
   Plus,
   Sparkles,
   Trash2,
-  type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { getActiveRunForTask, getLoopForTask, getRunIdForTask } from "../lib/taskMachine";
 import type {
   ReadTaskStateResult,
@@ -53,13 +54,6 @@ import type {
   TaskTransitionEvent,
 } from "../types";
 import { StatusPill, laneTitle } from "../components/common";
-
-type LoopStage = {
-  label: string;
-  state: string;
-  detail: string;
-  icon: LucideIcon;
-};
 
 type TaskIntakeInput = {
   title: string;
@@ -123,7 +117,6 @@ type TaskBoardProps = {
   taskRuntimeState?: ReadTaskStateResult;
   taskIntakeEvents?: TaskIntakeEvent[];
   taskTransitionEvents: TaskTransitionEvent[];
-  loopStages: LoopStage[];
   nativeRuntimeStatus: NativeRuntimeStatus;
   nativePtySession?: NativePtySession;
   agentLaunchCommand: string;
@@ -133,7 +126,6 @@ type TaskBoardProps = {
   onSelectTask: (taskId: string) => void;
   onAdvance: (taskId: string) => void;
   onStartAgent?: (taskId: string) => void;
-  onOpenLoops: () => void;
   onStartConductorPty?: () => void;
   onRefreshConductorPty?: () => void;
   onWriteConductorPtyData?: (data: string) => void;
@@ -164,7 +156,6 @@ export function TaskBoard({
   taskRuntimeState,
   taskIntakeEvents = [],
   taskTransitionEvents,
-  loopStages,
   nativeRuntimeStatus,
   nativePtySession,
   agentLaunchCommand,
@@ -180,7 +171,6 @@ export function TaskBoard({
   onSelectTask,
   onAdvance,
   onStartAgent = () => undefined,
-  onOpenLoops,
   onStartConductorPty = () => undefined,
   onRefreshConductorPty = () => undefined,
   onWriteConductorPtyData = () => undefined,
@@ -1534,100 +1524,8 @@ function createExecutionEvents(
   ];
 }
 
-function MarkdownContent({ markdown }: { markdown: string }) {
-  const lines = markdown.trim().split(/\r?\n/);
-  const blocks: ReactNode[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-
-    if (line.startsWith("```")) {
-      const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && !lines[index].startsWith("```")) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-      index += 1;
-      blocks.push(
-        <pre key={`code-${blocks.length}`}>
-          <code>{codeLines.join("\n")}</code>
-        </pre>,
-      );
-      continue;
-    }
-
-    if (/^#{1,4}\s+/.test(line)) {
-      const text = line.replace(/^#{1,4}\s+/, "");
-      blocks.push(<h4 key={`heading-${blocks.length}`}>{renderInlineMarkdown(text, `heading-${blocks.length}`)}</h4>);
-      index += 1;
-      continue;
-    }
-
-    if (/^[-*]\s+/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && /^[-*]\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^[-*]\s+/, ""));
-        index += 1;
-      }
-      blocks.push(
-        <ul key={`ul-${blocks.length}`}>
-          {items.map((item, itemIndex) => (
-            <li key={`${item}-${itemIndex}`}>{renderInlineMarkdown(item, `ul-${blocks.length}-${itemIndex}`)}</li>
-          ))}
-        </ul>,
-      );
-      continue;
-    }
-
-    if (/^\d+\.\s+/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && /^\d+\.\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\d+\.\s+/, ""));
-        index += 1;
-      }
-      blocks.push(
-        <ol key={`ol-${blocks.length}`}>
-          {items.map((item, itemIndex) => (
-            <li key={`${item}-${itemIndex}`}>{renderInlineMarkdown(item, `ol-${blocks.length}-${itemIndex}`)}</li>
-          ))}
-        </ol>,
-      );
-      continue;
-    }
-
-    const paragraphLines: string[] = [];
-    while (
-      index < lines.length &&
-      lines[index].trim() &&
-      !lines[index].startsWith("```") &&
-      !/^#{1,4}\s+/.test(lines[index]) &&
-      !/^[-*]\s+/.test(lines[index]) &&
-      !/^\d+\.\s+/.test(lines[index])
-    ) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-    blocks.push(
-      <p key={`p-${blocks.length}`}>{renderInlineMarkdown(paragraphLines.join(" "), `p-${blocks.length}`)}</p>,
-    );
-  }
-
-  return <div className="execution-md">{blocks}</div>;
-}
-
-function renderInlineMarkdown(text: string, keyPrefix: string) {
-  return text.split(/(`[^`]+`)/g).map((part, index) => {
-    if (part.startsWith("`") && part.endsWith("`")) {
-      return <code key={`${keyPrefix}-code-${index}`}>{part.slice(1, -1)}</code>;
-    }
-    return <span key={`${keyPrefix}-text-${index}`}>{part}</span>;
-  });
+export function MarkdownContent({ markdown }: { markdown: string }) {
+  return <div className="execution-md"><ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown></div>;
 }
 
 function mcpToolsForAgent(agent: Agent, conductorAgent: Agent) {

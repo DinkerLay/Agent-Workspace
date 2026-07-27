@@ -37,6 +37,7 @@ describe("Conductor MCP server", () => {
     expect(result.id).toBe(1);
     expect(result.result.tools.map((tool) => tool.name)).toEqual([
       "call_session",
+      "call_sessions",
       "read_task_state",
       "read_session",
       "claim_task_completion",
@@ -53,7 +54,7 @@ describe("Conductor MCP server", () => {
           name: "call_session",
           arguments: {
             taskId: "task-1",
-            toSessionId: "task-1-researcher",
+            agentId: "researcher",
             assignment: "research",
           },
         },
@@ -65,6 +66,21 @@ describe("Conductor MCP server", () => {
 
     expect(result.result.content[0].text).toContain('"ok":true');
     expect(result.result.content[0].text).toContain('"status":"delivered"');
+  });
+
+  it("rejects malformed dispatch input before it can be coerced into a terminal assignment", async () => {
+    const result = await handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "call_session", arguments: { taskId: "task-1", agentId: { id: "researcher" }, assignment: "research" } },
+      },
+      { callTool: async () => ({ ok: true }) },
+    );
+
+    expect(result.result.isError).toBe(true);
+    expect(result.result.content[0].text).toContain("dispatch_requires_taskId_agentId_assignment");
   });
 
   it("does not respond to MCP notifications without ids", async () => {

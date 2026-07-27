@@ -45,7 +45,7 @@ function buildTaskDraftPrompt(input) {
             provider: "opencode",
             model: input.model || defaultModel,
             instructions:
-              "任务负责人。只管主线、派发、读取结果和收口判断；不要替代 worker 写 research/review/spec/plan 产物。",
+              "任务负责人。根据任务、持久化 Session 返回和用户补充决定下一步；不要替代 worker 写 research/review/spec/plan 产物，也不要假定固定派发顺序或复核门槛。",
           },
           workers: [
             {
@@ -70,19 +70,10 @@ function buildTaskDraftPrompt(input) {
           routePolicy: {
             allowedTargets: ["Researcher", "Reviewer"],
             notes: [
-              "Conductor 先派 Researcher。",
-              "Researcher 返回后派 Reviewer。",
-              "Reviewer 要求修改时，把完整 review 文本派回对应 worker，再让 Reviewer 二次复核。",
-              "Reviewer 明确通过后 Conductor 才能收口。",
+              "Conductor 根据任务、Session 返回与用户补充决定是否派发和派发给谁。",
+              "Researcher 与 Reviewer 是可用能力，不是固定顺序或完成门槛。",
             ],
           },
-          workflow: [
-            "dispatch Researcher",
-            "read Researcher result",
-            "dispatch Reviewer",
-            "route fixes if needed",
-            "final task-level consolidation after review pass",
-          ],
           deliverables: ["docs/research/ report", "docs/superworks/spec/ clues", "docs/superworks/plans/ clues"],
         },
         draftPatch: null,
@@ -109,7 +100,8 @@ function buildTaskDraftPrompt(input) {
     "- For follow-up edits, return sessionPlanPatch when the session plan changes.",
     "- sessionPlan.conductor is the task owner. sessionPlan.workers are provider-native sessions that do role-owned work.",
     "- If the user asks for multiple independent agents, create multiple worker entries with distinct idSeed values.",
-    "- Put task-specific routing and loop rules in sessionPlan.routePolicy.notes and sessionPlan.workflow.",
+    "- routePolicy.notes may express Conductor decision preferences, but must not prescribe a fixed worker sequence, reviewer repair loop, agent count, or completion gate.",
+    "- Do not emit sessionPlan.workflow for the active Agent Loop product. Graph/Workflow is a separate deferred product surface.",
     "- Output JSON only; no markdown wrapper unless unavoidable.",
     "",
     "Current project:",
@@ -144,7 +136,7 @@ async function generateTaskDraft(input, dependencies = {}) {
       command: runResult.command,
       cwd: runResult.cwd,
       raw: runResult.stdout,
-      error: runResult.error || runResult.stderr || "opencode run failed",
+      error: runResult.error || runResult.stderr || `opencode run exited with code ${runResult.exitCode ?? "unknown"}`,
     };
   }
 

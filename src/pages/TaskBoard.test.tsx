@@ -8,7 +8,7 @@ import { initialPrototypeState } from "../mock/prototypeData";
 import type { ReadTaskStateResult } from "../orchestration/conductor-tools";
 import type { NativePtySession } from "../runtime/nativeBridge";
 import { createOpencodeSessionKey, getProjectRuntimeId, getTaskRuntimeId } from "../runtime/opencode";
-import { TaskBoard } from "./TaskBoard";
+import { MarkdownContent, TaskBoard } from "./TaskBoard";
 
 afterEach(cleanup);
 
@@ -310,6 +310,13 @@ describe("TaskBoard Task Home", () => {
     expect(container.querySelector(".execution-md ul")).toBeTruthy();
     expect(container.querySelector(".execution-md pre code")).toBeTruthy();
     expect(screen.getByText("关键变化")).toBeTruthy();
+  });
+
+  it("renders GFM tables in task messages", () => {
+    const { container } = render(<MarkdownContent markdown={["| 产物 | 状态 |", "| --- | --- |", "| report.md | ready |"].join("\n")} />);
+
+    expect(container.querySelector(".execution-md table")).toBeTruthy();
+    expect(screen.getByText("report.md")).toBeTruthy();
   });
 
   it("renders backend task runtime state instead of local projected execution cards", () => {

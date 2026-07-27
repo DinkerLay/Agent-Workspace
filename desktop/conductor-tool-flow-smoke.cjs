@@ -22,8 +22,8 @@ async function main() {
   const bridge = createConductorToolBridge({
     sessionStore,
     ptyManager,
-    startWorkerSession: async ({ taskId, sessionId }) => {
-      const session = { id: sessionId, taskId, status: "running" };
+    activateWorkerSession: async ({ taskId, sessionId }) => {
+      const session = { id: sessionId, taskId, status: "running", incarnationId: "smoke-incarnation" };
       sessions.set(sessionId, session);
       sessionStore.startSession({
         taskId,
@@ -32,8 +32,9 @@ async function main() {
         cwd: root,
         provider: "opencode",
       });
-      return session;
+      return { session };
     },
+    enqueueWorkerInput: async ({ sessionId, payload }) => ({ result: ptyManager.write(sessionId, payload) }),
   });
 
   const dispatch = await bridge.callSession({

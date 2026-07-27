@@ -3,23 +3,28 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  activateNativeWorkspaceSession,
   getNativePtySession,
   getNativeRuntimeStatus,
   inspectNativeOpencodeProcesses,
   appendNativeTaskEvent,
   callNativeSession,
+  createNativeManualOrchestrationTemplateDraft,
   readNativeSession,
   readNativeTaskState,
   readNativePtySession,
+  readNativeWorkspaceTerminalLog,
   resizeNativePtySession,
   runNativeVerification,
   runNativeOpencode,
   generateNativeTaskDraft,
   listNativeOpencodeAgents,
-  startNativePtySession,
+  listNativeOrchestrationTemplateBlueprints,
+  enqueueNativeTerminalInput,
+  registerNativeWorkspaceSessionProfile,
   subscribeNativePtyEvents,
+  subscribeNativeAgentLoopRuntimeEvents,
   stopNativePtySession,
-  writeNativePtySession,
   type NativePtyEvent,
 } from "./nativeBridge";
 
@@ -33,6 +38,28 @@ describe("native runtime bridge", () => {
       available: false,
       mode: "browser",
       message: "浏览器模式无法直接启动本地 opencode。请使用桌面壳运行。",
+    });
+  });
+
+  it("reads raw terminal diagnostics only through the desktop bridge", async () => {
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", model: "test", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
+        readWorkspaceTerminalLog: async (input) => ({
+          sessionId: input.workspaceSessionId,
+          content: "OpenCode TUI ready\n",
+          bytes: 19,
+          truncated: false,
+        }),
+      },
+    };
+
+    await expect(readNativeWorkspaceTerminalLog({ taskId: "task-1", workspaceSessionId: "task-1-conductor" })).resolves.toEqual({
+      sessionId: "task-1-conductor",
+      content: "OpenCode TUI ready\n",
+      bytes: 19,
+      truncated: false,
     });
   });
 
@@ -135,6 +162,68 @@ describe("native runtime bridge", () => {
     ]);
   });
 
+  it("delegates Template Blueprint listing and a hand-built Draft to the desktop preload bridge", async () => {
+    const calls: string[] = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async (input) => ({ ok: true, command: "opencode run --format json", cwd: input.cwd, stdout: "", stderr: "", exitCode: 0, durationMs: 1 }),
+        listOrchestrationTemplateBlueprints: async () => [
+          {
+            id: "release-evidence",
+            version: 1,
+            name: "Release evidence",
+            description: "Inspect then verify.",
+            source: "manual" as const,
+            agentLoopTemplate: { id: "release-loop", version: 1, family: "agent_loop" as const },
+            workflowTemplate: { id: "release-workflow", version: 1, family: "workflow" as const },
+            createdAt: "2026-07-24T00:00:00.000Z",
+            updatedAt: "2026-07-24T00:00:00.000Z",
+          },
+        ],
+        createManualOrchestrationTemplateDraft: async (input) => {
+          calls.push(`${input.title}:${input.workflow.nodes.map((node) => node.id).join(",")}`);
+          return {
+            draftId: "draft-manual",
+            cwd: input.cwd,
+            title: input.title,
+            goal: input.goal ?? "",
+            model: "opencode-go/deepseek-v4-flash",
+            status: "manual" as const,
+            candidate: {
+              blueprint: { id: "release-evidence", name: input.title, description: input.description ?? "" },
+              agentLoop: { id: "release-loop", name: "Release loop", definition: { conductor: { provider: "opencode" as const, role: "Conductor" } } },
+              workflow: { id: "release-workflow", name: "Release workflow", definition: { nodes: input.workflow.nodes, wakeOn: ["workflow.completed"] } },
+              rationale: "hand-built",
+              assumptions: [],
+            },
+            createdAt: "2026-07-24T00:00:00.000Z",
+            updatedAt: "2026-07-24T00:00:00.000Z",
+          };
+        },
+      },
+    };
+
+    await expect(listNativeOrchestrationTemplateBlueprints()).resolves.toMatchObject([
+      { id: "release-evidence", source: "manual" },
+    ]);
+    await expect(
+      createNativeManualOrchestrationTemplateDraft({
+        cwd: "/tmp/project",
+        title: "Release evidence",
+        description: "Inspect then verify.",
+        agentLoop: { conductorRole: "Conductor" },
+        workflow: {
+          nodes: [
+            { id: "inspect", role: "Inspector", kind: "delegate", dependsOn: [] },
+            { id: "verify", role: "Verifier", kind: "verify", dependsOn: ["inspect"] },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({ status: "manual", candidate: { blueprint: { name: "Release evidence" } } });
+    expect(calls).toEqual(["Release evidence:inspect,verify"]);
+  });
+
   it("delegates Conductor session tool bridge methods to the desktop preload bridge", async () => {
     window.agentWorkspace = {
       native: {
@@ -161,10 +250,10 @@ describe("native runtime bridge", () => {
           deliveryState: "delivered",
           targetSessionState: "delivered_pending",
           resultState: "pending",
-          turnPolicy: "stop_after_dispatch",
+          turnPolicy: "continue_dispatching_or_wait",
           nextAllowedAction: "wait_for_runtime_wakeup",
           message:
-            "Assignment delivered to target session. End this Conductor turn now and wait for a runtime wakeup before reading the result.",
+            "Assignment delivered to a native Session Agent. You may dispatch other independent work, or wait for a semantic Runtime wakeup before using its result.",
         }),
         readTaskState: async () => ({
           taskId: "task-1",
@@ -289,7 +378,7 @@ describe("native runtime bridge", () => {
     expect(calls).toEqual(["task-1:task-1-conductor:user.intervention:后端纠偏消息"]);
   });
 
-  it("delegates native PTY session lifecycle requests to the desktop preload bridge", async () => {
+  it("delegates managed Workspace Session lifecycle requests to the desktop preload bridge", async () => {
     const calls: string[] = [];
     window.agentWorkspace = {
       native: {
@@ -314,24 +403,58 @@ describe("native runtime bridge", () => {
             { name: "build", kind: "primary" },
           ],
         }),
-        startPty: async (input) => {
-          calls.push(`start:${input.command}:${input.cwd}:${input.args?.join(" ")}:${input.requirePty}`);
+        registerWorkspaceSessionProfile: async (input) => {
+          calls.push(`register:${input.workspaceSessionId}:${input.provider}:${input.cwd}:${input.model}`);
+          return { workspaceSessionId: input.workspaceSessionId, fingerprint: "profile-fingerprint", taskId: input.taskId };
+        },
+        activateWorkspaceSession: async (input) => {
+          calls.push(`activate:${input.workspaceSessionId}:${input.operationId}`);
           return {
-            id: input.id ?? "native-session-1",
-            command: input.command,
-            args: input.args ?? [],
-            cwd: input.cwd,
+            disposition: "created",
+            workspaceSessionId: input.workspaceSessionId,
+            owner: {
+              workspaceSessionId: input.workspaceSessionId,
+              taskId: "task-1",
+              ptyId: input.workspaceSessionId,
+              incarnationId: "inc-1",
+              generation: "gen-1",
+              state: "active",
+            },
+            session: {
+            id: input.workspaceSessionId,
+            command: "opencode",
+            args: ["--model", "opencode-go/deepseek-v4-flash"],
+            cwd: "/tmp/project",
             backend: "process",
             status: "running",
-            cols: input.cols ?? 100,
-            rows: input.rows ?? 30,
+            cols: 100,
+            rows: 30,
             transcript: ["started\n"],
+            incarnationId: "inc-1",
+            generation: "gen-1",
+            },
           };
         },
-        getPty: async (input) => {
-          calls.push(`get:${input.id}`);
+        readWorkspaceSession: async (input) => {
+          calls.push(`read:${input.workspaceSessionId}:${input.cursor}`);
+          if (input.cursor > 0) {
+            return {
+              id: input.workspaceSessionId,
+              command: "opencode",
+              args: ["--model", "opencode-go/deepseek-v4-flash"],
+              cwd: "/tmp/project",
+              backend: "process",
+              status: "running",
+              cols: 100,
+              rows: 30,
+              transcript: ["delta\n"],
+              cursor: 3,
+              incarnationId: "inc-1",
+              generation: "gen-1",
+            };
+          }
           return {
-            id: input.id,
+            id: input.workspaceSessionId,
             command: "opencode",
             args: ["--model", "opencode-go/deepseek-v4-flash"],
             cwd: "/tmp/project",
@@ -341,52 +464,49 @@ describe("native runtime bridge", () => {
             rows: 30,
             transcript: ["started\n", "done\n"],
             exitCode: 0,
+            incarnationId: "inc-1",
+            generation: "gen-1",
           };
         },
-        readPty: async (input) => {
-          calls.push(`read:${input.id}:${input.cursor}`);
+        enqueueTerminalInput: async (input) => {
+          calls.push(`input:${input.workspaceSessionId}:${input.expectedIncarnationId}:${input.source}:${input.payload}`);
           return {
-            id: input.id,
-            command: "opencode",
-            args: ["--model", "opencode-go/deepseek-v4-flash"],
-            cwd: "/tmp/project",
-            backend: "process",
-            status: "running",
-            cols: 100,
-            rows: 30,
-            transcript: ["delta\n"],
-            cursor: 3,
+            disposition: "written",
+            workspaceSessionId: input.workspaceSessionId,
+            incarnationId: input.expectedIncarnationId,
+            source: input.source,
           };
         },
-        writePty: async (input) => {
-          calls.push(`write:${input.id}:${input.text}`);
+        resizeWorkspaceSession: async (input) => {
+          calls.push(`resize:${input.workspaceSessionId}:${input.expectedIncarnationId}:${input.cols}x${input.rows}`);
           return undefined;
         },
-        resizePty: async (input) => {
-          calls.push(`resize:${input.id}:${input.cols}x${input.rows}`);
-          return undefined;
-        },
-        stopPty: async (input) => {
-          calls.push(`stop:${input.id}`);
+        stopWorkspaceSession: async (input) => {
+          calls.push(`stop:${input.workspaceSessionId}:${input.expectedIncarnationId}`);
           return undefined;
         },
       },
     };
 
     await expect(
-      startNativePtySession({
-        id: "native-session-1",
-        command: "opencode",
-        args: ["--model", "opencode-go/deepseek-v4-flash"],
+      registerNativeWorkspaceSessionProfile({
+        workspaceSessionId: "native-session-1",
+        taskId: "task-1",
+        provider: "opencode",
         cwd: "/tmp/project",
+        model: "opencode-go/deepseek-v4-flash",
         cols: 100,
         rows: 30,
-        requirePty: true,
       }),
     ).resolves.toMatchObject({
-      id: "native-session-1",
-      backend: "process",
-      transcript: ["started\n"],
+      workspaceSessionId: "native-session-1",
+      fingerprint: "profile-fingerprint",
+    });
+    await expect(
+      activateNativeWorkspaceSession({ workspaceSessionId: "native-session-1", operationId: "activate-1" }),
+    ).resolves.toMatchObject({
+      disposition: "created",
+      session: { id: "native-session-1", backend: "process", transcript: ["started\n"] },
     });
     await expect(getNativePtySession("native-session-1")).resolves.toMatchObject({
       status: "stopped",
@@ -398,9 +518,14 @@ describe("native runtime bridge", () => {
       transcript: ["delta\n"],
       cursor: 3,
     });
-    await writeNativePtySession("native-session-1", "continue\n");
-    await resizeNativePtySession("native-session-1", { cols: 120, rows: 40 });
-    await stopNativePtySession("native-session-1");
+    await enqueueNativeTerminalInput({
+      workspaceSessionId: "native-session-1",
+      expectedIncarnationId: "inc-1",
+      source: "user",
+      payload: "continue\n",
+    });
+    await resizeNativePtySession("native-session-1", { cols: 120, rows: 40 }, "inc-1");
+    await stopNativePtySession("native-session-1", "inc-1");
     await expect(listNativeOpencodeAgents()).resolves.toEqual({
       ok: true,
       agents: [
@@ -410,12 +535,13 @@ describe("native runtime bridge", () => {
     });
 
     expect(calls).toEqual([
-      "start:opencode:/tmp/project:--model opencode-go/deepseek-v4-flash:true",
-      "get:native-session-1",
+      "register:native-session-1:opencode:/tmp/project:opencode-go/deepseek-v4-flash",
+      "activate:native-session-1:activate-1",
+      "read:native-session-1:0",
       "read:native-session-1:2",
-      "write:native-session-1:continue\n",
-      "resize:native-session-1:120x40",
-      "stop:native-session-1",
+      "input:native-session-1:inc-1:user:continue\n",
+      "resize:native-session-1:inc-1:120x40",
+      "stop:native-session-1:inc-1",
     ]);
   });
 
@@ -471,6 +597,28 @@ describe("native runtime bridge", () => {
       },
     ]);
     expect(callbacks).toHaveLength(0);
+  });
+
+  it("subscribes to Agent Loop semantic invalidations without using the PTY stream", () => {
+    const events: Array<{ taskId: string; runId: string; type: string }> = [];
+    const callbacks: Array<(event: { taskId: string; runId: string; type: string }) => void> = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async (input) => ({ ok: true, command: "opencode", cwd: input.cwd, stdout: "", stderr: "", exitCode: 0, durationMs: 1 }),
+        onAgentLoopRuntimeEvent: (callback) => {
+          callbacks.push(callback);
+          return () => callbacks.splice(callbacks.indexOf(callback), 1);
+        },
+      },
+    };
+
+    const unsubscribe = subscribeNativeAgentLoopRuntimeEvents((event) => events.push(event));
+    callbacks[0]?.({ taskId: "task-1", runId: "run-1", type: "dispatch.result_available" });
+    unsubscribe();
+    callbacks[0]?.({ taskId: "task-1", runId: "run-1", type: "ignored" });
+
+    expect(events).toEqual([{ taskId: "task-1", runId: "run-1", type: "dispatch.result_available" }]);
   });
 
   it("delegates native verification command requests to the desktop preload bridge", async () => {

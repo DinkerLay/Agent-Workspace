@@ -1,314 +1,123 @@
-# Provider Session State Detection Spec
+# Provider Session State Detection
 
-Date: 2026-07-02
+Date: 2026-07-26
 
-Status: Draft for implementation.
+Status: Accepted OpenCode semantic-plane contract.
 
-Related sources:
+## Purpose
 
-- `docs/superworks/spec/conductor-session-communication.md`
-- `docs/superworks/spec/development-instrumentation.md`
-- `docs/superworks/spec/product-interaction-map.md`
-
-## Summary
-
-Agent Workspace must treat PTY output as a transport trigger, not as a state oracle and not as the source of truth for worker completion.
-
-The Shell owns raw PTY lifecycle and event delivery. Provider adapters own provider-specific semantic state inspection. Session Store owns durable task/session/dispatch/result records. Conductor owns task-level decisions after Runtime wakes it with a decision point.
-
-For opencode, the provider adapter should read opencode's structured session database. It must not infer worker results from terminal screenshots, terminal transcript text, `Thinking`, `Build`, prompt visibility, or business-language claims such as "done".
+The terminal transport and OpenCode meaning are independent facts. PTY output
+can trigger a check, but it cannot prove that an OpenCode dispatch arrived,
+completed, failed, or needs a user answer.
 
 ```text
-PTY data or process exit
-  -> debounce the changed session only
-  -> provider adapter inspects provider-native state
-  -> state reducer maps provider state to Workspace state
-  -> Session Store records transition/result once
-  -> Runtime wakes Conductor only when a decision point exists
+terminal data / terminal exit / OpenCode hook
+  -> inspect only the changed known Session
+  -> OpenCode Adapter reads provider-native structured state
+  -> Coordinator records an idempotent semantic transition
+  -> meaningful transition wakes the logical Conductor once
 ```
 
-## Goals
+The Runtime does not parse `Thinking`, `Build`, prompt visibility, a spinner,
+screen pixels, or model prose such as “done”. It never uses terminal output as
+business evidence.
 
-- Remove terminal-text status parsing from task/session state decisions.
-- Keep PTY state limited to raw process lifecycle and event delivery.
-- Use provider adapters as the source of truth for provider turn state.
-- Detect and expose stuck cases such as "provider turn stopped but no answer or expected artifact exists".
-- Avoid repeated polling across all sessions.
-- Avoid duplicate dispatch results and duplicate Conductor wakeups.
-- Keep worker sessions provider-native and free of Agent Workspace protocol injection.
+## Owners
 
-## Non-Goals
-
-- Do not build a hidden replacement for opencode or Claude Code.
-- Do not require workers to output JSON, XML, or custom handoff blocks.
-- Do not persist raw PTY transcripts, snapshots, or clean terminal logs as communication truth.
-- Do not use `answerHash`, `displayKey`, or a second dispatch key for routing. `dispatchId` is the task-scoped communication id.
-- Do not use terminal idle alone to mark a dispatch complete.
-- Do not model terminal text as task state.
-- Do not use terminal transcript regex, prompt text, progress spinner text, TUI repaint text, or `Thinking`/`Build` labels to drive Agent cards.
-
-## Ownership
-
-| Layer | Owns | Does not own |
+| Layer | Owns | Must not do |
 | --- | --- | --- |
-| PTY Manager | spawn, resize, write, stop, bounded live terminal buffer, data/exit events | task completion, provider answer extraction |
-| Trigger Monitor | debounce changed session, call adapter inspection, record compact provider-derived state transitions | scanning all sessions repeatedly, classifying terminal text, judging answer quality |
-| Provider Adapter | provider-native turn state, permission/waiting state, answer extraction, expected artifact checks where configured | UI state, Conductor decisions |
-| Session Store | state.json, dispatches.jsonl, results.jsonl, task-level messages.jsonl, compact events | raw terminal history as truth |
-| Task Runtime | loop scheduling, decision-point wakeups, stop-condition checks | worker internal tool/subagent behavior |
-| Conductor | delegation, follow-up decisions, user escalation, task-state synthesis | worker-owned artifact editing |
+| Orca-style Terminal Runtime | process lifecycle, output transport, snapshots, input receipt, exit | classify task or Provider meaning |
+| OpenCode Provider Adapter | structured OpenCode receipt, turn state, assistant answer, native question/attention/failure | choose the next task action |
+| Runtime Coordinator | durable dispatch/result state, dedupe, artifact indexing trigger, one wakeup per decision point | retry/reroute a business task, approve permission, judge answer quality |
+| Conductor | interpret facts, decide dispatch/correction/user question/delivery claim | write raw PTY bytes or parse terminal text |
+| User | answer native provider prompts and inspect final artifacts | be a relay for normal worker handoff |
 
-## PTY Raw Lifecycle And Events
+## Dispatch Receipt Protocol
 
-PTY Manager exposes only raw process lifecycle and output events:
+Each Conductor `call_session` receives an immutable `dispatchId`. The separate
+facts are recorded in order; none may be inferred from a later or weaker fact.
 
-```ts
-type PtyLifecycle = "running" | "stopping" | "stopped";
-
-type PtyEvent =
-  | { type: "data"; id: string; chunk: string; cursor: number }
-  | { type: "exit"; id: string; status: "stopped"; exitCode?: number; signal?: number; cursor: number };
-```
-
-Rules:
-
-- `not_started` means no Workspace Session PTY exists yet; it is not a PTY lifecycle state.
-- `spawn_failed` is a Runtime launch failure; it is not inferred from terminal text.
-- `data` is emitted when the PTY process pushes stdout/stderr or TUI repaint output.
-- `exit` is emitted once when the process exits.
-- PTY Manager does not know `idle`, `waiting`, `permission_required`, `blocked`, `timeout`, `done`, or `result_available`.
-- Legacy terminal-derived sampled fields such as `sampledState` are removed from the active runtime contract. They must not reappear as Agent cards, task status, Conductor wakeups, dispatch results, or Review state inputs.
-
-## Trigger Rules
-
-PTY trigger behavior:
-
-- On worker `data`, schedule inspection for that worker session only.
-- On worker `exit`, inspect that worker session immediately or after a short debounce.
-- Debounce repeated TUI repaint output from the same session.
-- If no PTY event occurs, do not continuously poll all sessions by default.
-- A periodic watchdog may exist only for timeout/SLA enforcement, not as the main communication path.
-
-Trigger output is an inspection request, not a status verdict.
-
-A trigger can say "this session changed"; only the provider adapter plus state reducer can say "this session is waiting, blocked, completed, or has a result".
-
-## Provider Turn State
-
-Provider adapters return a normalized state:
-
-```ts
-type ProviderTurnState =
-  | "not_started"
-  | "delivered_pending"
-  | "running"
-  | "waiting_input"
-  | "permission_required"
-  | "completed_with_answer"
-  | "completed_with_artifact"
-  | "completed_without_result"
-  | "blocked"
-  | "timeout"
-  | "exited";
-```
-
-`not_started` and `exited` are normalized Workspace/runtime states derived from launch records or PTY process exit. They are not terminal text classifications.
-
-For a delivered dispatch, opencode adapter inspection must return enough detail for Shell to map the state:
-
-```json
-{
-  "provider": "opencode",
-  "taskId": "task-intake-001",
-  "sessionId": "opencode:project-runtime-current:task-intake-001:task-intake-001-reviewer",
-  "dispatchId": "E0CDCA",
-  "providerTurnState": "completed_without_result",
-  "providerSessionId": "ses_...",
-  "providerMessageId": "msg_...",
-  "providerStepFinishId": "prt_...",
-  "stepFinishReason": "stop",
-  "answerText": "",
-  "expectedArtifactState": "missing",
-  "expectedArtifactPath": "deliverables/review-notes.md",
-  "reason": "Provider turn stopped, but no non-empty assistant text part and no expected artifact were found."
-}
-```
-
-## opencode Adapter Rules
-
-For opencode:
-
-- Find the provider session by matching the exact `[Agent Workspace] Dispatch ID <dispatchId>` marker in the target workspace directory.
-- Use the matched dispatch message timestamp as the start boundary.
-- Stop the result window at the next Agent Workspace dispatch marker in the same provider session.
-- Inspect assistant messages only inside that dispatch window.
-- A valid answer is the first completed assistant message with:
-  - a provider `step-finish` part with `reason: "stop"`,
-  - one or more non-empty, non-ignored `text` parts,
-  - no `reasoning`, `tool`, TUI repaint, or terminal control text included in `answerText`.
-- If the provider turn has `step-finish.reason = "stop"` but no valid text answer, check configured expected artifacts.
-- If an expected artifact exists and was updated after dispatch delivery, adapter may return `completed_with_artifact`.
-- If neither answer text nor expected artifact exists, adapter returns `completed_without_result`.
-- Provider-native waiting prompts return `waiting_input`.
-- Provider-native permission prompts return `permission_required`.
-- Tool errors, permission denials, startup failures, or impossible provider states return `blocked`.
-
-The adapter must not select "latest assistant message in the session" globally. A single provider session can receive multiple dispatches.
-
-## Workspace State Mapping
-
-The Trigger Monitor maps provider state, dispatch lifecycle, and PTY lifecycle facts to one Agent Runtime State. PTY events only trigger inspection; they do not directly set Agent card state.
-
-```ts
-type AgentRuntimeState =
-  | "not_started"
-  | "starting"
-  | "ready"
-  | "queued"
-  | "delivered_pending"
-  | "running"
-  | "waiting_input"
-  | "permission_required"
-  | "waiting_conductor"
-  | "result_available"
-  | "result_invalid"
-  | "blocked"
-  | "timeout"
-  | "delivery_failed"
-  | "stopping"
-  | "stopped"
-  | "exited"
-  | "start_failed";
-```
-
-Agent cards, Workbench progress counts, `read_task_state`, `read_session`, and `call_session` deliverability checks must all consume this same Session Store state. Legacy `Agent.status` may remain as compatibility fallback only; it is not the native runtime status trigger.
-
-Provider state maps into the runtime state as follows:
-
-| Provider state | Workspace effect |
+| State/event | Proven fact |
 | --- | --- |
-| `not_started` | session state `not_started`; dispatch remains queued or target session start pending |
-| `delivered_pending` | dispatch remains delivered; session state `delivered_pending` |
-| `running` | session state `running`; UI shows working |
-| `waiting_input` | session state `waiting_input`; UI highlights required input |
-| `permission_required` | session state `permission_required`; UI highlights permission attention |
-| `completed_with_answer` | write task-level `messages.jsonl`, write worker `results.jsonl`, mark dispatch `result_available`, set session state `result_available`, wake Conductor |
-| `completed_with_artifact` | write result record with artifact reference, mark dispatch `result_available`, set session state `result_available`, wake Conductor |
-| `completed_without_result` | mark session `result_invalid`, record compact event, wake Conductor with failure text |
-| `blocked` | mark session `blocked`, wake Conductor with failure text |
-| `timeout` | mark session `timeout`, wake Conductor with timeout text |
-| `exited` | mark session `exited`; if dispatch has no result, wake Conductor with failure text |
+| `dispatch.command.accepted` | Conductor command was validated and persisted. |
+| `terminal.input.accepted` / `dispatch.input_accepted` | daemon Host serialized the bounded prompt to a specific incarnation. |
+| `dispatch.provider.received` | OpenCode persisted the matching `[Agent Workspace] Dispatch ID <id>` user message. This is delivery success. |
+| `provider.turn.running` | OpenCode reports the dispatch turn is active. |
+| `dispatch.provider.result` / `result_available` | Adapter extracted the completed answer associated with the dispatch window. |
+| `dispatch.provider.attention` | OpenCode reports a native question, permission, or other input-needed state. |
+| `dispatch.provider.failed` | Provider reports a terminal failure or the Session exits without a valid result. |
 
-`completed_without_result` is a real state. It must not continue to display as `working`.
+A successful `write()` is never `delivered`. A fixed delay is never a receipt.
+A Provider receipt is never an assertion that the result satisfies the task.
 
-`ready`, `queued`, `delivered_pending`, `result_available`, and `delivery_failed` can also be derived from Shell dispatch lifecycle records. A worker session with `ready`, `result_available`, or `waiting_conductor` is deliverable after Shell confirms the target provider terminal can receive input. `queued` means the current dispatch is waiting for delivery; it is not by itself proof that the target can receive input. A `delivery_failed` session is normally not deliverable, but a composite `delivery_failed` state with retained result context (`resultCount > 0` or `lastResultId`) and no active queued/delivered dispatch is a retry candidate; Shell may attempt another dispatch only after the provider terminal is input-ready and the provider adapter confirms the new dispatch marker. A session with `delivered_pending`, `running`, `waiting_input`, `permission_required`, `blocked`, `timeout`, pure `delivery_failed`, `result_invalid`, `stopping`, `stopped`, `exited`, or `start_failed` is not deliverable without user/runtime recovery.
+The Adapter persists the matched Provider session/message identity with the
+receipt. It must inspect exact dispatch provenance and timestamp boundaries so
+an old answer from the same OpenCode conversation cannot satisfy a new command.
 
-Agent recovery actions are derived from this same state, not from a second trigger. A retryable state may expose `retry_delivery`, `stop_then_retry`, `restart_fresh_then_retry`, or `force_retry` depending on the current runtime state and unresolved failed dispatch. Destructive actions require explicit user confirmation. `restart_fresh_then_retry` starts a new provider session for future messages but must not delete durable Session Store events, dispatches, results, or timeline evidence. `force_retry` skips only the semantic state gate; it must still require provider terminal input-readiness and provider adapter dispatch-marker confirmation before recording `delivered`.
+## Trigger And Dedupe Rules
 
-## Session Store Records
+- PTY data marks only that Session dirty; redraw storms are debounced.
+- PTY exit triggers one final inspection after terminal output ordering is
+  settled.
+- OpenCode hook events can request the same inspection faster; they do not
+  bypass the Adapter or Coordinator reducer.
+- Each `(dispatchId, semantic transition)` is recorded at most once.
+- `dispatch.provider.received` wakes Conductor only when the currently active
+  Conductor decision needs that fact; completed result/failure/attention then
+  cause the next semantic wakeup exactly once.
+- The Coordinator may retry an **inspection query** after a transient database
+  read error. It must not retry a Provider task, manufacture a new dispatch,
+  or answer a native prompt.
+- There is no production wall-clock completion timeout. Test harness timeouts
+  detect a hung test only and must never alter Task state.
 
-Task runtime root:
+## Result, Attention, And Failure
 
-```text
-.agent-workspace/runtime/<task-id>/
-  events.jsonl          # compact task-level event index
-  messages.jsonl        # full provider-extracted answer messages
-  sessions/<session-id>/
-    state.json
-    dispatches.jsonl
-    results.jsonl       # compact dispatch-result index
-    events.jsonl        # compact session transition events
-```
+For OpenCode, a result is valid only when the Adapter finds the first completed
+assistant turn that is causally after the persisted dispatch marker and whose
+finish state is provider-valid (for the current adapter, `step-finish.reason =
+"stop"`). It returns the native assistant answer plus narrow provider metadata.
 
-Rules:
+When a result references an artifact, Coordinator may index a safe path under
+the Task workspace. Indexing enables user preview; it does not prove quality or
+claim task completion.
 
-- `messages.jsonl` stores full answer bodies for valid provider results.
-- `results.jsonl` stores compact dispatch-result pointers.
-- `dispatchId` is the only Agent Workspace communication id.
-- Provider ids are audit fields only.
-- Repeated state samples update `state.json`; they do not append duplicate transition events.
-- Repeated inspections for the same `dispatchId` and same provider message/step id must not append duplicate results or wakeups.
-
-## Conductor Wake Messages
-
-Wake messages are plain text written only to Conductor.
-
-Successful provider result:
+Native question and permission states remain owned by the provider terminal:
 
 ```text
-Runtime wakeup: Reviewer result available
-
-Task: task-intake-001
-Worker session: opencode:project-runtime-current:task-intake-001:task-intake-001-reviewer
-Dispatch ID: E0CDCA
-Result ID: result-E0CDCA
-
-Reviewer answer:
-<full provider-extracted answerText>
-
-Conductor: decide the next action. If follow-up work is needed, use call_session; do not edit worker-owned deliverables yourself.
+Provider reports attention
+  -> Coordinator records waiting_input / attention fact
+  -> Runtime wakes Conductor with a compact semantic notice
+  -> Task Timeline offers “open Session terminal”
+  -> user answers in OpenCode TUI
+  -> new provider state triggers another inspection
 ```
 
-Completed without result:
+Neither Runtime nor Conductor impersonates the user by auto-writing a
+permission response. A user may send a task-level follow-up to Conductor; that
+is a separate semantic message, not an answer to the native provider prompt.
 
-```text
-Runtime wakeup: Reviewer completed without a valid result
+On Provider failure, the Coordinator records exact provider/error facts and
+wakes Conductor. Conductor decides whether to retry the same card, assign a
+different card, narrow the request, or ask the user. The Terminal Runtime only
+reports host/process facts; it does not have a task retry policy.
 
-Task: task-intake-001
-Worker session: opencode:project-runtime-current:task-intake-001:task-intake-001-reviewer
-Dispatch ID: E0CDCA
+## Adapter Contract
 
-Observed state:
-The provider turn stopped, but no non-empty assistant answer text was found and the expected artifact is missing:
-deliverables/review-notes.md
-
-Conductor: decide whether to re-dispatch Reviewer, route a fix to another session, or ask the user.
+```ts
+type ProviderDispatchState = {
+  dispatchId: string;
+  providerSessionId?: string;
+  receipt?: { messageId: string; recordedAt: string };
+  state: "queued" | "received" | "running" | "result_available" | "waiting_input" | "failed";
+  answerText?: string;
+  attention?: { kind: "question" | "permission" | "other"; summary: string };
+  failure?: { code?: string; summary: string };
+};
 ```
 
-Blocked:
-
-```text
-Runtime wakeup: Reviewer needs attention
-
-Task: task-intake-001
-Worker session: opencode:project-runtime-current:task-intake-001:task-intake-001-reviewer
-Dispatch ID: E0CDCA
-
-Observed state:
-<short blocked reason from provider adapter or Runtime launch failure>
-
-Conductor: decide the next action.
-```
-
-Wake messages must not be JSON metadata payloads. They may include metadata lines, but the body should be readable by the Conductor model as normal task context.
-
-## UI Behavior
-
-The UI should render Workspace state, not raw provider text guesses:
-
-- `running` -> working badge
-- `waiting_input` or `permission_required` -> waiting/attention badge
-- `blocked` or `result_invalid` -> blocked/needs handling badge
-- `result_available` -> result-ready badge and deliverable follow-up state
-- `timeout` -> timeout badge
-
-Agent cards must not read `NativePtySession.status`, terminal prompt text, or terminal regex results as their semantic state source. PTY lifecycle can only support explicit launch/exit records. Agent cards render the Workspace Agent State reduced from Provider Adapter results and explicit Runtime launch/exit records.
-
-The terminal pane remains a live inspection surface. It can show the provider TUI, but it should not be the only evidence used to explain task state.
-
-## Verification
-
-Implementation must include tests for:
-
-- PTY data triggers inspection for only the changed session.
-- Repeated TUI repaint data does not append duplicate events/results.
-- opencode adapter returns `completed_with_answer` when a matched dispatch window contains a completed assistant text answer.
-- opencode adapter returns `completed_without_result` when the matched provider turn stops with no text answer and expected artifact is missing.
-- `completed_without_result` changes session state away from `running`.
-- successful result wake includes full `answerText` and is plain text.
-- failure/no-result wake is plain text and includes dispatch id plus expected artifact reason.
-- Worker result extraction never uses reasoning/tool/TUI text as `answerText`.
-- The visible UI does not show `working` for a provider turn that already stopped without result.
-- PTY `data` and `exit` events never directly set Agent card state except for explicit launch/exit lifecycle records.
-- Terminal transcript regex and legacy sampled fields do not influence task state, Agent card state, dispatch result state, or Conductor wakeups.
-- Provider-native permission state maps to Workspace `permission_required`.
+Adapter calls are read-only against provider state. They must return explicit
+unknown/not-found information rather than invent a result from TUI output.
+Coordinator maps these facts to durable events and sends a compact Conductor
+inbox message that names the task, card, dispatch, semantic state, and result
+reference. Full results remain readable through task-scoped Conductor tools.

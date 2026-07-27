@@ -25,14 +25,24 @@ const inlineConfig = {
       },
     },
   },
-  tools: {
-    "agent_workspace_conductor_*": true,
+  agent: {
+    agent_workspace_conductor: {
+      description: "Control-plane Conductor smoke profile.",
+      mode: "primary",
+      permission: {
+        "*": "deny",
+        "agent_workspace_conductor_*": "allow",
+        question: "allow",
+      },
+    },
   },
+  default_agent: "agent_workspace_conductor",
 };
 
 assert.ok(fs.existsSync(mcpServerPath), "conductor MCP server must exist before running this smoke");
 assert.ok(inlineConfig.instructions.includes(systemPromptPath));
 assert.equal(inlineConfig.mcp.agent_workspace_conductor.type, "local");
+assert.equal(inlineConfig.agent.agent_workspace_conductor.permission["*"], "deny");
 
 const result = spawnSync(opencodePath, ["mcp", "list"], {
   cwd: tempRoot,

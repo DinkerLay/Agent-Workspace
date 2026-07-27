@@ -1,7 +1,16 @@
 import type { FitAddon as FitAddonInstance } from "@xterm/addon-fit";
 import type { Terminal as XtermTerminalInstance } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
-import { readNativePtySession, subscribeNativePtyEvents, type NativePtySession } from "../runtime/nativeBridge";
+import {
+  acknowledgeNativeTerminalOutput,
+  attachNativeTerminalClient,
+  detachNativeTerminalClient,
+  isNativeTerminalTransportAvailable,
+  readNativePtySession,
+  subscribeNativePtyEvents,
+  subscribeNativeTerminalClientEvents,
+  type NativePtySession,
+} from "../runtime/nativeBridge";
 
 type PtyTerminalProps = {
   ariaLabel: string;
@@ -12,6 +21,12 @@ type PtyTerminalProps = {
   emptyTitle: string;
   emptyDetail: string;
   waitingDetail?: string;
+  /** Per-terminal density. The Host is resized after this changes. */
+  fontSize?: number;
+  onFontSizeChange?: (fontSize: number) => void;
+  /** Hidden Session tabs remain host-attached, but do not reflow on every split drag. */
+  isVisible?: boolean;
+  readOnly?: boolean;
   onData?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
 };
@@ -25,30 +40,43 @@ export function PtyTerminal({
   emptyTitle,
   emptyDetail,
   waitingDetail = "PTY 已启动，正在等待 terminal 输出。",
+  fontSize = 11,
+  onFontSizeChange,
+  isVisible = true,
+  readOnly = false,
   onData,
   onResize,
 }: PtyTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XtermTerminalInstance | null>(null);
   const writeStateRef = useRef({ sessionId: "", cursor: 0 });
+  const clientIdRef = useRef(createTerminalClientId());
+  const attachmentRef = useRef<{ sessionId: string; generation: string } | undefined>(undefined);
   const sizeStateRef = useRef({ cols: 0, rows: 0 });
   const sessionRef = useRef<NativePtySession | undefined>(session);
   const sessionStatusRef = useRef<NativePtySession["status"] | undefined>(session?.status);
   const onDataRef = useRef<typeof onData>(onData);
   const onResizeRef = useRef<typeof onResize>(onResize);
+  const onFontSizeChangeRef = useRef<typeof onFontSizeChange>(onFontSizeChange);
+  const isVisibleRef = useRef(isVisible);
+  const fitTerminalRef = useRef<(() => void) | undefined>(undefined);
   const hasOutputRef = useRef(Boolean(session?.transcript.length));
   const [hasOutput, setHasOutput] = useState(Boolean(session?.transcript.length));
+  const [bufferMode, setBufferMode] = useState<"normal" | "alternate">("normal");
   const isJsdom =
     import.meta.env.MODE === "test" ||
     (typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("jsdom"));
   const canUseXterm = typeof window !== "undefined" && "ResizeObserver" in window && !isJsdom;
+  const canUseHostTerminalTransport = canUseXterm && isNativeTerminalTransportAvailable();
 
   useEffect(() => {
     onDataRef.current = onData;
     onResizeRef.current = onResize;
+    onFontSizeChangeRef.current = onFontSizeChange;
+    isVisibleRef.current = isVisible;
     sessionRef.current = session;
     sessionStatusRef.current = session?.status;
-  }, [onData, onResize, session, session?.status]);
+  }, [isVisible, onData, onResize, session, session?.status]);
 
   const markHasOutput = () => {
     if (hasOutputRef.current) return;
@@ -56,10 +84,11 @@ export function PtyTerminal({
     setHasOutput(true);
   };
 
-  const replaySessionSnapshot = (terminal: XtermTerminalInstance, targetSession: NativePtySession) => {
+  const replayLegacySessionSnapshot = (terminal: XtermTerminalInstance, targetSession: NativePtySession) => {
     void readNativePtySession(targetSession.id, 0).then((snapshot) => {
       if (!snapshot || sessionRef.current?.id !== targetSession.id || terminalRef.current !== terminal) return;
       terminal.reset();
+      setBufferMode("normal");
       for (const chunk of snapshot.transcript) {
         terminal.write(chunk);
       }
@@ -68,6 +97,43 @@ export function PtyTerminal({
         cursor: snapshot.cursor ?? snapshot.transcript.length,
       };
       if (snapshot.transcript.length > 0) markHasOutput();
+    });
+  };
+
+  const acknowledgeHostCursor = (terminal: XtermTerminalInstance, targetSession: NativePtySession, generation: string, cursor: number) => {
+    void acknowledgeNativeTerminalOutput({
+      sessionId: targetSession.id,
+      clientId: clientIdRef.current,
+      generation,
+      cursor,
+    }).then((acknowledgement) => {
+      const attachment = attachmentRef.current;
+      if (!acknowledgement?.restoreRequired || !attachment || attachment.generation !== generation) return;
+      if (terminalRef.current !== terminal || sessionRef.current?.id !== targetSession.id) return;
+      restoreFromHostSnapshot(terminal, targetSession);
+    });
+  };
+
+  const restoreFromHostSnapshot = (terminal: XtermTerminalInstance, targetSession: NativePtySession) => {
+    const generation = createTerminalClientId();
+    attachmentRef.current = { sessionId: targetSession.id, generation };
+    void attachNativeTerminalClient({ sessionId: targetSession.id, clientId: clientIdRef.current, generation }).then((attached) => {
+      const activeAttachment = attachmentRef.current;
+      if (!attached || !activeAttachment || activeAttachment.generation !== generation) return;
+      if (terminalRef.current !== terminal || sessionRef.current?.id !== targetSession.id) return;
+      terminal.reset();
+      setBufferMode(attached.snapshot.bufferMode ?? "normal");
+      if (terminal.cols !== attached.snapshot.cols || terminal.rows !== attached.snapshot.rows) {
+        terminal.resize(attached.snapshot.cols, attached.snapshot.rows);
+      }
+      const confirmSnapshotParsed = () => {
+        if (terminalRef.current !== terminal || attachmentRef.current?.generation !== generation) return;
+        writeStateRef.current = { sessionId: targetSession.id, cursor: attached.snapshot.cursor };
+        if (attached.snapshot.ansi) markHasOutput();
+        acknowledgeHostCursor(terminal, targetSession, generation, attached.snapshot.cursor);
+      };
+      if (attached.snapshot.ansi) terminal.write(attached.snapshot.ansi, confirmSnapshotParsed);
+      else confirmSnapshotParsed();
     });
   };
 
@@ -82,10 +148,11 @@ export function PtyTerminal({
 
       const terminal = new xtermModule.Terminal({
         convertEol: false,
-        cursorBlink: true,
+        cursorBlink: !readOnly,
+        disableStdin: readOnly,
         fontFamily: "SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-        fontSize: 13,
-        lineHeight: 1.18,
+        fontSize: clampTerminalFontSize(fontSize),
+        lineHeight: 1.08,
         scrollback: 5000,
         theme: {
           background: "#101626",
@@ -100,6 +167,7 @@ export function PtyTerminal({
       terminalRef.current = terminal;
 
       const fitTerminal = () => {
+        if (!isVisibleRef.current) return;
         try {
           fitAddon.fit();
           const cols = terminal.cols;
@@ -114,14 +182,30 @@ export function PtyTerminal({
           // The terminal may briefly have no measurable box during layout transitions.
         }
       };
+      fitTerminalRef.current = fitTerminal;
       fitTerminal();
       window.requestAnimationFrame(fitTerminal);
       window.setTimeout(fitTerminal, 80);
 
       const dataDisposable = terminal.onData((data) => {
-        if (sessionStatusRef.current === "running") {
+        if (!readOnly && isVisibleRef.current && sessionStatusRef.current === "running") {
           onDataRef.current?.(data);
         }
+      });
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (event.type !== "keydown" || !(event.metaKey || event.ctrlKey)) return true;
+        const current = clampTerminalFontSize(terminal.options.fontSize ?? fontSize);
+        if (event.key === "+" || event.key === "=") {
+          event.preventDefault();
+          onFontSizeChangeRef.current?.(clampTerminalFontSize(current + 1));
+          return false;
+        }
+        if (event.key === "-" || event.key === "_") {
+          event.preventDefault();
+          onFontSizeChangeRef.current?.(clampTerminalFontSize(current - 1));
+          return false;
+        }
+        return true;
       });
       const resizeDisposable = terminal.onResize((size) => {
         const sizeState = sizeStateRef.current;
@@ -131,7 +215,19 @@ export function PtyTerminal({
           onResizeRef.current?.(size.cols, size.rows);
         }
       });
-      const resizeObserver = new ResizeObserver(fitTerminal);
+      // FitAddon resize reflows the whole xterm scrollback.  During a split
+      // drag a ResizeObserver can fire dozens of times per frame, which is
+      // precisely the expensive path Orca debounces.  A hidden Session stays
+      // attached to the Main-owned terminal stream but does not need fitting.
+      let resizeTimer: number | undefined;
+      const resizeObserver = new ResizeObserver(() => {
+        if (!isVisibleRef.current) return;
+        if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(() => {
+          resizeTimer = undefined;
+          fitTerminal();
+        }, 120);
+      });
       resizeObserver.observe(containerRef.current);
 
       const currentSession = sessionRef.current;
@@ -144,16 +240,24 @@ export function PtyTerminal({
           sessionId: currentSession.id,
           cursor: currentSession.cursor ?? currentSession.transcript.length,
         };
-        if (currentSession.status === "running") terminal.focus();
-        replaySessionSnapshot(terminal, currentSession);
+        if (!readOnly && currentSession.status === "running") terminal.focus();
+        if (canUseHostTerminalTransport) restoreFromHostSnapshot(terminal, currentSession);
+        else replayLegacySessionSnapshot(terminal, currentSession);
       }
 
       cleanup = () => {
         resizeObserver.disconnect();
+        if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
         dataDisposable.dispose();
         resizeDisposable.dispose();
         terminal.dispose();
+        const attachment = attachmentRef.current;
+        if (attachment) {
+          attachmentRef.current = undefined;
+          void detachNativeTerminalClient({ clientId: clientIdRef.current, generation: attachment.generation });
+        }
         terminalRef.current = null;
+        fitTerminalRef.current = undefined;
         writeStateRef.current = { sessionId: "", cursor: 0 };
         sizeStateRef.current = { cols: 0, rows: 0 };
       };
@@ -163,7 +267,21 @@ export function PtyTerminal({
       disposed = true;
       cleanup?.();
     };
-  }, [canUseXterm]);
+  }, [canUseHostTerminalTransport, canUseXterm, readOnly]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.fontSize = clampTerminalFontSize(fontSize);
+    if (isVisible) window.requestAnimationFrame(() => fitTerminalRef.current?.());
+  }, [fontSize, isVisible]);
+
+  useEffect(() => {
+    if (!isVisible) return;
+    const fit = fitTerminalRef.current;
+    if (!fit) return;
+    window.requestAnimationFrame(fit);
+  }, [isVisible, session?.id]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -193,17 +311,23 @@ export function PtyTerminal({
       markHasOutput();
     }
 
-    replaySessionSnapshot(terminal, session);
-  }, [session?.id]);
+    if (canUseHostTerminalTransport) restoreFromHostSnapshot(terminal, session);
+    else replayLegacySessionSnapshot(terminal, session);
+  }, [canUseHostTerminalTransport, session?.id]);
 
   useEffect(() => {
-    if (!canUseXterm) return undefined;
+    if (!canUseXterm || canUseHostTerminalTransport) return undefined;
 
     return subscribeNativePtyEvents((event) => {
       if (event.type !== "data") return;
       const terminal = terminalRef.current;
       const activeSession = sessionRef.current;
       if (!terminal || !activeSession || activeSession.id !== event.id) return;
+
+      if (event.requiresSnapshot) {
+        replayLegacySessionSnapshot(terminal, activeSession);
+        return;
+      }
 
       const writeState = writeStateRef.current;
       if (writeState.sessionId !== event.id) {
@@ -216,13 +340,44 @@ export function PtyTerminal({
       writeState.cursor = event.cursor;
       markHasOutput();
     });
-  }, [canUseXterm]);
+  }, [canUseHostTerminalTransport, canUseXterm]);
+
+  useEffect(() => {
+    if (!canUseHostTerminalTransport) return undefined;
+    return subscribeNativeTerminalClientEvents((event) => {
+      const terminal = terminalRef.current;
+      const activeSession = sessionRef.current;
+      const attachment = attachmentRef.current;
+      if (!terminal || !activeSession || !attachment || event.id !== activeSession.id || event.generation !== attachment.generation) return;
+
+      if (event.type === "restore-required") {
+        restoreFromHostSnapshot(terminal, activeSession);
+        return;
+      }
+
+      setBufferMode(event.bufferMode ?? "normal");
+
+      const writeState = writeStateRef.current;
+      if (event.cursor <= writeState.cursor) {
+        acknowledgeHostCursor(terminal, activeSession, attachment.generation, writeState.cursor);
+        return;
+      }
+      terminal.write(event.chunk, () => {
+        const currentAttachment = attachmentRef.current;
+        if (!currentAttachment || currentAttachment.generation !== event.generation || terminalRef.current !== terminal) return;
+        writeStateRef.current = { sessionId: event.id, cursor: event.cursor };
+        markHasOutput();
+        acknowledgeHostCursor(terminal, activeSession, event.generation, event.cursor);
+      });
+    });
+  }, [canUseHostTerminalTransport]);
 
   const baseClassName = [
     className,
     "terminal-screen",
     "conversation-terminal-screen",
     canUseXterm ? "xterm-screen" : "",
+    bufferMode === "alternate" ? "terminal-buffer-alternate" : "terminal-buffer-normal",
   ]
     .filter(Boolean)
     .join(" ");
@@ -249,6 +404,7 @@ export function PtyTerminal({
   return (
     <div className={baseClassName} aria-label={ariaLabel}>
       <div className="xterm-terminal-host" ref={containerRef} />
+      {bufferMode === "alternate" ? <div className="terminal-buffer-mode" title="OpenCode 全屏 TUI 使用 alternate screen；滚轮交给原生 TUI，长期语义历史在任务时间线。">OpenCode TUI</div> : null}
       {showEmptyState ? (
         <div className="terminal-empty-state terminal-start-overlay">
           <strong>{emptyTitle}</strong>
@@ -264,4 +420,14 @@ export function PtyTerminal({
       ) : null}
     </div>
   );
+}
+
+function clampTerminalFontSize(value: number) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.min(18, Math.max(8, Math.round(numeric))) : 11;
+}
+
+function createTerminalClientId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

@@ -1,6 +1,6 @@
 # Workspace Session Dispatch Layer Implementation Plan
 
-> **Status: Superseded / Deprecated after completion.** This plan implemented the previous Workspace Session Message approach. It is retained as historical execution evidence, but it is no longer the active implementation direction. The active product spec is `docs/superworks/spec/conductor-session-communication.md`, which replaces worker protocol injection with Conductor-centric MCP tools and provider-native worker sessions. Do not use this plan for new implementation work.
+> **Status: Superseded / Deprecated after completion.** This plan implemented the previous Workspace Session Message approach. It is retained as historical execution evidence, but it is no longer the active implementation direction. The active product specifications are `docs/superworks/spec/agent-loop-v1.md` and `docs/superworks/spec/agent-loop-conductor-guidance.md`, which replace worker protocol injection with Conductor-centric MCP tools and provider-native worker sessions. Do not use this plan for new implementation work.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 

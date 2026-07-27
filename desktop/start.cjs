@@ -6,6 +6,11 @@ const electronBinary = resolveElectronBinary();
 const child = spawn(electronBinary, ["desktop/main.cjs"], {
   stdio: "inherit",
   shell: process.platform === "win32",
+  env: {
+    ...process.env,
+    AGENT_WORKSPACE_PROJECT_PATH: process.cwd(),
+    AGENT_WORKSPACE_PROJECT_NAME: path.basename(process.cwd()),
+  },
 });
 
 child.on("exit", (code) => {

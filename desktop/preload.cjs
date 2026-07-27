@@ -8,21 +8,70 @@ contextBridge.exposeInMainWorld("agentWorkspace", {
     listOpencodeAgents: () => ipcRenderer.invoke("native:list-opencode-agents"),
     inspectOpencodeProcesses: () => ipcRenderer.invoke("native:inspect-opencode-processes"),
     runVerification: (input) => ipcRenderer.invoke("native:run-verification", input),
-    startPty: (input) => ipcRenderer.invoke("native:start-pty", input),
-    getPty: (input) => ipcRenderer.invoke("native:get-pty", input),
-    readPty: (input) => ipcRenderer.invoke("native:read-pty", input),
-    writePty: (input) => ipcRenderer.invoke("native:write-pty", input),
-    resizePty: (input) => ipcRenderer.invoke("native:resize-pty", input),
-    stopPty: (input) => ipcRenderer.invoke("native:stop-pty", input),
+    registerWorkspaceSessionProfile: (input) => ipcRenderer.invoke("native:register-workspace-session-profile", input),
+    activateWorkspaceSession: (input) => ipcRenderer.invoke("native:activate-workspace-session", input),
+    readWorkspaceSession: (input) => ipcRenderer.invoke("native:read-workspace-session", input),
+    readWorkspaceTerminalLog: (input) => ipcRenderer.invoke("native:read-workspace-terminal-log", input),
+    attachTerminalClient: (input) => ipcRenderer.invoke("native:attach-terminal-client", input),
+    acknowledgeTerminalOutput: (input) => ipcRenderer.invoke("native:ack-terminal-output", input),
+    detachTerminalClient: (input) => ipcRenderer.invoke("native:detach-terminal-client", input),
+    enqueueTerminalInput: (input) => ipcRenderer.invoke("native:enqueue-terminal-input", input),
+    resizeWorkspaceSession: (input) => ipcRenderer.invoke("native:resize-workspace-session", input),
+    stopWorkspaceSession: (input) => ipcRenderer.invoke("native:stop-workspace-session", input),
     callSession: (input) => ipcRenderer.invoke("native:call-session", input),
+    callSessions: (input) => ipcRenderer.invoke("native:call-sessions", input),
     readTaskState: (input) => ipcRenderer.invoke("native:read-task-state", input),
     readSession: (input) => ipcRenderer.invoke("native:read-session", input),
     appendTaskEvent: (input) => ipcRenderer.invoke("native:append-task-event", input),
+    listAgentLoopTemplates: () => ipcRenderer.invoke("native:list-agent-loop-templates"),
+    generateAgentLoopTemplate: (input) => ipcRenderer.invoke("native:generate-agent-loop-template", input),
+    saveAgentLoopTemplate: (input) => ipcRenderer.invoke("native:save-agent-loop-template", input),
+    copyAgentLoopTemplate: (input) => ipcRenderer.invoke("native:copy-agent-loop-template", input),
+    archiveAgentLoopTemplate: (input) => ipcRenderer.invoke("native:archive-agent-loop-template", input),
+    deleteAgentLoopTemplate: (input) => ipcRenderer.invoke("native:delete-agent-loop-template", input),
+    createAgentLoopTask: (input) => ipcRenderer.invoke("native:create-agent-loop-task", input),
+    listAgentLoopTasks: () => ipcRenderer.invoke("native:list-agent-loop-tasks"),
+    readAgentLoopTask: (input) => ipcRenderer.invoke("native:read-agent-loop-task", input),
+    startAgentLoopRun: (input) => ipcRenderer.invoke("native:start-agent-loop-run", input),
+    readAgentLoopRun: (input) => ipcRenderer.invoke("native:read-agent-loop-run", input),
+    readAgentLoopWorkbenchLayout: (input) => ipcRenderer.invoke("native:read-agent-loop-workbench-layout", input),
+    saveAgentLoopWorkbenchLayout: (input) => ipcRenderer.invoke("native:save-agent-loop-workbench-layout", input),
+    readAgentLoopArtifact: (input) => ipcRenderer.invoke("native:read-agent-loop-artifact", input),
+    markAgentLoopTaskAchieved: (input) => ipcRenderer.invoke("native:mark-agent-loop-task-achieved", input),
+    onAgentLoopRuntimeEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("native:agent-loop-runtime-event", listener);
+      return () => {
+        ipcRenderer.removeListener("native:agent-loop-runtime-event", listener);
+      };
+    },
+    listOrchestrationTemplates: () => ipcRenderer.invoke("native:list-orchestration-templates"),
+    listOrchestrationTemplateBlueprints: () => ipcRenderer.invoke("native:list-orchestration-template-blueprints"),
+    saveOrchestrationTemplate: (input) => ipcRenderer.invoke("native:save-orchestration-template", input),
+    createHarnessTask: (input) => ipcRenderer.invoke("native:create-harness-task", input),
+    generateOrchestrationTemplateDraft: (input) => ipcRenderer.invoke("native:generate-orchestration-template-draft", input),
+    createManualOrchestrationTemplateDraft: (input) => ipcRenderer.invoke("native:create-manual-orchestration-template-draft", input),
+    readOrchestrationTemplateDraft: (input) => ipcRenderer.invoke("native:read-orchestration-template-draft", input),
+    saveGeneratedOrchestrationTemplateDraft: (input) => ipcRenderer.invoke("native:save-generated-orchestration-template-draft", input),
+    listHarnessTasks: () => ipcRenderer.invoke("native:list-harness-tasks"),
+    readHarnessTask: (input) => ipcRenderer.invoke("native:read-harness-task", input),
+    startHarnessRun: (input) => ipcRenderer.invoke("native:start-harness-run", input),
+    readHarnessRun: (input) => ipcRenderer.invoke("native:read-harness-run", input),
+    readHarnessArtifact: (input) => ipcRenderer.invoke("native:read-harness-artifact", input),
+    markHarnessTaskAchieved: (input) => ipcRenderer.invoke("native:mark-harness-task-achieved", input),
+    respondHarnessAttention: (input) => ipcRenderer.invoke("native:respond-harness-attention", input),
     onPtyEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("native:pty-event", listener);
       return () => {
         ipcRenderer.removeListener("native:pty-event", listener);
+      };
+    },
+    onTerminalClientEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("native:terminal-client-event", listener);
+      return () => {
+        ipcRenderer.removeListener("native:terminal-client-event", listener);
       };
     },
   },

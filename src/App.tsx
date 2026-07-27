@@ -1,52 +1,36 @@
 import {
   Blocks,
   FileText,
-  FileDiff,
   FolderOpen,
   Plus,
 } from "lucide-react";
 import { useEffect, useMemo, useReducer, useRef, useState, type FormEvent } from "react";
-import browserImage from "../docs/research/assets/agentsroom/browser-automation.jpg";
 import {
   browserRuntimeStatus,
+  activateNativeWorkspaceSession,
   appendNativeTaskEvent,
   callNativeSession,
   defaultOpencodeRunModel,
+  enqueueNativeTerminalInput,
   generateNativeTaskDraft,
   getNativePtySession,
   getNativeRuntimeStatus,
   readNativeTaskState,
+  registerNativeWorkspaceSessionProfile,
   resizeNativePtySession,
-  runNativeVerification,
-  startNativePtySession,
   subscribeNativePtyEvents,
   stopNativePtySession,
   type NativePtyEvent,
   type NativePtySession,
   type NativeRuntimeStatus,
-  writeNativePtySession,
 } from "./runtime/nativeBridge";
 import type { ReadTaskStateResult } from "./orchestration/conductor-tools";
 import { createRuntimeWorkspaceState } from "./runtime/opencode";
 import { getActiveRunForTask, prototypeReducer } from "./lib/taskMachine";
-import { CapabilityMap } from "./pages/CapabilityMap";
 import { TaskBoard } from "./pages/TaskBoard";
 import type { AgentSessionRecoveryRequest } from "./pages/TaskBoard";
 import { Workbench } from "./pages/Workbench";
-import { LoopConsole } from "./pages/LoopConsole";
-import { Review } from "./pages/Review";
-import { Runs } from "./pages/Runs";
-import { DevTerminals } from "./pages/DevTerminals";
-import { Teams } from "./pages/Teams";
-import { BrowserAutomation } from "./pages/BrowserAutomation";
-import { Libraries } from "./pages/Libraries";
-import { Notifications } from "./pages/Notifications";
-import { RestoreSession } from "./pages/RestoreSession";
-import { Projects } from "./pages/Projects";
-import { McpGateway } from "./pages/McpGateway";
-import { PlanWatcher } from "./pages/PlanWatcher";
-import { AuditTrail } from "./pages/AuditTrail";
-import { buildWorkspaceAuditTrail } from "./lib/auditTrail";
+import { AgentLoopApp } from "./agent-loop/AgentLoopApp";
 import { defaultAgentLaunchCommand } from "./lib/agentLaunchCommand";
 import {
   appendPtyReadinessBuffer,
@@ -59,24 +43,15 @@ import {
   waitForNativePtySessionStop,
 } from "./app/ptySessionUtils";
 import { writeNativePtyDataWithRuntimeEvidence } from "./app/nativePtyTimeline";
-import { deliveryEntries, loopStages, moreGroups, navItems, type ShellEntry } from "./app/shellConfig";
+import { navItems } from "./app/shellConfig";
 import {
-  buildOpencodeTuiCommand,
   createOpencodeSessionKey,
   getProjectRuntimeId,
   getTaskRuntimeId,
   opencodeTaskTemplates,
 } from "./runtime/opencode";
 import { buildOpenCodeConductorInjection } from "./runtime/adapters/opencode/conductorInjection";
-import type { RuntimeAdapterCard } from "./runtime/contracts";
 import type {
-  BrowserTool,
-  ChangedFile,
-  LibraryItem,
-  McpServer,
-  ProductCapability,
-  RuntimeContract,
-  TeamWorkflow,
   View,
   Agent,
   Project,
@@ -108,16 +83,26 @@ function basename(value: string) {
   return value.replace(/\/+$/, "").split("/").filter(Boolean).pop() ?? "";
 }
 
-const runtimeProductCapabilities: ProductCapability[] = [];
-const runtimeContracts: RuntimeContract[] = [];
-const runtimeMcpServers: McpServer[] = [];
-const runtimeBrowserTools: BrowserTool[] = [];
-const runtimeLibraryItems: LibraryItem[] = [];
-const runtimeTeamWorkflows: TeamWorkflow[] = [];
-const runtimeAdapterCards: RuntimeAdapterCard[] = [];
-const runtimeChangedFiles: ChangedFile[] = [];
+function createRuntimeOperationId(kind: string, sessionId: string) {
+  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${kind}:${sessionId}:${random}`;
+}
 
-function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialState?: PrototypeState } = {}) {
+function requestedSurface() {
+  if (typeof window === "undefined") return "harness";
+  return new URLSearchParams(window.location.search).get("surface") === "legacy" ? "legacy" : "harness";
+}
+
+function App({ initialState }: { initialState?: PrototypeState } = {}) {
+  const { projectPath, projectName } = getRuntimeWorkspaceInput();
+  if (requestedSurface() !== "legacy") {
+    return <AgentLoopApp projectPath={projectPath} projectName={projectName} />;
+  }
+
+  return <LegacyPrototypeApp initialState={initialState ?? createInitialRuntimeWorkspaceState()} />;
+}
+
+function LegacyPrototypeApp({ initialState }: { initialState: PrototypeState }) {
   const [state, dispatch] = useReducer(prototypeReducer, initialState);
   const [primaryRailCollapsed, setPrimaryRailCollapsed] = useState(true);
   const [nativeRuntimeStatus, setNativeRuntimeStatus] = useState<NativeRuntimeStatus>(browserRuntimeStatus);
@@ -140,7 +125,6 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const initialPtyInputFlushedIdsRef = useRef<Set<string>>(new Set());
   const outputAfterInitialPtyInputIdsRef = useRef<Set<string>>(new Set());
   const pendingInitialPtyInputsRef = useRef<Record<string, { sessionId: string; input: string; agent: Agent }>>({});
-  const auditEntries = useMemo(() => buildWorkspaceAuditTrail(state), [state]);
 
   const fallbackProject = initialState.projects[0];
   const fallbackAgentCluster = initialState.agentClusters[0];
@@ -204,12 +188,6 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     agent ? defaultAgentLaunchCommand(agent.model) : defaultAgentLaunchCommand(defaultOpencodeRunModel);
   const selectedAgentLaunchCommand = launchCommandForAgent(activeSelectedAgent);
   const selectedTaskConductorLaunchCommand = launchCommandForAgent(selectedTaskConductorAgent);
-  const selectedTeamRun =
-    [...state.teamRuns]
-      .reverse()
-      .find((run) => run.workflowId === state.selectedTeamWorkflowId && run.status === "running") ??
-    [...state.teamRuns].reverse().find((run) => run.workflowId === state.selectedTeamWorkflowId);
-  const filteredFiles = runtimeChangedFiles;
 
   const probeNativeRuntime = () => {
     void getNativeRuntimeStatus()
@@ -334,6 +312,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
       if (task.status === "pending-review" || task.status === "done") continue;
 
       dispatch({ type: "agent-claims-done", taskId: task.id });
+      dispatch({ type: "set-view", view: "backlog" });
       break;
     }
   };
@@ -393,9 +372,20 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     pendingInitialPtyInputsRef.current = remaining;
 
     initialPtyInputFlushedIdsRef.current.add(session.id);
-    void writeNativePtySession(session.id, formatPtyInput(pending.input))
-      .then((updatedSession) => {
-        storeNativePtySession(updatedSession, { attach: false, agent: pending.agent });
+    if (!session.incarnationId) {
+      initialPtyInputFlushedIdsRef.current.delete(session.id);
+      dispatch({ type: "runtime-start-failed", reason: "Managed terminal is missing an incarnation identity." });
+      return;
+    }
+    void enqueueNativeTerminalInput({
+      workspaceSessionId: session.id,
+      expectedIncarnationId: session.incarnationId,
+      source: "startup",
+      payload: formatPtyInput(pending.input),
+      idempotencyKey: `startup:${session.id}:${session.incarnationId}`,
+    })
+      .then((write) => {
+        storeNativePtySession(write?.result, { attach: false, agent: pending.agent });
       })
       .catch((error: unknown) => {
         initialPtyInputFlushedIdsRef.current.delete(session.id);
@@ -508,6 +498,39 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     }
   }
 
+  const registerNativeSessionProfileForTaskAgent = async (agent: Agent | undefined, sessionId?: string) => {
+    if (!selectedTask || !agent) throw new Error("No task or agent selected for Session profile registration.");
+    const resolvedSessionId =
+      sessionId ??
+      createOpencodeSessionKey({
+        projectId: selectedProjectRuntimeId,
+        taskId: selectedTaskRuntimeId,
+        agentId: agent.id,
+      });
+    const sessionKey = nativeConversationKeyForAgent(agent);
+    const terminalSize = nativeTerminalSizesByKey[sessionKey] ?? { cols: 100, rows: 30 };
+    const isConductorAgent = selectedTaskConductorAgent?.id === agent.id;
+    const conductorInjection =
+      isConductorAgent && agent.provider === "opencode" ? buildConductorInjectionForCurrentTask(agent) : undefined;
+    if (isConductorAgent && agent.provider === "opencode" && !conductorInjection) {
+      throw new Error("Conductor MCP tool bridge is not available yet.");
+    }
+
+    const registered = await registerNativeWorkspaceSessionProfile({
+      workspaceSessionId: resolvedSessionId,
+      taskId: selectedTaskRuntimeId,
+      provider: "opencode",
+      cwd: selectedProject.path,
+      model: agent.model,
+      cols: terminalSize.cols,
+      rows: terminalSize.rows,
+      env: conductorInjection?.env,
+      runtimeFiles: conductorInjection?.files,
+    });
+    if (!registered) throw new Error("Desktop Terminal Runtime is not available.");
+    return resolvedSessionId;
+  };
+
   const startNativePtyForTaskAgent = (agent: Agent | undefined, options: { initialInput?: string } = {}) => {
     if (!selectedTask || !agent) {
       dispatch({ type: "runtime-start-failed", reason: "No task or agent selected for native PTY start" });
@@ -528,44 +551,19 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     });
     if (startingNativePtySessionIdsRef.current.has(sessionId)) return;
 
-    const isConductorAgent = selectedTaskConductorAgent?.id === agent.id;
-    const conductorInjection =
-      isConductorAgent && agent.provider === "opencode"
-        ? buildConductorInjectionForCurrentTask(agent)
-        : undefined;
-    if (isConductorAgent && agent.provider === "opencode" && !conductorInjection) {
-      dispatch({
-        type: "runtime-start-failed",
-        reason: "Conductor MCP tool bridge is not available yet.",
-      });
-      return;
-    }
-
-    const commandSpec = buildOpencodeTuiCommand({
-      binaryPath: nativeRuntimeStatus.opencodePath ?? "opencode",
-      cwd: selectedProject.path,
-      model: agent.model,
-    });
-    const terminalSize = nativeTerminalSizesByKey[sessionKey] ?? { cols: 100, rows: 30 };
-
     startingNativePtySessionIdsRef.current.add(sessionId);
-    void startNativePtySession({
-      id: sessionId,
-      command: commandSpec.command,
-      args: commandSpec.args,
-      cwd: commandSpec.cwd,
-      taskId: selectedTaskRuntimeId,
-      model: agent.model,
-      cols: terminalSize.cols,
-      rows: terminalSize.rows,
-      stdin: "pipe",
-      requirePty: true,
-      env: conductorInjection?.env,
-      runtimeFiles: conductorInjection?.files,
-    })
-      .then((session) => {
+    void registerNativeSessionProfileForTaskAgent(agent, sessionId)
+      .then(() =>
+        activateNativeWorkspaceSession({
+          workspaceSessionId: sessionId,
+          operationId: createRuntimeOperationId("activate", sessionId),
+        }),
+      )
+      .then((activation) => {
+        const session = activation?.session;
+        if (!session) throw new Error("Terminal Runtime did not return an activated Session.");
         storeNativePtySession(session, { agent });
-        if (session?.status === "running" && options.initialInput?.trim()) {
+        if (session.status === "running" && options.initialInput?.trim()) {
           queueInitialPtyInput(sessionKey, session, agent, options.initialInput);
         }
       })
@@ -579,6 +577,31 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
         startingNativePtySessionIdsRef.current.delete(sessionId);
       });
   };
+
+  useEffect(() => {
+    if (!selectedTask || !nativeRuntimeStatus.available || nativeRuntimeStatus.ptyAvailable === false) return;
+    for (const agent of selectedTaskAgents) {
+      const sessionId = createOpencodeSessionKey({
+        projectId: selectedProjectRuntimeId,
+        taskId: selectedTaskRuntimeId,
+        agentId: agent.id,
+      });
+      void registerNativeSessionProfileForTaskAgent(agent, sessionId).catch((error: unknown) => {
+        dispatch({
+          type: "runtime-start-failed",
+          reason: error instanceof Error ? error.message : "Session profile registration failed",
+        });
+      });
+    }
+  }, [
+    nativeRuntimeStatus.available,
+    nativeRuntimeStatus.ptyAvailable,
+    selectedProject.path,
+    selectedTask?.id,
+    selectedTask?.summary,
+    selectedTask?.title,
+    selectedTaskAgents.map((agent) => `${agent.id}:${agent.model}`).join(","),
+  ]);
 
   const startNativePtyForSelectedTask = () => {
     startNativePtyForTaskAgent(activeSelectedAgent);
@@ -748,6 +771,21 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
     refreshNativePtySessionForAgent(conductorNativePtySession, selectedTaskConductorAgent);
   };
 
+  const writeManagedNativePtySession = async (
+    session: NativePtySession | undefined,
+    text: string,
+    source: "user" | "user_message",
+  ) => {
+    if (!session?.incarnationId) return undefined;
+    const write = await enqueueNativeTerminalInput({
+      workspaceSessionId: session.id,
+      expectedIncarnationId: session.incarnationId,
+      source,
+      payload: text,
+    });
+    return write?.result;
+  };
+
   const writeRawToNativePtySession = (data: string) => {
     void writeNativePtyDataWithRuntimeEvidence({
       session: nativePtySession,
@@ -755,7 +793,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
       data,
       source: "ide-terminal",
       summary: "User intervention sent from IDE terminal",
-      writePtySession: writeNativePtySession,
+      writePtySession: (_id, text) => writeManagedNativePtySession(nativePtySession, text, "user"),
       storePtySession: (session) => {
         storeNativePtySession(session, { attach: false, agent: activeSelectedAgent });
       },
@@ -770,7 +808,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
       ptyData: formatPtyInput(data.trimEnd()),
       source: "task-composer",
       summary: "User intervention sent to Conductor",
-      writePtySession: writeNativePtySession,
+      writePtySession: (_id, text) => writeManagedNativePtySession(conductorNativePtySession, text, "user_message"),
       storePtySession: (session) => {
         storeNativePtySession(session, { attach: false, agent: selectedTaskConductorAgent });
       },
@@ -781,7 +819,7 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const resizeCurrentNativePtySession = (cols: number, rows: number) => {
     setNativeTerminalSizesByKey((sizes) => ({ ...sizes, [nativeConversationKey]: { cols, rows } }));
     if (!nativePtySession || nativePtySession.status !== "running") return;
-    void resizeNativePtySession(nativePtySession.id, { cols, rows }).then((session) => {
+    void resizeNativePtySession(nativePtySession.id, { cols, rows }, nativePtySession.incarnationId).then((session) => {
       storeNativePtySession(session, { attach: false, agent: activeSelectedAgent });
     });
   };
@@ -789,21 +827,25 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
   const resizeSelectedTaskConductorPtySession = (cols: number, rows: number) => {
     setNativeTerminalSizesByKey((sizes) => ({ ...sizes, [conductorNativeConversationKey]: { cols, rows } }));
     if (!conductorNativePtySession || conductorNativePtySession.status !== "running") return;
-    void resizeNativePtySession(conductorNativePtySession.id, { cols, rows }).then((session) => {
+    void resizeNativePtySession(
+      conductorNativePtySession.id,
+      { cols, rows },
+      conductorNativePtySession.incarnationId,
+    ).then((session) => {
       storeNativePtySession(session, { attach: false, agent: selectedTaskConductorAgent });
     });
   };
 
   const stopCurrentNativePtySession = () => {
     if (!nativePtySession) return;
-    void stopNativePtySession(nativePtySession.id).then((session) => {
+    void stopNativePtySession(nativePtySession.id, nativePtySession.incarnationId).then((session) => {
       storeNativePtySession(session, { attach: session?.status === "stopped" });
     });
   };
 
   const stopSelectedTaskConductorPtySession = () => {
     if (!conductorNativePtySession) return;
-    void stopNativePtySession(conductorNativePtySession.id).then((session) => {
+    void stopNativePtySession(conductorNativePtySession.id, conductorNativePtySession.incarnationId).then((session) => {
       storeNativePtySession(session, {
         attach: session?.status === "stopped",
         agent: selectedTaskConductorAgent,
@@ -847,7 +889,10 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
       if (recoveryActionStopsSession(input.actionId)) {
         const stoppedSession = await waitForNativePtySessionStop({
           sessionId: input.sessionId,
-          stopSession: stopNativePtySession,
+          stopSession: async (sessionId) => {
+            const current = await getNativePtySession(sessionId);
+            return stopNativePtySession(sessionId, current?.incarnationId);
+          },
           getSession: getNativePtySession,
         });
         storeNativePtySession(stoppedSession, {
@@ -868,55 +913,6 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
       });
       refreshNativeTaskStateForTask(task);
     })();
-  };
-
-  const runVerificationForTask = (taskId: string) => {
-    const run = getActiveRunForTask(state.runs, taskId);
-    if (!run) {
-      dispatch({ type: "run-verification-command", taskId });
-      return;
-    }
-
-    const command = run.verification.command || "npm test && npm run build";
-    void runNativeVerification({
-      cwd: selectedProject.path,
-      runId: run.id,
-      command,
-    })
-      .then((result) => {
-        dispatch({
-          type: "attach-native-verification-evidence",
-          taskId,
-          runId: run.id,
-          result: {
-            ...result,
-            runId: run.id,
-          },
-        });
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : "native verification command failed";
-        dispatch({
-          type: "attach-native-verification-evidence",
-          taskId,
-          runId: run.id,
-          result: {
-            ok: false,
-            command,
-            cwd: selectedProject.path,
-            runId: run.id,
-            status: "failed",
-            stdout: "",
-            stderr: message,
-            exitCode: null,
-            signal: null,
-            durationMs: 0,
-            artifactPath: `.agent-workspace/runs/${run.id}/verification.json`,
-            logPath: `.agent-workspace/runs/${run.id}/verification.log`,
-            error: message,
-          },
-        });
-      });
   };
 
   return (
@@ -984,57 +980,6 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
           </div>
         </header>
 
-        {state.activeView === "capabilities" && (
-          <CapabilityMap
-            capabilities={runtimeProductCapabilities}
-            contracts={runtimeContracts}
-            adapters={runtimeAdapterCards}
-            onOpenView={(view) => dispatch({ type: "set-view", view })}
-          />
-        )}
-        {state.activeView === "delivery" && (
-          <DeliveryGateHub onOpenView={(view) => dispatch({ type: "set-view", view })} />
-        )}
-        {state.activeView === "more" && (
-          <MoreHub onOpenView={(view) => dispatch({ type: "set-view", view })} />
-        )}
-        {state.activeView === "projects" && (
-          <Projects
-            agents={state.agents}
-            agentClusters={state.agentClusters}
-            agentTemplates={state.agentTemplates}
-            agentProfileEvents={state.agentProfileEvents}
-            commands={state.devCommands}
-            projectContextEvents={state.projectContextEvents}
-            projects={state.projects}
-            runs={state.runs}
-            selectedProjectId={state.selectedProjectId}
-            tasks={state.tasks}
-            onAddAgent={(templateId) => dispatch({ type: "add-agent-from-template", templateId })}
-            onOpenWorkbench={() => dispatch({ type: "set-view", view: "workbench" })}
-            onSelectProject={(projectId) => dispatch({ type: "select-project", projectId })}
-          />
-        )}
-        {state.activeView === "mcp" && (
-          <McpGateway
-            servers={runtimeMcpServers}
-            selectedServerId={state.selectedMcpServerId}
-            toolEvents={state.mcpToolEvents}
-            onSelectServer={(serverId) => dispatch({ type: "select-mcp-server", serverId })}
-            onRequestToolCall={(serverId, toolName) => dispatch({ type: "request-mcp-tool-call", serverId, toolName })}
-            onResolveToolCall={(eventId, decision) =>
-              dispatch({ type: "resolve-mcp-tool-call", eventId, decision })
-            }
-          />
-        )}
-        {state.activeView === "watcher" && (
-          <PlanWatcher
-            events={state.watchEvents}
-            sources={state.watchSources}
-            tasks={state.tasks}
-            onCreatePlannerTask={(eventId) => dispatch({ type: "create-planner-task-from-watch", eventId })}
-          />
-        )}
         {state.activeView === "workbench" && (
           <Workbench
             agents={state.agents}
@@ -1094,7 +1039,6 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
             taskRuntimeState={selectedTaskRuntimeState}
             taskIntakeEvents={state.taskIntakeEvents}
             taskTransitionEvents={state.taskTransitionEvents}
-            loopStages={loopStages}
             nativeRuntimeStatus={nativeRuntimeStatus}
             nativePtySession={conductorNativePtySession}
             agentLaunchCommand={selectedTaskConductorLaunchCommand}
@@ -1104,7 +1048,6 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
             onSelectTask={(taskId) => dispatch({ type: "select-task", taskId })}
             onAdvance={advanceTask}
             onStartAgent={startAgentFromRuntime}
-            onOpenLoops={() => dispatch({ type: "set-view", view: "loops" })}
             onStartConductorPty={startNativePtyForSelectedTaskConductor}
             onRefreshConductorPty={refreshSelectedTaskConductorPtySession}
             onWriteConductorPtyData={writeRawToSelectedTaskConductorPtySession}
@@ -1114,170 +1057,13 @@ function App({ initialState = createInitialRuntimeWorkspaceState() }: { initialS
             onRecoverAgentSession={recoverAgentSession}
           />
         )}
-        {state.activeView === "loops" && (
-          <LoopConsole
-            tasks={state.tasks}
-            loopScheduleEvents={state.loopScheduleEvents}
-            loopStages={loopStages}
-            onAdvance={advanceTask}
-            onStartAgent={startAgentFromRuntime}
-          />
-        )}
-        {state.activeView === "review" && (
-          selectedTask ? (
-            <Review
-              agents={state.agents}
-              files={filteredFiles}
-              selectedTask={selectedTask}
-              selectedRun={selectedRun}
-              reviewAgentId={state.reviewAgentId}
-              reviewFileSelections={state.reviewFileSelections}
-              commitConversationIncluded={state.commitConversationIncluded}
-              commitRedactionScans={state.commitRedactionScans}
-              commitStagingEvents={state.commitStagingEvents}
-              browserEvidence={state.browserEvidence}
-              mcpToolEvents={state.mcpToolEvents}
-              terminalEvents={state.terminalEvents}
-              onReviewAgentChange={(agentId) => dispatch({ type: "select-review-agent", agentId })}
-              onToggleReviewFile={(path) => dispatch({ type: "toggle-review-file", path })}
-              onToggleCommitConversation={() => dispatch({ type: "toggle-commit-conversation" })}
-              onRunCommitRedactionScan={() =>
-                dispatch({ type: "run-commit-redaction-scan", taskId: selectedTask.id })
-              }
-              onStageReviewFiles={(taskId) => dispatch({ type: "stage-review-files", taskId })}
-              onRunVerificationCommand={runVerificationForTask}
-              onVerificationFailed={() => dispatch({ type: "verification-failed", taskId: selectedTask.id })}
-              onApproveReview={() => dispatch({ type: "approve-review", taskId: selectedTask.id })}
-            />
-          ) : (
-            <EmptyRuntimePanel onOpenTaskHome={() => dispatch({ type: "set-view", view: "backlog" })} />
-          )
-        )}
-        {state.activeView === "teams" && (
-          <Teams
-            workflows={runtimeTeamWorkflows}
-            selectedWorkflowId={state.selectedTeamWorkflowId}
-            activeRun={selectedTeamRun}
-            onSelectWorkflow={(workflowId) => dispatch({ type: "select-team-workflow", workflowId })}
-            onStartTeamRun={() => dispatch({ type: "start-team-run" })}
-            onAdvanceTeamRun={() => dispatch({ type: "advance-team-run" })}
-          />
-        )}
-        {state.activeView === "terminals" && (
-          <DevTerminals
-            commands={state.devCommands}
-            contracts={runtimeContracts}
-            events={state.devCommandEvents}
-            onStartCommand={(commandId) => dispatch({ type: "start-dev-command", commandId })}
-            onStopCommand={(commandId) => dispatch({ type: "stop-dev-command", commandId })}
-          />
-        )}
-        {state.activeView === "browser" && (
-          selectedTask ? (
-            <BrowserAutomation
-              imageSrc={browserImage}
-              tools={runtimeBrowserTools}
-              selectedTask={selectedTask}
-              activeToolName={state.activeBrowserToolName}
-              evidence={state.browserEvidence}
-              onSelectTool={(toolName) => dispatch({ type: "select-browser-tool", toolName })}
-              onCaptureEvidence={() => dispatch({ type: "capture-browser-evidence" })}
-            />
-          ) : (
-            <EmptyRuntimePanel onOpenTaskHome={() => dispatch({ type: "set-view", view: "backlog" })} />
-          )
-        )}
-        {state.activeView === "libraries" && (
-          <Libraries
-            items={runtimeLibraryItems}
-            activePromptTemplateId={state.activePromptTemplateId}
-            attachedSkillIds={state.attachedSkillIds}
-            promptLibrarySaves={state.promptLibrarySaves}
-            onInjectPrompt={(itemId) => dispatch({ type: "inject-library-prompt", itemId })}
-            onAttachSkill={(itemId) => dispatch({ type: "attach-library-skill", itemId })}
-          />
-        )}
-        {state.activeView === "notifications" && (
-          selectedTask ? (
-            <Notifications
-              selectedTask={selectedTask}
-              events={state.notificationEvents}
-              onRouteNotification={() => dispatch({ type: "route-notification" })}
-              onOpenNotificationContext={(eventId) => dispatch({ type: "open-notification-context", eventId })}
-              onAcknowledgeNotification={(eventId) => dispatch({ type: "acknowledge-notification", eventId })}
-            />
-          ) : (
-            <EmptyRuntimePanel onOpenTaskHome={() => dispatch({ type: "set-view", view: "backlog" })} />
-          )
-        )}
-        {state.activeView === "restore" && (
-          selectedTask && activeSelectedAgent ? (
-            <RestoreSession
-              manifest={state.restoreManifest}
-              selectedAgent={activeSelectedAgent}
-              selectedTask={selectedTask}
-              onCaptureRestoreManifest={() => dispatch({ type: "capture-restore-manifest" })}
-              onRestoreWorkspaceSession={() => dispatch({ type: "restore-workspace-session" })}
-            />
-          ) : (
-            <EmptyRuntimePanel onOpenTaskHome={() => dispatch({ type: "set-view", view: "backlog" })} />
-          )
-        )}
-        {state.activeView === "audit" && (
-          <AuditTrail
-            entries={auditEntries}
-            onOpenEntryContext={(entryId) => dispatch({ type: "open-audit-entry-context", entryId })}
-          />
-        )}
-        {state.activeView === "runs" && (
-          selectedTask && activeSelectedAgent && selectedRun ? (
-            <Runs
-              runs={state.runs}
-              selectedTask={selectedTask}
-              selectedAgent={activeSelectedAgent}
-              reviewFileSelections={state.reviewFileSelections}
-              commitConversationIncluded={state.commitConversationIncluded}
-              browserEvidence={state.browserEvidence}
-              commitRedactionScans={state.commitRedactionScans}
-              commitStagingEvents={state.commitStagingEvents}
-              verificationEvents={state.verificationEvents}
-              terminalEvents={state.terminalEvents}
-              mcpToolEvents={state.mcpToolEvents}
-              reviewApprovalEvents={state.reviewApprovalEvents}
-              pullRequestHandoffEvents={state.pullRequestHandoffEvents}
-              onCreatePullRequestHandoff={(runId) => dispatch({ type: "create-pr-handoff", runId })}
-            />
-          ) : (
-            <EmptyRuntimePanel onOpenTaskHome={() => dispatch({ type: "set-view", view: "backlog" })} />
-          )
-        )}
       </main>
     </div>
   );
 }
 
 function pageTitle(view: View) {
-  const titles: Record<View, string> = {
-    capabilities: "产品地图",
-    delivery: "交付门禁",
-    more: "更多能力",
-    projects: "项目驾驶舱",
-    mcp: "MCP Gateway 自动化边界",
-    watcher: "Research / Spec / Plan Watcher",
-    workbench: "IDE 工作台",
-    backlog: "任务主页",
-    loops: "自动 Loop 控制台",
-    review: "Review / 交付门禁",
-    teams: "Agent Teams 工作流",
-    terminals: "Dev Terminals 命令面板",
-    browser: "Browser Automation 验证面板",
-    libraries: "资源库",
-    notifications: "Notifications 状态路由",
-    restore: "Restore Session 状态恢复",
-    audit: "Audit Trail / 审计",
-    runs: "Runs / 审计",
-  };
-  return titles[view];
+  return view === "workbench" ? "IDE 工作台" : "任务主页";
 }
 
 function ShellDirectoryTree({
@@ -1435,9 +1221,9 @@ function buildConductorKickoffPrompt(input: {
 
 function formatTaskSessionPlanForKickoff(plan: TaskSessionPlan | undefined) {
   if (!plan) return "- No task-specific session plan supplied.";
-  const workflow = plan.workflow?.length
+  const orchestrationNotes = plan.workflow?.length
     ? plan.workflow.map((step, index) => `${index + 1}. ${step}`).join("\n")
-    : "- No workflow supplied.";
+    : "- No orchestration notes supplied.";
   const routeNotes = plan.routePolicy?.notes?.length
     ? plan.routePolicy.notes.map((note) => `- ${note}`).join("\n")
     : "- No route notes supplied.";
@@ -1451,8 +1237,8 @@ function formatTaskSessionPlanForKickoff(plan: TaskSessionPlan | undefined) {
     ...plan.workers.map((worker) => `- ${worker.name}: ${worker.role}`),
     "Route policy:",
     routeNotes,
-    "Workflow:",
-    workflow,
+    "Conductor orchestration notes (not an executable Workflow):",
+    orchestrationNotes,
     "Deliverables:",
     deliverables,
   ].join("\n");
@@ -1463,13 +1249,7 @@ function getOpencodeTaskTemplate(templateId: string | undefined) {
 }
 
 function primaryViewFor(view: View): View {
-  if (view === "backlog" || view === "workbench" || view === "delivery" || view === "more") {
-    return view;
-  }
-  if (view === "review" || view === "runs" || view === "audit") {
-    return "delivery";
-  }
-  return "more";
+  return view === "workbench" ? "workbench" : "backlog";
 }
 
 function agentRecoveryActionSummary(actionId: AgentSessionRecoveryRequest["actionId"]) {
@@ -1488,91 +1268,6 @@ function recoveryActionStopsSession(actionId: AgentSessionRecoveryRequest["actio
 
 function recoveryActionForcesDispatch(actionId: AgentSessionRecoveryRequest["actionId"]) {
   return actionId === "force_retry";
-}
-
-function EmptyRuntimePanel({ onOpenTaskHome }: { onOpenTaskHome: () => void }) {
-  return (
-    <section className="hub-layout">
-      <div className="hub-panel">
-        <div className="section-title compact">
-          <span>还没有任务</span>
-        </div>
-        <p>先在任务主页创建任务，再打开这个任务相关视图。</p>
-        <button className="primary-button" type="button" onClick={onOpenTaskHome}>
-          新建任务
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function DeliveryGateHub({ onOpenView }: { onOpenView: (view: View) => void }) {
-  return (
-    <section className="hub-layout">
-      <div className="hub-panel">
-        <div className="section-title">
-          <FileDiff size={18} />
-          <span>交付门禁</span>
-        </div>
-        <p>Review、Runs、Audit 聚合在同一个交付入口。</p>
-        <div className="hub-grid">
-          {deliveryEntries.map((entry) => (
-            <HubCard entry={entry} key={entry.view} onOpenView={onOpenView} />
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function MoreHub({ onOpenView }: { onOpenView: (view: View) => void }) {
-  return (
-    <section className="hub-layout">
-      <div className="hub-panel">
-        <div className="section-title">
-          <Blocks size={18} />
-          <span>更多能力</span>
-        </div>
-        <p>项目、资源、自动化和产品地图都保留在二级入口。</p>
-      </div>
-      {moreGroups.map((group) => (
-        <div className="hub-panel" key={group.title}>
-          <div className="section-title compact">
-            <span>{group.title}</span>
-          </div>
-          <p>{group.detail}</p>
-          <div className="hub-grid">
-            {group.entries.map((entry) => (
-              <HubCard entry={entry} key={entry.view} onOpenView={onOpenView} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function HubCard({
-  entry,
-  onOpenView,
-}: {
-  entry: ShellEntry;
-  onOpenView: (view: View) => void;
-}) {
-  const Icon = entry.icon;
-
-  return (
-    <article className="hub-card">
-      <div>
-        <Icon size={18} />
-        <strong>{entry.title}</strong>
-      </div>
-      <p>{entry.detail}</p>
-      <button className="ghost-button" type="button" onClick={() => onOpenView(entry.view)}>
-        {entry.cta}
-      </button>
-    </article>
-  );
 }
 
 export default App;

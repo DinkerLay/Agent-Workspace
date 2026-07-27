@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .agent-workspace/
+.codegraph/
 .superpowers/
 
 .DS_Store
