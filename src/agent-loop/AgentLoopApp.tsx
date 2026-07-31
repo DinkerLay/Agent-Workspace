@@ -3,7 +3,10 @@ import {
   Bot,
   Boxes,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronUp,
   ClipboardCheck,
   Clock3,
   Columns2,
@@ -29,9 +32,11 @@ import { PtyTerminal } from "../components/PtyTerminal";
 import {
   archiveNativeAgentLoopTemplate,
   appendNativeTaskEvent,
+  chooseNativeAgentLoopProjectDirectory,
   copyNativeAgentLoopTemplate,
   createNativeAgentLoopTask,
   defaultOpencodeRunModel,
+  deleteNativeAgentLoopTask,
   deleteNativeAgentLoopTemplate,
   enqueueNativeTerminalInput,
   generateNativeAgentLoopTemplate,
@@ -42,10 +47,13 @@ import {
   readNativeAgentLoopArtifact,
   readNativeAgentLoopRun,
   readNativeWorkspaceTerminalLog,
+  respondNativeAgentLoopPermission,
+  respondNativeAgentLoopQuestion,
   resizeNativePtySession,
   saveNativeAgentLoopWorkbenchLayout,
   saveNativeAgentLoopTemplate,
   startNativeAgentLoopRun,
+  stopNativeAgentLoopTask,
   subscribeNativeAgentLoopRuntimeEvents,
   type NativeAgentLoopRunDetail,
   type NativeAgentLoopWorkbenchLayout,
@@ -68,9 +76,12 @@ import {
   splitGroup,
   updateSplitRatio,
 } from "./workbenchLayout";
+import { nativeTerminalEmptyState, taskStatusLabel, workbenchActivity } from "./runPresentation";
+import { TaskConversationComposer } from "./tasks/TaskConversationComposer";
 
 type View = "tasks" | "templates" | "workbench";
 type Theme = "dark" | "light";
+type TaskListMode = "active" | "completed";
 type TemplateDraft = Omit<NativeAgentLoopTemplate, "version" | "archivedAt" | "createdAt" | "updatedAt">;
 
 const defaultCard = (id = "researcher"): NativeSessionAgentCard => ({
@@ -82,19 +93,18 @@ const defaultCard = (id = "researcher"): NativeSessionAgentCard => ({
   mcp: [],
   skills: [],
   instructions: "",
-  expectedOutput: "Markdown with evidence, artifact paths, and remaining risks.",
+  expectedOutput: "Markdown with evidence, conclusions, and remaining risks.",
 });
 
 function blankTemplate(): TemplateDraft {
   return {
     id: `loop-${Date.now().toString(36)}`,
     name: "New Agent Loop",
-    description: "Conductor owns every Session Agent dispatch and reacts only to semantic Runtime returns.",
     source: "manual",
     conductor: {
       role: "Conductor",
       model: defaultOpencodeRunModel,
-      charter: "Decide each next dispatch from the task goal, durable Session returns, and user follow-ups. Use the available cards as capabilities, never as a fixed route.",
+      charter: "Conductor owns every Session Agent dispatch and reacts only to semantic Runtime returns. Decide each next dispatch from the task goal, durable Session returns, and user follow-ups. Use the available cards as capabilities, never as a fixed route.",
     },
     agents: [defaultCard()],
     limits: { maxConcurrentSessions: 3, maxDispatchesPerDecision: 3 },
@@ -108,6 +118,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   const [theme, setTheme] = useState<Theme>("dark");
   const [templates, setTemplates] = useState<NativeAgentLoopTemplate[]>([]);
   const [tasks, setTasks] = useState<NativeAgentLoopTask[]>([]);
+  const [taskListMode, setTaskListMode] = useState<TaskListMode>("active");
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>();
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [run, setRun] = useState<NativeAgentLoopRunDetail>();
@@ -115,22 +126,44 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   const [showTaskCreate, setShowTaskCreate] = useState(false);
   const [showTemplateStarter, setShowTemplateStarter] = useState(false);
   const [showTemplateEditor, setShowTemplateEditor] = useState(false);
-  const [repairingTemplate, setRepairingTemplate] = useState(false);
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft>(blankTemplate());
-  const [templateDescription, setTemplateDescription] = useState("");
+  const [templateBrief, setTemplateBrief] = useState("");
   const [returnToTaskAfterTemplate, setReturnToTaskAfterTemplate] = useState(false);
   const [taskTitle, setTaskTitle] = useState("");
   const [taskGoal, setTaskGoal] = useState("");
   const [taskTemplateId, setTaskTemplateId] = useState("");
+  const [taskProjectPath, setTaskProjectPath] = useState(projectPath);
   const [busy, setBusy] = useState(false);
   const [messageBusy, setMessageBusy] = useState(false);
+  // A draft belongs to a Task, not to the mounted textarea.  The Task page is
+  // intentionally unmounted when the user opens Templates or Workbench.
+  const [taskMessageDrafts, setTaskMessageDrafts] = useState<Record<string, string>>({});
+  const [questionAnswerDrafts, setQuestionAnswerDrafts] = useState<Record<string, string>>({});
+  const [permissionBusyId, setPermissionBusyId] = useState<string>();
+  const [questionBusyId, setQuestionBusyId] = useState<string>();
   const [error, setError] = useState<string>();
   const [artifactPreview, setArtifactPreview] = useState<NativeAgentLoopArtifact>();
+  const [stopTarget, setStopTarget] = useState<NativeAgentLoopTask>();
+  const [selectedAchievedTaskIds, setSelectedAchievedTaskIds] = useState<string[]>([]);
+  const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>();
+  // A Task deletion is final for this renderer lifetime.  Runtime events and
+  // an in-flight list/read request can resolve after the delete IPC succeeds;
+  // they must never re-open a removed Task in the Workbench.
+  const deletedTaskIdsRef = useRef(new Set<string>());
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
-  const selectedTask = tasks.find((task) => task.taskId === selectedTaskId) ?? tasks[0];
+  const activeTasks = useMemo(() => tasks.filter((task) => !["achieved", "archived"].includes(task.status)), [tasks]);
+  const completedTasks = useMemo(() => tasks.filter((task) => ["achieved", "archived"].includes(task.status)), [tasks]);
+  const visibleTasks = taskListMode === "active" ? activeTasks : completedTasks;
+  const selectedTask = visibleTasks.find((task) => task.taskId === selectedTaskId) ?? visibleTasks[0];
+
+  const applyTaskList = useCallback((nextTasks: NativeAgentLoopTask[]) => {
+    const deletedTaskIds = deletedTaskIdsRef.current;
+    setTasks(nextTasks.filter((task) => !deletedTaskIds.has(task.taskId)));
+  }, []);
 
   const acceptRun = useCallback((detail: NativeAgentLoopRunDetail) => {
+    if (deletedTaskIdsRef.current.has(detail.task.taskId)) return;
     setRun(detail);
     setTasks((current) => current.map((task) => task.taskId === detail.task.taskId ? { ...task, ...detail.task, latestRun: detail.run } : task));
     setSelectedSessionId((current) => current && detail.turns.some((turn) => turn.sessionId === current) ? current : detail.turns[0]?.sessionId);
@@ -139,8 +172,9 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   const refresh = useCallback(async (preferredTaskId?: string) => {
     const [nextTemplates, nextTasks] = await Promise.all([listNativeAgentLoopTemplates(), listNativeAgentLoopTasks()]);
     setTemplates(nextTemplates);
-    setTasks(nextTasks);
-    const preferred = nextTasks.find((task) => task.taskId === preferredTaskId || task.taskId === selectedTaskId) ?? nextTasks[0];
+    const visibleNextTasks = nextTasks.filter((task) => !deletedTaskIdsRef.current.has(task.taskId));
+    applyTaskList(nextTasks);
+    const preferred = visibleNextTasks.find((task) => task.taskId === preferredTaskId || task.taskId === selectedTaskId) ?? visibleNextTasks[0];
     const template = nextTemplates.find((item) => item.id === selectedTemplateId) ?? nextTemplates[0];
     setSelectedTemplateId(template?.id);
     setTaskTemplateId((current) => nextTemplates.some((item) => item.id === current) ? current : template?.id ?? "");
@@ -152,7 +186,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
       setRun(undefined);
       setSelectedSessionId(undefined);
     }
-  }, [acceptRun, selectedTaskId, selectedTemplateId]);
+  }, [acceptRun, applyTaskList, selectedTaskId, selectedTemplateId]);
 
   useEffect(() => {
     void refresh().catch((reason: unknown) => setError(messageFor(reason)));
@@ -182,49 +216,39 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     }
     // Keep inactive Task tabs up to date without using raw terminal traffic as
     // a Task-state source. The selected Run is refreshed by its own signal.
-    void listNativeAgentLoopTasks().then(setTasks).catch((reason: unknown) => setError(messageFor(reason)));
-  }), [refreshRun, run?.run.runId]);
+    void listNativeAgentLoopTasks().then(applyTaskList).catch((reason: unknown) => setError(messageFor(reason)));
+  }), [applyTaskList, refreshRun, run?.run.runId]);
 
-  const openNewTemplate = (description = "", returnToTask = false) => {
-    setTemplateDescription(description);
+  const openNewTemplate = (brief = "", returnToTask = false) => {
+    setTemplateBrief(brief);
     setReturnToTaskAfterTemplate(returnToTask);
     setError(undefined);
     setShowTemplateStarter(true);
   };
   const openManualTemplate = () => {
     setTemplateDraft(blankTemplate());
-    setRepairingTemplate(false);
     setError(undefined);
     setShowTemplateStarter(false);
     setShowTemplateEditor(true);
   };
   const openTemplateEdit = (template: NativeAgentLoopTemplate) => {
     setTemplateDraft(templateDraftFrom(template));
-    setRepairingTemplate(false);
-    setError(undefined);
-    setShowTemplateEditor(true);
-  };
-  const openTemplateRepair = (template: NativeAgentLoopTemplate, returnToTask = false) => {
-    setTemplateDraft(repairTemplateDraft(template));
-    setRepairingTemplate(true);
-    setReturnToTaskAfterTemplate(returnToTask);
     setError(undefined);
     setShowTemplateEditor(true);
   };
 
   const generateTemplate = async () => {
-    if (!templateDescription.trim()) return;
+    if (!templateBrief.trim()) return;
     setBusy(true);
     setError(undefined);
     try {
       const generated = await generateNativeAgentLoopTemplate({
         cwd: projectPath,
         projectName,
-        description: templateDescription.trim(),
+        brief: templateBrief.trim(),
       });
       if (!generated) throw new Error("桌面 Runtime 未返回 Template 草案。");
       setTemplateDraft(generated.template);
-      setRepairingTemplate(false);
       setShowTemplateStarter(false);
       setShowTemplateEditor(true);
     } catch (reason) {
@@ -243,7 +267,6 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
       const reopenTask = returnToTaskAfterTemplate;
       setSelectedTemplateId(saved.id);
       setShowTemplateEditor(false);
-      setRepairingTemplate(false);
       await refresh();
       setSelectedTemplateId(saved.id);
       if (reopenTask) {
@@ -296,8 +319,8 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     setError(undefined);
     try {
       const task = await createNativeAgentLoopTask({
-        cwd: projectPath,
-        projectId: projectName,
+        cwd: taskProjectPath,
+        projectId: projectNameFromPath(taskProjectPath),
         title: taskTitle.trim(),
         goal: taskGoal.trim(),
         templateId: template.id,
@@ -310,6 +333,15 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
   };
 
+  const chooseTaskProject = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const selected = await chooseNativeAgentLoopProjectDirectory(taskProjectPath || projectPath);
+      if (selected?.path) setTaskProjectPath(selected.path);
+    } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
+  };
+
   const startRun = async () => {
     if (!selectedTask) return;
     setBusy(true);
@@ -318,6 +350,8 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
       const detail = await startNativeAgentLoopRun(selectedTask.taskId);
       if (!detail) throw new Error("桌面 Runtime 未创建 Agent Loop Run。");
       acceptRun(detail);
+      setTaskListMode("active");
+      setSelectedTaskId(detail.task.taskId);
       setView("workbench");
       await refresh(selectedTask.taskId);
     } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
@@ -327,25 +361,112 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     if (!selectedTask) return;
     setBusy(true);
     try {
-      await markNativeAgentLoopTaskAchieved(selectedTask.taskId);
+      const achieved = await markNativeAgentLoopTaskAchieved(selectedTask.taskId);
+      if (!achieved) throw new Error("桌面 Runtime 未确认 Task 的 achieved 状态。");
+      setTaskListMode("completed");
+      setSelectedTaskId(achieved.taskId);
       await refresh(selectedTask.taskId);
     } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
   };
 
+  const stopTask = async () => {
+    if (!stopTarget) return;
+    const stoppedTaskId = stopTarget.taskId;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const stopped = await stopNativeAgentLoopTask(stoppedTaskId);
+      if (!stopped) throw new Error("桌面 Runtime 未确认 Task 已停止。");
+      setTasks((current) => current.map((task) => task.taskId === stoppedTaskId ? { ...task, ...stopped } : task));
+      setStopTarget(undefined);
+      setSelectedTaskId(stopped.taskId);
+      await refresh(stopped.taskId);
+    } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
+  };
+
+  const deleteAchievedTasks = async () => {
+    const targetIds = deleteTargetIds ?? [];
+    if (!targetIds.length) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      for (const taskId of targetIds) {
+        const result = await deleteNativeAgentLoopTask(taskId);
+        if (!result?.deleted) throw new Error("桌面 Runtime 未删除所选 Task。");
+        deletedTaskIdsRef.current.add(taskId);
+      }
+      // Remove selected history synchronously before refresh. A late Runtime
+      // event must never reopen a Task the user just removed.
+      setTasks((current) => current.filter((task) => !targetIds.includes(task.taskId)));
+      setTaskMessageDrafts((current) => {
+        let changed = false;
+        const next: Record<string, string> = {};
+        for (const [taskId, draft] of Object.entries(current)) {
+          if (targetIds.includes(taskId)) {
+            changed = true;
+            continue;
+          }
+          next[taskId] = draft;
+        }
+        return changed ? next : current;
+      });
+      setRun((current) => current && targetIds.includes(current.task.taskId) ? undefined : current);
+      setSelectedSessionId((current) => run && targetIds.includes(run.task.taskId) ? undefined : current);
+      setArtifactPreview(undefined);
+      setDeleteTargetIds(undefined);
+      setSelectedAchievedTaskIds((current) => current.filter((taskId) => !targetIds.includes(taskId)));
+      setSelectedTaskId(undefined);
+      setTaskListMode("completed");
+      await refresh();
+    } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
+  };
+
+  const selectTask = useCallback((task: NativeAgentLoopTask) => {
+    setSelectedTaskId(task.taskId);
+    setArtifactPreview(undefined);
+    if (task.latestRun?.runId) {
+      void readNativeAgentLoopRun(task.latestRun.runId).then((detail) => detail && acceptRun(detail));
+    } else {
+      setRun(undefined);
+      setSelectedSessionId(undefined);
+    }
+  }, [acceptRun]);
+
+  const switchTaskList = (mode: TaskListMode) => {
+    const candidates = mode === "active" ? activeTasks : completedTasks;
+    setTaskListMode(mode);
+    if (mode === "active") setSelectedAchievedTaskIds([]);
+    if (candidates[0]) selectTask(candidates[0]);
+    else {
+      setSelectedTaskId(undefined);
+      setRun(undefined);
+      setSelectedSessionId(undefined);
+    }
+  };
+
   const sendTaskMessage = useCallback(async (message: string) => {
     if (!selectedTask || !message.trim()) return;
+    const taskId = selectedTask.taskId;
+    const submitted = message.trim();
     setMessageBusy(true);
     setError(undefined);
     try {
       const result = await appendNativeTaskEvent({
-        taskId: selectedTask.taskId,
+        taskId,
         cwd: selectedTask.cwd,
         type: "task.user_message",
-        summary: message.trim(),
-        data: { message: message.trim() },
+        summary: submitted,
+        data: { message: submitted },
       });
       if (!result.ok) throw new Error(result.error || "无法将消息交给 Conductor。");
-      await refresh(selectedTask.taskId);
+      // Clear only the exact draft that was accepted.  This preserves text if
+      // the user changed it before an asynchronous Runtime receipt returned.
+      setTaskMessageDrafts((current) => {
+        if ((current[taskId] ?? "").trim() !== submitted) return current;
+        const { [taskId]: _sent, ...remaining } = current;
+        return remaining;
+      });
+      await refresh(taskId);
     } catch (reason) {
       setError(messageFor(reason));
       throw reason;
@@ -362,6 +483,51 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
       setArtifactPreview(artifact);
     } catch (reason) { setError(messageFor(reason)); }
   };
+
+  const respondPermission = useCallback(async (permission: Record<string, unknown>, response: "once" | "always" | "reject") => {
+    if (!selectedTask) return;
+    const permissionId = String(permission.permissionId ?? "");
+    const sessionId = String(permission.sessionId ?? "");
+    if (!permissionId || !sessionId) return;
+    setPermissionBusyId(permissionId);
+    setError(undefined);
+    try {
+      const result = await respondNativeAgentLoopPermission({ taskId: selectedTask.taskId, sessionId, permissionId, response });
+      if (!result?.ok) throw new Error(result?.message || result?.errorCode || "无法提交 OpenCode 授权答复。");
+      await refresh(selectedTask.taskId);
+    } catch (reason) {
+      setError(messageFor(reason));
+    } finally {
+      setPermissionBusyId(undefined);
+    }
+  }, [refresh, selectedTask]);
+
+  const respondQuestion = useCallback(async (question: TaskQuestion, answer: string) => {
+    if (!selectedTask || !answer.trim()) return;
+    const draftKey = taskQuestionDraftKey(question);
+    const submitted = answer.trim();
+    setQuestionBusyId(draftKey);
+    setError(undefined);
+    try {
+      const result = await respondNativeAgentLoopQuestion({
+        taskId: selectedTask.taskId,
+        sessionId: question.sessionId,
+        questionId: question.questionId,
+        answer: submitted,
+      });
+      if (!result?.ok) throw new Error(result?.message || result?.errorCode || "无法将回答写入 OpenCode 原生问题。");
+      setQuestionAnswerDrafts((current) => {
+        if ((current[draftKey] ?? "").trim() !== submitted) return current;
+        const { [draftKey]: _sent, ...remaining } = current;
+        return remaining;
+      });
+      await refresh(selectedTask.taskId);
+    } catch (reason) {
+      setError(messageFor(reason));
+    } finally {
+      setQuestionBusyId(undefined);
+    }
+  }, [refresh, selectedTask]);
 
   const timeline = useMemo(() => buildTimeline(selectedTask, run), [selectedTask, run]);
 
@@ -389,16 +555,16 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
         </header>
         {!runtimeAvailable && <div className="harness-browser-preview"><strong>同一套 Agent Loop 界面</strong><span>浏览器只用于查看布局；创建 Template、Task、Run 和原生 PTY 只在 Electron 内可用。</span></div>}
         {view === "tasks" && <TaskSurface
-          tasks={tasks} selectedTask={selectedTask} run={run} timeline={timeline} runtimeAvailable={runtimeAvailable} busy={busy} messageBusy={messageBusy}
-          onSelect={(task) => { setSelectedTaskId(task.taskId); if (task.latestRun?.runId) void readNativeAgentLoopRun(task.latestRun.runId).then((detail) => detail && acceptRun(detail)); else setRun(undefined); }}
-          onCreate={() => { setTaskTitle(""); setTaskGoal(""); setTaskTemplateId(selectedTemplate?.id ?? ""); setShowTaskCreate(true); }}
-          onStart={startRun} onAchieved={markAchieved} onMessage={sendTaskMessage} onWorkbench={() => setView("workbench")} onArtifact={(path) => void openArtifact(path)} />}
+          tasks={visibleTasks} selectedTask={selectedTask} run={run} timeline={timeline} taskListMode={taskListMode} activeTaskCount={activeTasks.length} completedTaskCount={completedTasks.length} selectedAchievedTaskIds={selectedAchievedTaskIds} runtimeAvailable={runtimeAvailable} busy={busy} messageBusy={messageBusy}
+          onSelect={selectTask} onListModeChange={switchTaskList}
+          onCreate={() => { setTaskTitle(""); setTaskGoal(""); setTaskTemplateId(selectedTemplate?.id ?? ""); setTaskProjectPath(projectPath); setShowTaskCreate(true); }}
+          onStart={startRun} onAchieved={markAchieved} onStop={(task) => setStopTarget(task)} onToggleAchievedSelection={(taskId) => setSelectedAchievedTaskIds((current) => current.includes(taskId) ? current.filter((id) => id !== taskId) : [...current, taskId])} onDeleteAchievedSelection={() => setDeleteTargetIds(selectedAchievedTaskIds)} messageDraft={selectedTask ? taskMessageDrafts[selectedTask.taskId] ?? "" : ""} onMessageDraftChange={(message) => selectedTask && setTaskMessageDrafts((current) => current[selectedTask.taskId] === message ? current : { ...current, [selectedTask.taskId]: message })} onMessage={sendTaskMessage} onPermissionResponse={respondPermission} permissionBusyId={permissionBusyId} questionAnswerDrafts={questionAnswerDrafts} questionBusyId={questionBusyId} onQuestionAnswerDraftChange={(question, answer) => setQuestionAnswerDrafts((current) => current[taskQuestionDraftKey(question)] === answer ? current : { ...current, [taskQuestionDraftKey(question)]: answer })} onQuestionAnswer={respondQuestion} onWorkbench={() => setView("workbench")} onPermissionTerminal={(sessionId) => { setSelectedSessionId(sessionId); setView("workbench"); }} onArtifact={(path) => void openArtifact(path)} />}
         {view === "templates" && <TemplateSurface
           templates={templates} selectedTemplate={selectedTemplate} runtimeAvailable={runtimeAvailable} busy={busy}
           onSelect={(template) => setSelectedTemplateId(template.id)} onCreate={openNewTemplate} onEdit={openTemplateEdit}
-          onRepair={openTemplateRepair} onCopy={() => void copyTemplate()} onArchive={() => void archiveTemplate()} onDelete={() => void deleteTemplate()} />}
+          onCopy={() => void copyTemplate()} onArchive={() => void archiveTemplate()} onDelete={() => void deleteTemplate()} />}
         {view === "workbench" && <WorkbenchSurface
-          run={run} tasks={tasks} selectedTaskId={selectedTask?.taskId} selectedSessionId={selectedSessionId} runtimeAvailable={runtimeAvailable}
+          run={run} tasks={activeTasks} selectedTaskId={selectedTask?.taskId} selectedSessionId={selectedSessionId} runtimeAvailable={runtimeAvailable} theme={theme}
           onSelectTask={(task) => {
             setSelectedTaskId(task.taskId);
             if (task.latestRun?.runId) void readNativeAgentLoopRun(task.latestRun.runId).then((detail) => detail && acceptRun(detail));
@@ -412,11 +578,13 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
           }} />}
       </main>
       {showTaskCreate && <TaskDialog
-        templates={templates} title={taskTitle} goal={taskGoal} templateId={taskTemplateId} busy={busy} enabled={runtimeAvailable}
-        onTitle={setTaskTitle} onGoal={setTaskGoal} onTemplate={setTaskTemplateId} onClose={() => setShowTaskCreate(false)} onCreateTemplate={() => { setShowTaskCreate(false); openNewTemplate(taskGoal, true); }} onCreate={() => void createTask()} />}
-      {showTemplateStarter && <TemplateStarterDialog description={templateDescription} busy={busy} enabled={runtimeAvailable} onDescription={setTemplateDescription} onClose={() => { setShowTemplateStarter(false); setReturnToTaskAfterTemplate(false); }} onManual={openManualTemplate} onGenerate={() => void generateTemplate()} />}
-      {showTemplateEditor && <TemplateDialog draft={templateDraft} repairing={repairingTemplate} busy={busy} enabled={runtimeAvailable} onChange={setTemplateDraft} onClose={() => { setShowTemplateEditor(false); setRepairingTemplate(false); setReturnToTaskAfterTemplate(false); }} onSave={() => void saveTemplate()} />}
+        templates={templates} title={taskTitle} goal={taskGoal} templateId={taskTemplateId} projectPath={taskProjectPath} busy={busy} enabled={runtimeAvailable}
+        onTitle={setTaskTitle} onGoal={setTaskGoal} onTemplate={setTaskTemplateId} onChooseProject={() => void chooseTaskProject()} onClose={() => setShowTaskCreate(false)} onCreateTemplate={() => { setShowTaskCreate(false); openNewTemplate(taskGoal, true); }} onCreate={() => void createTask()} />}
+      {showTemplateStarter && <TemplateStarterDialog brief={templateBrief} busy={busy} enabled={runtimeAvailable} onBrief={setTemplateBrief} onClose={() => { setShowTemplateStarter(false); setReturnToTaskAfterTemplate(false); }} onManual={openManualTemplate} onGenerate={() => void generateTemplate()} />}
+      {showTemplateEditor && <TemplateDialog draft={templateDraft} busy={busy} enabled={runtimeAvailable} onChange={setTemplateDraft} onClose={() => { setShowTemplateEditor(false); setReturnToTaskAfterTemplate(false); }} onSave={() => void saveTemplate()} />}
       {artifactPreview && <ArtifactDialog artifact={artifactPreview} onClose={() => setArtifactPreview(undefined)} />}
+      {stopTarget && <TaskStopDialog task={stopTarget} busy={busy} onCancel={() => setStopTarget(undefined)} onConfirm={() => void stopTask()} />}
+      {deleteTargetIds?.length ? <TaskDeleteDialog tasks={tasks.filter((task) => deleteTargetIds.includes(task.taskId))} busy={busy} onCancel={() => setDeleteTargetIds(undefined)} onConfirm={() => void deleteAchievedTasks()} /> : null}
       {error && <div className="harness-error" role="alert">{error}</div>}
     </div>
   );
@@ -426,36 +594,126 @@ function RailButton({ active, onClick, icon, label }: { active: boolean; onClick
   return <button className={`harness-rail-button ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span></button>;
 }
 
-function TaskSurface({ tasks, selectedTask, run, timeline, runtimeAvailable, busy, messageBusy, onSelect, onCreate, onStart, onAchieved, onMessage, onWorkbench, onArtifact }: {
-  tasks: NativeAgentLoopTask[]; selectedTask?: NativeAgentLoopTask; run?: NativeAgentLoopRunDetail; timeline: TimelineItem[]; runtimeAvailable: boolean; busy: boolean; messageBusy: boolean;
-  onSelect: (task: NativeAgentLoopTask) => void; onCreate: () => void; onStart: () => void; onAchieved: () => void; onMessage: (message: string) => Promise<void>; onWorkbench: () => void; onArtifact: (path: string) => void;
+type TaskQuestion = {
+  sessionId: string;
+  questionId: string;
+  question: string;
+  createdAt?: string;
+};
+
+function TaskSurface({ tasks, selectedTask, run, timeline, taskListMode, activeTaskCount, completedTaskCount, selectedAchievedTaskIds, runtimeAvailable, busy, messageBusy, permissionBusyId, questionAnswerDrafts, questionBusyId, onSelect, onListModeChange, onCreate, onStart, onAchieved, onStop, onToggleAchievedSelection, onDeleteAchievedSelection, messageDraft, onMessageDraftChange, onMessage, onPermissionResponse, onQuestionAnswerDraftChange, onQuestionAnswer, onWorkbench, onPermissionTerminal, onArtifact }: {
+  tasks: NativeAgentLoopTask[]; selectedTask?: NativeAgentLoopTask; run?: NativeAgentLoopRunDetail; timeline: TimelineItem[]; taskListMode: TaskListMode; activeTaskCount: number; completedTaskCount: number; selectedAchievedTaskIds: string[]; runtimeAvailable: boolean; busy: boolean; messageBusy: boolean;
+  permissionBusyId?: string; questionAnswerDrafts: Record<string, string>; questionBusyId?: string;
+  onSelect: (task: NativeAgentLoopTask) => void; onListModeChange: (mode: TaskListMode) => void; onCreate: () => void; onStart: () => void; onAchieved: () => void; onStop: (task: NativeAgentLoopTask) => void; onToggleAchievedSelection: (taskId: string) => void; onDeleteAchievedSelection: () => void; messageDraft: string; onMessageDraftChange: (message: string) => void; onMessage: (message: string) => Promise<void>; onPermissionResponse: (permission: Record<string, unknown>, response: "once" | "always" | "reject") => Promise<void>; onQuestionAnswerDraftChange: (question: TaskQuestion, answer: string) => void; onQuestionAnswer: (question: TaskQuestion, answer: string) => Promise<void>; onWorkbench: () => void; onPermissionTerminal: (sessionId: string) => void; onArtifact: (path: string) => void;
 }) {
-  return <div className="harness-task-layout">
-    <aside className="harness-task-list"><div className="harness-panel-title"><h1>任务</h1><button className="harness-primary-button compact" disabled={!runtimeAvailable} onClick={onCreate}><Plus size={15} /> 新建</button></div><p className="harness-list-caption">每个 Task 固定快照一个 Agent Loop Template；完成交付后可标记 achieved。</p>{tasks.map((task) => <button className={`harness-task-row ${task.taskId === selectedTask?.taskId ? "active" : ""}`} key={task.taskId} onClick={() => onSelect(task)}><i className={`harness-state-dot ${task.status}`} /><span><strong>{task.title}</strong><small>{task.architecture.template.name} · v{task.architecture.template.version}</small></span><em>{statusLabel(task.status)}</em></button>)}</aside>
+  const completed = taskListMode === "completed";
+  const selectedActivity = run?.task.taskId === selectedTask?.taskId ? workbenchActivity(run) : undefined;
+  const sessionNames = useMemo(() => new Map((run?.turns ?? []).map((turn) => [turn.sessionId, turn.details.card.name])), [run?.turns]);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  return <div className={`harness-task-layout ${inspectorCollapsed ? "inspector-collapsed" : ""}`}>
+    <aside className="harness-task-list"><div className="harness-panel-title"><h1>{completed ? "已完成任务" : "任务"}</h1>{completed ? <button className="harness-secondary-button compact danger" disabled={!runtimeAvailable || busy || !selectedAchievedTaskIds.length} onClick={onDeleteAchievedSelection}><Trash2 size={14} /> 删除所选{selectedAchievedTaskIds.length ? ` (${selectedAchievedTaskIds.length})` : ""}</button> : <button className="harness-primary-button compact" disabled={!runtimeAvailable} onClick={onCreate}><Plus size={15} /> 新建</button>}</div><p className="harness-list-caption">{completed ? "已确认交付的 Task 在这里保留历史、产物与重跑入口。勾选后统一删除，仅清理 Runtime 记录。" : "进行中 Task 固定快照一个 Agent Loop Template；确认交付后进入已完成任务管理。"}</p><div className="harness-task-rows" aria-label={completed ? "已完成任务列表" : "Task 列表"}>{tasks.length ? tasks.map((task) => {
+      const active = task.taskId === selectedTask?.taskId;
+      const currentActivity = active ? selectedActivity : undefined;
+      return <div className={`harness-task-row-wrap ${completed ? "completed" : ""}`} key={task.taskId}>{completed && task.status === "achieved" && <label className="harness-achieved-select" title={`选择“${task.title}”删除`} onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selectedAchievedTaskIds.includes(task.taskId)} onChange={() => onToggleAchievedSelection(task.taskId)} /><span className="sr-only">{`选择“${task.title}”`}</span></label>}<button className={`harness-task-row ${active ? "active" : ""}`} onClick={() => onSelect(task)}><i className={`harness-state-dot ${task.status}`} /><span><strong>{task.title}</strong><small>{task.architecture.template.name} · v{task.architecture.template.version}</small></span><em title={currentActivity ? `Task 生命周期：${taskStatusLabel(task.status)}；当前活动态：${currentActivity.label}` : undefined}>{currentActivity?.shortLabel ?? taskStatusLabel(task.status)}</em></button></div>;
+    }) : <Empty title={completed ? "还没有已完成任务" : "还没有进行中 Task"} detail={completed ? "确认交付后的 Task 会自动移动到这里。" : "新建 Task 后，它会出现在这个列表。"} />}</div><button className={`harness-task-manager-button ${completed ? "active" : ""}`} onClick={() => onListModeChange(completed ? "active" : "completed")}><Archive size={15} /><span>{completed ? "返回进行中任务" : "已完成任务"}</span><b>{completed ? activeTaskCount : completedTaskCount}</b><ChevronRight size={15} /></button></aside>
     <section className="harness-timeline-panel">{selectedTask ? <>
-      <header className="harness-task-head"><div><div className="harness-breadcrumb">Task / Agent Loop</div><h1>{selectedTask.title}</h1><p>{selectedTask.goal}</p></div><div className="harness-task-actions">{selectedTask.status === "queued" && <button className="harness-primary-button" disabled={!runtimeAvailable || busy} onClick={onStart}><Play size={15} /> 启动 Agent Loop</button>}{selectedTask.status === "running" && <button className="harness-secondary-button" onClick={onWorkbench}><TerminalSquare size={15} /> 进入运行现场</button>}{selectedTask.status === "delivery_ready" && <button className="harness-primary-button" disabled={busy || !runtimeAvailable} onClick={onAchieved}><CheckCircle2 size={15} /> 已检查产物，标记 achieved</button>}{selectedTask.status === "achieved" && <span className="harness-achieved-label"><CheckCircle2 size={15} /> achieved</span>}</div></header>
+      <header className="harness-task-head"><div><div className="harness-breadcrumb">Task / {completed ? "Completed history" : "Agent Loop"}</div><h1>{selectedTask.title}</h1><p>{selectedTask.goal}</p></div><div className="harness-task-actions">{selectedTask.status === "queued" && <button className="harness-primary-button" disabled={!runtimeAvailable || busy} onClick={onStart}><Play size={15} /> 启动 Agent Loop</button>}{selectedTask.status === "stopped" && <button className="harness-primary-button" disabled={!runtimeAvailable || busy} onClick={onStart}><Play size={15} /> 重新启动</button>}{["running", "delivery_ready"].includes(selectedTask.status) && <><button className="harness-secondary-button" onClick={onWorkbench}><TerminalSquare size={15} /> 进入运行现场</button><button className="harness-primary-button" disabled={busy || !runtimeAvailable} onClick={onAchieved}><CheckCircle2 size={15} /> Achieve</button></>}{selectedTask.status === "achieved" && <span className="harness-achieved-label"><CheckCircle2 size={15} /> achieved</span>}</div></header>
       <div className="harness-timeline-meta"><b>Agent Loop</b><ChevronRight size={14} /><span>Conductor 派发原生 Session Agent；每次结果、失败或需要输入才唤醒 Conductor。</span></div>
-      <div className="harness-conversation">{timeline.map((item) => <TimelineMessage item={item} key={item.id} />)}</div>
-      {selectedTask.status !== "queued" && <TaskConversationComposer disabled={!runtimeAvailable || messageBusy} onSubmit={onMessage} />}
-    </> : <Empty title="还没有 Task" detail="先从已保存的 Agent Loop Template 创建一个任务。" />}</section>
-    <TaskInspector task={selectedTask} run={run} onWorkbench={onWorkbench} onArtifact={onArtifact} />
+      <section className="harness-task-activity" aria-label="Task 活动">
+        <div className="harness-conversation" aria-label="任务时间线" role="log" tabIndex={0}>{timeline.map((item) => <TimelineMessage item={item} key={item.id} />)}</div>
+      </section>
+      {["running", "delivery_ready"].includes(selectedTask.status) && <TaskConversationComposer disabled={!runtimeAvailable || messageBusy} message={messageDraft} continuity={run?.task.taskId === selectedTask.taskId ? run.continuity : undefined} onMessageChange={onMessageDraftChange} onSubmit={onMessage} onStop={() => onStop(selectedTask)} />}
+    </> : <Empty title={completed ? "还没有已完成任务" : "还没有进行中 Task"} detail={completed ? "确认交付后的 Task 会自动移动到这里。" : "先从已保存的 Agent Loop Template 创建一个任务。"} />}</section>
+    <TaskInspector task={selectedTask} run={run} completed={completed} collapsed={inspectorCollapsed} busy={busy} runtimeAvailable={runtimeAvailable} permissions={run?.runtimeState.permissions ?? []} questions={pendingTaskQuestions(run)} questionAnswerDrafts={questionAnswerDrafts} sessionNames={sessionNames} permissionBusyId={permissionBusyId} questionBusyId={questionBusyId} onPermissionResponse={onPermissionResponse} onQuestionAnswerDraftChange={onQuestionAnswerDraftChange} onQuestionAnswer={onQuestionAnswer} onPermissionTerminal={onPermissionTerminal} onToggle={() => setInspectorCollapsed((current) => !current)} onStart={onStart} onWorkbench={onWorkbench} onArtifact={onArtifact} />
   </div>;
 }
 
-function TemplateSurface({ templates, selectedTemplate, runtimeAvailable, busy, onSelect, onCreate, onEdit, onRepair, onCopy, onArchive, onDelete }: {
-  templates: NativeAgentLoopTemplate[]; selectedTemplate?: NativeAgentLoopTemplate; runtimeAvailable: boolean; busy: boolean; onSelect: (template: NativeAgentLoopTemplate) => void;
-  onCreate: () => void; onEdit: (template: NativeAgentLoopTemplate) => void; onRepair: (template: NativeAgentLoopTemplate) => void; onCopy: () => void; onArchive: () => void; onDelete: () => void;
+function PermissionRequests({ permissions, sessionNames, busyId, disabled, onRespond, onOpenTerminal }: {
+  permissions: unknown[];
+  sessionNames: ReadonlyMap<string, string>;
+  busyId?: string;
+  disabled: boolean;
+  onRespond: (permission: Record<string, unknown>, response: "once" | "always" | "reject") => Promise<void>;
+  onOpenTerminal: (sessionId: string) => void;
 }) {
-  const executionIssue = selectedTemplate ? templateExecutionIssue(selectedTemplate) : "";
+  // A permission card is an actionable, one-shot control—not a status feed.
+  // Once the reply reaches the Provider transport, its card is consumed and
+  // the durable receipt belongs in Timeline. A transport failure remains
+  // `reply_failed`, so it stays actionable rather than silently disappearing.
+  const pending = permissions
+    .filter((permission): permission is Record<string, unknown> => isRecord(permission) && ["requested", "reply_failed"].includes(String(permission.status ?? "requested")))
+    .sort((left, right) => String(left.requestedAt ?? "").localeCompare(String(right.requestedAt ?? "")));
+  if (!pending.length) return null;
+  return <section className="agent-loop-permission-requests" aria-label="OpenCode 权限请求">
+    <header><strong>需要授权</strong><small>{pending.length === 1 ? "由原生 Session 提出" : `${pending.length} 个请求，按顺序处理`}</small></header>
+    <div className="agent-loop-permission-deck" aria-label={`${pending.length} 个待处理 OpenCode 权限请求`}>
+    {pending.map((permission, index) => {
+      const permissionId = String(permission.permissionId ?? "");
+      const sessionId = String(permission.sessionId ?? "");
+      const busy = busyId === permissionId;
+      const patterns = Array.isArray(permission.patterns) ? permission.patterns.map(String).filter(Boolean) : [];
+      const sessionName = sessionNames.get(sessionId) || shortSession(sessionId) || "原生 Session";
+      const active = index === 0;
+      return <article aria-hidden={!active} className={`agent-loop-permission-request ${active ? "active" : "queued"}`} key={`${sessionId}:${permissionId}`} style={{ "--permission-stack-index": index } as import("react").CSSProperties}>
+        <div><strong>OpenCode 请求授权</strong><span>由 {sessionName} 提出</span></div>
+        <dl><dt>操作</dt><dd>{String(permission.permission ?? "操作")}</dd>{patterns.length ? <><dt>范围</dt><dd>{patterns.join(" · ")}</dd></> : null}</dl>
+        <p>{String(permission.summary ?? "OpenCode 正在等待你的授权。").trim()}</p>
+        {String(permission.status ?? "") === "reply_failed" ? <small>OpenCode 尚未接收上次答复，请重新选择。</small> : null}
+        {active ? <div className="agent-loop-permission-actions">
+          <button className="harness-secondary-button compact" disabled={disabled || busy} onClick={() => void onRespond(permission, "once")}>仅此次允许</button>
+          <button className="harness-secondary-button compact" disabled={disabled || busy} onClick={() => void onRespond(permission, "always")}>本会话总是允许</button>
+          <button className="harness-secondary-button compact danger" disabled={disabled || busy} onClick={() => void onRespond(permission, "reject")}>拒绝</button>
+          <button className="harness-secondary-button compact" disabled={!sessionId} onClick={() => onOpenTerminal(sessionId)}>查看原生终端</button>
+        </div> : null}
+      </article>;
+    })}
+    </div>
+  </section>;
+}
+
+function QuestionRequests({ questions, sessionNames, drafts, busyId, disabled, onDraftChange, onSubmit, onOpenTerminal }: {
+  questions: TaskQuestion[];
+  sessionNames: ReadonlyMap<string, string>;
+  drafts: Record<string, string>;
+  busyId?: string;
+  disabled: boolean;
+  onDraftChange: (question: TaskQuestion, answer: string) => void;
+  onSubmit: (question: TaskQuestion, answer: string) => Promise<void>;
+  onOpenTerminal: (sessionId: string) => void;
+}) {
+  if (!questions.length) return null;
+  return <section className="agent-loop-question-requests" aria-label="OpenCode 原生问题">
+    <header><strong>需要回答</strong><small>{questions.length === 1 ? "由原生 Session 提出" : `${questions.length} 个问题，按顺序处理`}</small></header>
+    <div className="agent-loop-question-deck" aria-label={`${questions.length} 个待处理 OpenCode 原生问题`}>
+      {questions.map((question, index) => {
+        const active = index === 0;
+        const draftKey = taskQuestionDraftKey(question);
+        const busy = busyId === draftKey;
+        const sessionName = sessionNames.get(question.sessionId) || shortSession(question.sessionId) || "原生 Session";
+        const answer = drafts[draftKey] ?? "";
+        return <article aria-hidden={!active} className={`agent-loop-question-request ${active ? "active" : "queued"}`} key={draftKey} style={{ "--question-stack-index": index } as import("react").CSSProperties}>
+          <div><strong>OpenCode 等待回答</strong><span>由 {sessionName} 提出</span></div>
+          <p>{question.question}</p>
+          {active ? <><label>回答 OpenCode 问题<textarea aria-label="回答 OpenCode 问题" value={answer} disabled={disabled || busy} onChange={(event) => onDraftChange(question, event.target.value)} placeholder="输入后只会写回这个原生问题，不会作为普通消息发送给 Conductor。" /></label><small>此回答只写入当前原生问题；普通 Task 消息仍保留给 Conductor。</small><div className="agent-loop-question-actions"><button className="harness-primary-button compact" disabled={disabled || busy || !answer.trim()} onClick={() => void onSubmit(question, answer)}>{busy ? "提交中…" : "提交回答"}</button><button className="harness-secondary-button compact" onClick={() => onOpenTerminal(question.sessionId)}>查看原生终端</button></div></> : null}
+        </article>;
+      })}
+    </div>
+  </section>;
+}
+
+function TemplateSurface({ templates, selectedTemplate, runtimeAvailable, busy, onSelect, onCreate, onEdit, onCopy, onArchive, onDelete }: {
+  templates: NativeAgentLoopTemplate[]; selectedTemplate?: NativeAgentLoopTemplate; runtimeAvailable: boolean; busy: boolean; onSelect: (template: NativeAgentLoopTemplate) => void;
+  onCreate: () => void; onEdit: (template: NativeAgentLoopTemplate) => void; onCopy: () => void; onArchive: () => void; onDelete: () => void;
+}) {
   return <div className="harness-template-layout">
-    <aside className="harness-template-list"><div className="harness-panel-title"><h1>Loop Templates</h1><button className="harness-primary-button compact" disabled={!runtimeAvailable} onClick={() => onCreate()}><Plus size={15} /> 新建</button></div><p className="harness-list-caption">卡片定义稳定能力边界；Conductor 只在其中派发本次工作契约。</p>{templates.map((template) => <button className={`harness-template-row ${template.id === selectedTemplate?.id ? "active" : ""} ${templateExecutionIssue(template) ? "needs-repair" : ""}`} onClick={() => onSelect(template)} key={template.id}><Bot size={16} /><span><strong>{template.name}</strong><small>{templateExecutionIssue(template) ? "需要修复后才能创建 Task" : `Agent Loop · v${template.version} · ${template.agents.length} cards`}</small></span></button>)}</aside>
+    <aside className="harness-template-list"><div className="harness-panel-title"><h1>Loop Templates</h1><button className="harness-primary-button compact" disabled={!runtimeAvailable} onClick={() => onCreate()}><Plus size={15} /> 新建</button></div><p className="harness-list-caption">卡片定义稳定能力边界；Conductor 只在其中派发本次工作契约。</p>{templates.map((template) => <button className={`harness-template-row ${template.id === selectedTemplate?.id ? "active" : ""}`} onClick={() => onSelect(template)} key={template.id}><Bot size={16} /><span><strong>{template.name}</strong><small>{`Agent Loop · v${template.version} · ${template.agents.length} cards`}</small></span></button>)}</aside>
     <section className="harness-template-canvas">{selectedTemplate ? <>
-      <header className="harness-template-head"><div><div className="harness-breadcrumb">Template / Agent Loop</div><h1>{selectedTemplate.name}</h1><p>{selectedTemplate.description}</p></div><div className="agent-loop-template-actions">{executionIssue ? <button className="harness-primary-button compact" disabled={!runtimeAvailable || busy} onClick={() => onRepair(selectedTemplate)}><Pencil size={14} /> 修复为新版本</button> : <button className="harness-secondary-button compact" disabled={!runtimeAvailable || busy} onClick={() => onEdit(selectedTemplate)}><Pencil size={14} /> 编辑 / 新版本</button>}<button className="harness-secondary-button compact" disabled={!runtimeAvailable || busy} onClick={onCopy}><Copy size={14} /> 复制</button><button className="harness-secondary-button compact" disabled={!runtimeAvailable || busy} onClick={onArchive}><Archive size={14} /> 归档</button><button className="harness-secondary-button compact danger" disabled={!runtimeAvailable || busy} onClick={onDelete}><Trash2 size={14} /> 删除</button></div></header>
-      {executionIssue && <div className="agent-loop-template-repair-note"><strong>此 Template 需要修复</strong><span>{executionIssue}</span><button className="harness-primary-button compact" disabled={!runtimeAvailable || busy} onClick={() => onRepair(selectedTemplate)}>修复为新版本</button></div>}
+      <header className="harness-template-head"><div><div className="harness-breadcrumb">Template / Agent Loop</div><h1>{selectedTemplate.name}</h1></div><div className="agent-loop-template-actions"><button className="harness-secondary-button compact" disabled={!runtimeAvailable || busy} onClick={() => onEdit(selectedTemplate)}><Pencil size={14} /> 编辑 / 新版本</button><button className="harness-secondary-button compact" disabled={!runtimeAvailable || busy} onClick={onCopy}><Copy size={14} /> 复制</button><button className="harness-secondary-button compact" disabled={!runtimeAvailable || busy} onClick={onArchive}><Archive size={14} /> 归档</button><button className="harness-secondary-button compact danger" disabled={!runtimeAvailable || busy} onClick={onDelete}><Trash2 size={15} /> 删除</button></div></header>
+      <div className="agent-loop-contract-note"><strong>Conductor Charter</strong><span>{selectedTemplate.conductor.charter || "决定每次下一步派发；把 Session Agent 当作可选能力，而不是固定路线。"}</span></div>
       <div className="agent-loop-contract-note"><strong>边界</strong><span>Conductor：{selectedTemplate.conductor.role}。每张卡片定义可用能力；Conductor 每次自行决定是否派发，并写入目标、输入、验收和预期产物。Runtime 不执行业务路线。</span></div>
       <div className="agent-loop-card-grid">{selectedTemplate.agents.map((card) => <AgentCard key={card.id} card={card} />)}</div>
     </> : <Empty title="还没有 Template" detail="创建一个 Agent Loop Template，再配置它的原生 Session Agent 卡片。" />}</section>
-    <aside className="harness-inspector">{selectedTemplate ? <><h2>Conductor Charter</h2><InspectorRow label="模型" value={selectedTemplate.conductor.model} /><InspectorRow label="Session cards" value={`${selectedTemplate.agents.length} 张`} /><InspectorRow label="交付路径偏好" value={selectedTemplate.delivery.artifactPath || "未声明"} /><section className="harness-inspector-section"><strong>决策原则</strong><p>{selectedTemplate.conductor.charter || "Conductor 根据任务、Session 返回与用户补充决定每一步；Runtime 不提供固定路线。"}</p></section></> : null}</aside>
+    <aside className="harness-inspector">{selectedTemplate ? <><h2>Conductor Charter</h2><InspectorRow label="模型" value={selectedTemplate.conductor.model} /><InspectorRow label="Session cards" value={`${selectedTemplate.agents.length} 张`} /><section className="harness-inspector-section"><strong>决策原则</strong><p>{selectedTemplate.conductor.charter || "Conductor 根据任务、Session 返回与用户补充决定每一步；Runtime 不提供固定路线。"}</p></section></> : null}</aside>
   </div>;
 }
 
@@ -465,6 +723,7 @@ function WorkbenchSurface({
   selectedTaskId,
   selectedSessionId,
   runtimeAvailable,
+  theme,
   onSelectTask,
   onSelectSession,
   onArtifact,
@@ -475,6 +734,7 @@ function WorkbenchSurface({
   selectedTaskId?: string;
   selectedSessionId?: string;
   runtimeAvailable: boolean;
+  theme: Theme;
   onSelectTask: (task: NativeAgentLoopTask) => void;
   onSelectSession: (sessionId: string) => void;
   onArtifact: (path: string) => void;
@@ -507,6 +767,16 @@ function WorkbenchSurface({
     if (!run) return;
     setLayout((current) => reconcileWorkbenchLayout(current ?? run.workbenchLayout, knownSessionIds));
   }, [knownSessionKey, runId]);
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    setLayout((current) => {
+      if (!current) return current;
+      const groupId = leafGroupIds(current.root).find((id) => current.groups[id]?.sessionIds.includes(selectedSessionId));
+      if (!groupId || current.groups[groupId]?.activeSessionId === selectedSessionId) return current;
+      return selectGroupSession({ ...current, focusedGroupId: groupId }, groupId, selectedSessionId);
+    });
+  }, [runId, selectedSessionId]);
 
   const updateTerminalRects = useCallback(() => {
     const canvas = canvasRef.current;
@@ -542,7 +812,11 @@ function WorkbenchSurface({
     setLayout((current) => {
       if (!current) return current;
       const next = collapseWorkbenchLayoutToBounds(current, canvasBounds);
-      if (next !== current) void onLayoutChange(next).catch(() => undefined);
+      // Viewport collapse is a renderer-only safety adaptation while initial
+      // placement remains automatic. Persisting it would convert an auto
+      // workspace into a narrower-screen manual layout and prevent the Host
+      // from allocating newly materialized Sessions consistently.
+      if (next !== current && current.placementMode !== "auto") void onLayoutChange(next).catch(() => undefined);
       return next;
     });
   }, [canvasBounds, onLayoutChange]);
@@ -560,8 +834,9 @@ function WorkbenchSurface({
   const timeline = useMemo(() => buildTimeline(run?.task, run), [run]);
   const turnsBySession = useMemo(() => new Map((run?.turns ?? []).map((turn) => [turn.sessionId, turn])), [run?.turns]);
   const attentionSessions = useMemo(() => new Set((run?.attentions ?? []).map((attention) => String(attention.sessionId ?? "")).filter(Boolean)), [run?.attentions]);
-  const activeDispatchCount = (run?.turns ?? []).filter((turn) => ["queued", "input_accepted", "delivered"].includes(String(turn.dispatchStatus))).length;
+  const activeDispatchCount = (run?.turns ?? []).filter((turn) => ["queued", "input_accepted", "delivered", "cancellation_requested", "cancel_failed"].includes(String(turn.dispatchStatus))).length;
   const liveTerminalCount = (run?.turns ?? []).filter((turn) => turn.terminalStatus === "live").length;
+  const activity = workbenchActivity(run, { activeDispatchCount, liveTerminalCount });
   const activeSessionId = selectedSessionId && turnsBySession.has(selectedSessionId)
     ? selectedSessionId
     : layout?.groups[layout.focusedGroupId]?.activeSessionId ?? run?.turns[0]?.sessionId;
@@ -594,12 +869,12 @@ function WorkbenchSurface({
           return <button className={`agent-loop-task-tab ${active ? "active" : ""}`} role="tab" aria-selected={active} key={task.taskId} onClick={() => onSelectTask(task)}>
             <i className={`harness-state-dot ${task.status}`} />
             <span>{task.title}</span>
-            <small>{count ? `${count} Session` : statusLabel(task.status)}</small>
+            <small>{count ? `${count} Session` : taskStatusLabel(task.status)}</small>
           </button>;
         })}
       </div>
     </header>
-    {run && <div className="agent-loop-run-context"><div><strong>{run.task.title}</strong><span className={run.task.status}>{statusLabel(run.task.status)}</span><small>{activeDispatchCount} active dispatches · {liveTerminalCount} PTYs live · {attentionSessions.size ? `${attentionSessions.size} needs attention` : "no attention"}</small></div><div className="agent-loop-workbench-actions"><button className={drawer === "timeline" ? "active" : ""} onClick={() => setDrawer((value) => value === "timeline" ? undefined : "timeline")}><Clock3 size={14} /> 时间线</button><button className={drawer === "artifacts" ? "active" : ""} onClick={() => setDrawer((value) => value === "artifacts" ? undefined : "artifacts")}><Files size={14} /> 产物</button><button className={drawer === "terminal-log" ? "active" : ""} disabled={!activeTurn} onClick={() => void openTerminalLog()} title={activeTurn ? `查看 ${activeTurn.details.card.name} 的原始 PTY 诊断历史` : "先选择一个 Session"}><TerminalSquare size={14} /> 终端历史</button></div></div>}
+    {run && <div className="agent-loop-run-context"><div><strong>{run.task.title}</strong><span className={activity.tone}>{activity.label}</span><small>Task：{taskStatusLabel(run.task.status)} · {activeDispatchCount} active dispatches · {liveTerminalCount} PTYs live · {activity.attentionCount ? `${activity.attentionCount} needs attention` : "no attention"}</small></div><div className="agent-loop-workbench-actions"><button className={drawer === "timeline" ? "active" : ""} onClick={() => setDrawer((value) => value === "timeline" ? undefined : "timeline")}><Clock3 size={14} /> 时间线</button><button className={drawer === "artifacts" ? "active" : ""} onClick={() => setDrawer((value) => value === "artifacts" ? undefined : "artifacts")}><Files size={14} /> 产物</button><button className={drawer === "terminal-log" ? "active" : ""} disabled={!activeTurn} onClick={() => void openTerminalLog()} title={activeTurn ? `查看 ${activeTurn.details.card.name} 的原始 PTY 诊断历史` : "先选择一个 Session"}><TerminalSquare size={14} /> 终端历史</button></div></div>}
     {!run || !layout ? <Empty title="尚无运行中的 Task" detail="从任务页启动 Agent Loop 后，这里会成为该 Task Run 的原生终端工作区。" /> : <div className="agent-loop-workbench-canvas" ref={canvasRef} onMouseDown={() => setPickerGroupId(undefined)}>
       <WorkbenchGroupTree
         node={layout.root}
@@ -622,7 +897,7 @@ function WorkbenchSurface({
         onResizeSplit={(path, ratio, persist) => updateLayout((current) => updateSplitRatio(current, path, ratio), persist)}
         onSetGroupFontSize={(groupId, fontSize) => updateLayout((current) => setGroupTerminalFontSize(current, groupId, fontSize))}
       />
-      <TerminalOverlayLayer layout={layout} turns={run.turns} terminalRects={terminalRects} runtimeAvailable={runtimeAvailable} onFontSizeChange={(groupId, fontSize) => updateLayout((current) => setGroupTerminalFontSize(current, groupId, fontSize))} />
+      <TerminalOverlayLayer layout={layout} turns={run.turns} terminalRects={terminalRects} runtimeAvailable={runtimeAvailable} theme={theme} onFontSizeChange={(groupId, fontSize) => updateLayout((current) => setGroupTerminalFontSize(current, groupId, fontSize))} />
       {drawer && <WorkbenchDrawer kind={drawer} timeline={timeline} artifacts={run.artifacts} terminalLog={terminalLog} terminalLogError={terminalLogError} terminalLogSessionName={terminalLogSessionId ? turnsBySession.get(terminalLogSessionId)?.details.card.name : undefined} onArtifact={onArtifact} onClose={() => setDrawer(undefined)} />}
     </div>}
   </section>;
@@ -752,7 +1027,7 @@ function SessionGroupPanel({ group, groupId, layout, turnsBySession, attentionSe
   </section>;
 }
 
-function TerminalOverlayLayer({ layout, turns, terminalRects, runtimeAvailable, onFontSizeChange }: { layout: NativeAgentLoopWorkbenchLayout; turns: NativeAgentLoopRunDetail["turns"]; terminalRects: Record<string, DOMRect>; runtimeAvailable: boolean; onFontSizeChange: (groupId: string, fontSize: number) => void }) {
+function TerminalOverlayLayer({ layout, turns, terminalRects, runtimeAvailable, theme, onFontSizeChange }: { layout: NativeAgentLoopWorkbenchLayout; turns: NativeAgentLoopRunDetail["turns"]; terminalRects: Record<string, DOMRect>; runtimeAvailable: boolean; theme: Theme; onFontSizeChange: (groupId: string, fontSize: number) => void }) {
   const groupForSession = new Map<string, string>();
   for (const groupId of leafGroupIds(layout.root)) for (const sessionId of layout.groups[groupId]?.sessionIds ?? []) groupForSession.set(sessionId, groupId);
   return <div className="agent-loop-terminal-overlay-layer">{turns.map((turn) => {
@@ -761,7 +1036,7 @@ function TerminalOverlayLayer({ layout, turns, terminalRects, runtimeAvailable, 
     const active = Boolean(groupId && layout.groups[groupId]?.activeSessionId === turn.sessionId && rect && rect.width > 0 && rect.height > 0);
     if (!groupId || !rect) return null;
     return <div className={`agent-loop-terminal-overlay-pane ${active ? "active" : "inactive"}`} data-session-terminal={turn.sessionId} key={turn.sessionId} style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}>
-      <PtyTerminal ariaLabel={`${turn.details.card.name} OpenCode terminal`} className="agent-loop-native-terminal" command={`opencode --model ${turn.details.card.model}`} session={turn.terminal} transcriptLines={turn.terminal?.transcript ?? []} emptyTitle="等待原生 OpenCode Session" emptyDetail={turn.purpose === "conductor" ? "Conductor 正在启动。" : "只有 Conductor 派发此卡片后，原生 Session 才会启动。"} isVisible={active} readOnly={!runtimeAvailable} fontSize={layout.groups[groupId]?.fontSize ?? 11} onFontSizeChange={(fontSize) => onFontSizeChange(groupId, fontSize)} onData={(payload) => { if (turn.terminal?.incarnationId) void enqueueNativeTerminalInput({ workspaceSessionId: turn.sessionId, expectedIncarnationId: turn.terminal.incarnationId, source: "user", payload, idempotencyKey: `user:${Date.now()}` }); }} onResize={(cols, rows) => { if (turn.terminal?.incarnationId) void resizeNativePtySession(turn.sessionId, { cols, rows }, turn.terminal.incarnationId); }} />
+      <PtyTerminal ariaLabel={`${turn.details.card.name} OpenCode terminal`} className="agent-loop-native-terminal" command={`opencode --model ${turn.details.card.model}`} session={turn.terminal} transcriptLines={turn.terminal?.transcript ?? []} {...nativeTerminalEmptyState(turn)} isVisible={active} readOnly={!runtimeAvailable} theme={theme} fontSize={layout.groups[groupId]?.fontSize ?? 11} onFontSizeChange={(fontSize) => onFontSizeChange(groupId, fontSize)} onData={(payload) => { if (turn.terminal?.incarnationId) void enqueueNativeTerminalInput({ workspaceSessionId: turn.sessionId, expectedIncarnationId: turn.terminal.incarnationId, source: "user", payload, idempotencyKey: `user:${Date.now()}` }); }} onResize={(cols, rows) => { if (turn.terminal?.incarnationId) void resizeNativePtySession(turn.sessionId, { cols, rows }, turn.terminal.incarnationId); }} />
     </div>;
   })}</div>;
 }
@@ -771,7 +1046,7 @@ function WorkbenchDrawer({ kind, timeline, artifacts, terminalLog, terminalLogEr
   const title = kind === "timeline" ? "任务时间线" : kind === "artifacts" ? "产物" : `${terminalLogSessionName ?? "Session"} · 终端历史`;
   return <aside className="agent-loop-workbench-drawer" aria-label={title}>
     <header><div><span>{eyebrow}</span><h2>{title}</h2></div><button aria-label="关闭抽屉" onClick={onClose}>×</button></header>
-    <div className="agent-loop-workbench-drawer-content">{kind === "timeline" ? timeline.map((item) => <TimelineMessage item={item} key={item.id} />) : kind === "artifacts" ? artifacts.length ? artifacts.map((artifact) => <button className="agent-loop-artifact-row" disabled={!artifact.exists || !artifact.previewable} key={artifact.path} onClick={() => onArtifact(artifact.path)}><FilePlus2 size={16} /><span><strong>{artifact.path}</strong><small>{artifact.exists ? `${artifact.size ?? 0} bytes · 打开预览` : "等待生成"}</small></span><ChevronRight size={15} /></button>) : <Empty title="尚未声明产物" detail="Conductor 声明交付并满足 Template 规则后，产物会显示在这里。" /> : <TerminalDiagnosticLog log={terminalLog} error={terminalLogError} />}</div>
+    <div className="agent-loop-workbench-drawer-content">{kind === "timeline" ? timeline.map((item) => <TimelineMessage item={item} key={item.id} />) : kind === "artifacts" ? artifacts.length ? artifacts.map((artifact) => <button className="agent-loop-artifact-row" disabled={!artifact.previewable} key={artifact.path} onClick={() => onArtifact(artifact.path)}><FilePlus2 size={16} /><span><strong>{artifact.path}</strong><small>{`${artifact.size ?? 0} bytes · 打开预览`}</small></span><ChevronRight size={15} /></button>) : <Empty title="尚无可打开产物" detail="Task 可以用消息、结论或多个文件交付；只有 Runtime 已确认存在的项目文件会显示在这里。" /> : <TerminalDiagnosticLog log={terminalLog} error={terminalLogError} />}</div>
   </aside>;
 }
 
@@ -791,13 +1066,39 @@ function sameTerminalRects(current: Record<string, DOMRect>, next: Record<string
   return currentIds.length === nextIds.length && currentIds.every((id) => next[id] && ["x", "y", "width", "height"].every((key) => Math.abs(Number(current[id][key as keyof DOMRect]) - Number(next[id][key as keyof DOMRect])) < .5));
 }
 
-function TaskInspector({ task, run, onWorkbench, onArtifact }: { task?: NativeAgentLoopTask; run?: NativeAgentLoopRunDetail; onWorkbench: () => void; onArtifact: (path: string) => void }) {
-  if (!task) return <aside className="harness-inspector" />;
-  return <aside className="harness-inspector"><h2>Task Architecture</h2><InspectorRow label="模式" value="Agent Loop" /><InspectorRow label="Template" value={`${task.architecture.template.name} v${task.architecture.template.version}`} /><InspectorRow label="Session cards" value={String(task.architecture.agentCards.length)} /><InspectorRow label="状态" value={statusLabel(task.status)} /><section className="harness-inspector-section"><strong>控制边界</strong><p>所有 Session Agent 都是 Conductor 派发的原生 OpenCode。Runtime 异步管理 PTY 与语义状态；它不自行推进图。</p></section>{run?.artifacts.map((artifact) => <button className="harness-open-timeline" disabled={!artifact.exists || !artifact.previewable} key={artifact.path} onClick={() => onArtifact(artifact.path)}><span>{artifact.exists ? "打开产物" : "等待产物"}</span><code>{artifact.path}</code></button>)}{run && <button className="harness-open-timeline" onClick={onWorkbench}>查看真实终端 <ChevronRight size={16} /></button>}</aside>;
+function TaskInspector({ task, run, completed, collapsed, busy, runtimeAvailable, permissions, questions, questionAnswerDrafts, sessionNames, permissionBusyId, questionBusyId, onPermissionResponse, onQuestionAnswerDraftChange, onQuestionAnswer, onPermissionTerminal, onToggle, onStart, onWorkbench, onArtifact }: { task?: NativeAgentLoopTask; run?: NativeAgentLoopRunDetail; completed: boolean; collapsed: boolean; busy: boolean; runtimeAvailable: boolean; permissions: unknown[]; questions: TaskQuestion[]; questionAnswerDrafts: Record<string, string>; sessionNames: ReadonlyMap<string, string>; permissionBusyId?: string; questionBusyId?: string; onPermissionResponse: (permission: Record<string, unknown>, response: "once" | "always" | "reject") => Promise<void>; onQuestionAnswerDraftChange: (question: TaskQuestion, answer: string) => void; onQuestionAnswer: (question: TaskQuestion, answer: string) => Promise<void>; onPermissionTerminal: (sessionId: string) => void; onToggle: () => void; onStart: () => void; onWorkbench: () => void; onArtifact: (path: string) => void }) {
+  if (collapsed) return <aside className="harness-inspector collapsed"><button className="harness-inspector-toggle" aria-label="展开任务设置" title="展开任务设置" onClick={onToggle}><ChevronLeft size={17} /></button></aside>;
+  if (!task) return <aside className="harness-inspector"><button className="harness-inspector-toggle" aria-label="收起任务设置" title="收起任务设置" onClick={onToggle}><ChevronRight size={17} /></button></aside>;
+  const artifacts = run?.artifacts.filter((artifact) => artifact.exists && artifact.previewable) ?? [];
+  return <aside className="harness-inspector"><header className="harness-inspector-title"><h2>{completed ? "已完成任务" : "Task Architecture"}</h2><button className="harness-inspector-toggle" aria-label="收起任务设置" title="收起任务设置" onClick={onToggle}><ChevronRight size={17} /></button></header><InspectorRow label="模式" value="Agent Loop" /><InspectorRow label="Template" value={`${task.architecture.template.name} v${task.architecture.template.version}`} /><InspectorRow label="项目根目录" value={task.cwd} /><InspectorRow label="Session cards" value={String(task.architecture.agentCards.length)} /><InspectorRow label="状态" value={taskStatusLabel(task.status)} /><QuestionRequests questions={questions} sessionNames={sessionNames} drafts={questionAnswerDrafts} busyId={questionBusyId} disabled={!runtimeAvailable} onDraftChange={onQuestionAnswerDraftChange} onSubmit={onQuestionAnswer} onOpenTerminal={onPermissionTerminal} /><PermissionRequests permissions={permissions} sessionNames={sessionNames} busyId={permissionBusyId} disabled={!runtimeAvailable} onRespond={onPermissionResponse} onOpenTerminal={onPermissionTerminal} /><TaskAgentStatusList task={task} run={run} />{completed ? <section className="harness-inspector-section"><strong>历史与清理</strong><p>重新执行会创建新的 Run 与新的原生 Session。要清理历史，请在左侧已完成任务列表勾选后统一删除；不会删除项目文件。</p></section> : <section className="harness-inspector-section"><strong>控制边界</strong><p>Session Agent 由 Conductor 派发。Runtime 管理 PTY 与 Provider 事实；它不规定交付形式或下一步。</p></section>}{artifacts.map((artifact) => <button className="harness-open-timeline" key={artifact.path} onClick={() => onArtifact(artifact.path)}><span>打开产物</span><code>{artifact.path}</code></button>)}{completed ? <button className="harness-open-timeline" disabled={busy || !runtimeAvailable || task.status === "archived"} onClick={onStart}><span>重新执行（新 Run）</span><Play size={15} /></button> : run && <button className="harness-open-timeline" onClick={onWorkbench}>查看真实终端 <ChevronRight size={16} /></button>}</aside>;
 }
 
-function TemplateDialog({ draft, repairing, busy, enabled, onChange, onClose, onSave }: { draft: TemplateDraft; repairing: boolean; busy: boolean; enabled: boolean; onChange: (value: TemplateDraft) => void; onClose: () => void; onSave: () => void }) {
-  const [activePane, setActivePane] = useState<"agents" | "loop">(repairing ? "loop" : "agents");
+function TaskAgentStatusList({ task, run }: { task: NativeAgentLoopTask; run?: NativeAgentLoopRunDetail }) {
+  const sessionTurns = new Map((run?.turns ?? []).filter((turn) => turn.purpose === "session_agent").map((turn) => [turn.details.card.id, turn]));
+  return <section className="harness-inspector-section agent-loop-agent-status"><strong>Session 派发状态</strong><p>状态来自当前 Run 的 Runtime 快照；未派发的卡片也会保留可见。</p><div>{task.architecture.agentCards.map((card) => {
+    const turn = sessionTurns.get(card.id);
+    const status = turn?.dispatchStatus ?? "not_dispatched";
+    return <span key={card.id}><i className={`harness-state-dot ${status}`} />{card.name}<small>{sessionDispatchLabel(status)}</small></span>;
+  })}</div></section>;
+}
+
+function TaskDeleteDialog({ tasks, busy, onCancel, onConfirm }: { tasks: NativeAgentLoopTask[]; busy: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const count = tasks.length;
+  return <div className="agent-loop-delete-backdrop" role="dialog" aria-modal="true" aria-label="删除已完成 Task 确认">
+    <button className="agent-loop-delete-scrim" aria-label="取消删除已完成 Task" onClick={onCancel} />
+    <section className="agent-loop-delete-dialog"><header><div><span>DELETE ACHIEVED TASKS</span><h2>删除已选的 {count} 个任务吗？</h2></div><button aria-label="关闭删除确认" onClick={onCancel}>×</button></header><div className="agent-loop-delete-copy"><p>将删除所选已完成 Task 的 Runtime 元数据、所有 Run 事件、终端日志与工作台布局。</p><p><strong>不会删除项目交付文件。</strong>例如 Task 产出的 Markdown、HTML 或其他项目文件会原样保留。</p></div><footer><button className="harness-secondary-button" disabled={busy} onClick={onCancel}>取消</button><button className="harness-primary-button danger" disabled={busy} onClick={onConfirm}>{busy ? "删除中…" : `删除 ${count} 个任务`}</button></footer></section>
+  </div>;
+}
+
+function TaskStopDialog({ task, busy, onCancel, onConfirm }: { task: NativeAgentLoopTask; busy: boolean; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="agent-loop-delete-backdrop" role="dialog" aria-modal="true" aria-label="停止 Task 确认">
+    <button className="agent-loop-delete-scrim" aria-label="取消停止 Task" onClick={onCancel} />
+    <section className="agent-loop-delete-dialog agent-loop-stop-dialog"><header><div><span>STOP TASK</span><h2>停止“{task.title}”吗？</h2></div><button aria-label="关闭停止确认" onClick={onCancel}>×</button></header><div className="agent-loop-delete-copy"><p>会停止此 Task 当前所有原生 Session。Task、Run、事件、终端历史和产物记录都会保留。</p><p><strong>不会删除项目交付文件。</strong>之后可从此页“重新启动”，创建一个新的 Run。</p></div><footer><button className="harness-secondary-button" disabled={busy} onClick={onCancel}>取消</button><button className="harness-primary-button" disabled={busy} onClick={onConfirm}>{busy ? "停止中…" : "停止任务"}</button></footer></section>
+  </div>;
+}
+
+function TemplateDialog({ draft, busy, enabled, onChange, onClose, onSave }: { draft: TemplateDraft; busy: boolean; enabled: boolean; onChange: (value: TemplateDraft) => void; onClose: () => void; onSave: () => void }) {
+  const [activePane, setActivePane] = useState<"agents" | "loop">("agents");
   const [selectedAgentId, setSelectedAgentId] = useState(() => draft.agents[0]?.id ?? "");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const selectedAgentIndex = Math.max(0, draft.agents.findIndex((card) => card.id === selectedAgentId));
@@ -819,44 +1120,43 @@ function TemplateDialog({ draft, repairing, busy, enabled, onChange, onClose, on
   return <div className="agent-loop-drawer-backdrop" role="dialog" aria-modal="true" aria-label="编辑 Agent Loop Template">
     <button className="agent-loop-drawer-scrim" aria-label="关闭编辑器" onClick={onClose} />
     <section className="agent-loop-drawer">
-      <header className="agent-loop-drawer-header"><div><h2>{repairing ? `修复 ${draft.name || "Template"}` : draft.name || "新建 Template"}</h2><p>{repairing ? "这会生成新版本；旧版本和已有 Task 的快照都不会改变。" : "编辑后会保存为新的 Template 版本；已有 Task 不会改变。"}</p></div><button className="agent-loop-drawer-close" onClick={onClose} aria-label="关闭">×</button></header>
+      <header className="agent-loop-drawer-header"><div><h2>{draft.name || "新建 Template"}</h2><p>编辑后会保存为新的 Template 版本；已有 Task 不会改变。</p></div><button className="agent-loop-drawer-close" onClick={onClose} aria-label="关闭">×</button></header>
       <div className="agent-loop-drawer-scroll">
-        <section className="agent-loop-drawer-basics" aria-label="Template 基本信息"><label>模板名称<input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} /></label><label>用途描述<textarea rows={2} value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} /></label></section>
-        {repairing && <div className="agent-loop-template-repair-drawer-note"><strong>已创建可编辑的新版本草案</strong><span>已保留原有 Session Agent 卡片。请检查 Conductor Charter 是否反映你希望的协作方式。</span></div>}
+        <section className="agent-loop-drawer-basics" aria-label="Template 基本信息"><label>模板名称<input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} /></label></section>
         <div className="agent-loop-drawer-tabs" role="tablist" aria-label="Template 编辑内容"><button role="tab" aria-selected={activePane === "agents"} className={activePane === "agents" ? "active" : ""} onClick={() => setActivePane("agents")}>Session Agents <span>{draft.agents.length}</span></button><button role="tab" aria-selected={activePane === "loop"} className={activePane === "loop" ? "active" : ""} onClick={() => setActivePane("loop")}>Loop 设置</button></div>
         {activePane === "agents" && selectedAgent && <section className="agent-loop-drawer-agents">
           <div className="agent-loop-card-picker" aria-label="选择 Session Agent 卡片">{draft.agents.map((card, index) => <button key={`${card.id}-${index}`} className={card.id === selectedAgent.id ? "active" : ""} onClick={() => { setSelectedAgentId(card.id); setAdvancedOpen(false); }}><Bot size={15} /><span><strong>{card.name || "未命名 Agent"}</strong><small>{card.model}</small></span></button>)}<button className="agent-loop-add-card" onClick={addCard}><Plus size={14} /> 添加</button></div>
           <div className="agent-loop-card-editor"><div className="agent-loop-card-editor-title"><div><span>编辑 Session Agent</span><strong>{selectedAgent.name || "未命名 Agent"}</strong></div>{draft.agents.length > 1 && <button className="agent-loop-icon-danger" aria-label="移除当前 Session Agent" title="移除当前卡片" onClick={removeSelectedCard}><Trash2 size={15} /></button>}</div><div className="agent-loop-editor-two-columns"><label>名称<input value={selectedAgent.name} onChange={(event) => updateCard(selectedAgentIndex, { name: event.target.value })} /></label><label>责任类型<select value={selectedAgent.kind} onChange={(event) => updateCard(selectedAgentIndex, { kind: event.target.value as NativeSessionAgentCard["kind"] })}><option value="researcher">调研 / Researcher</option><option value="publisher">交付 / Publisher</option><option value="reviewer">复核 / Reviewer</option><option value="general">通用 / General</option></select></label><label>模型<input value={selectedAgent.model} onChange={(event) => updateCard(selectedAgentIndex, { model: event.target.value })} /></label></div><label>角色与稳定能力边界<textarea rows={3} value={selectedAgent.role} onChange={(event) => updateCard(selectedAgentIndex, { role: event.target.value })} /></label><div className="agent-loop-capability-grid"><label><span>MCP</span><input placeholder="留空 = 不设 Template 限制" value={selectedAgent.mcp.join(", ")} onChange={(event) => updateCard(selectedAgentIndex, { mcp: splitAllowlist(event.target.value) })} /><small>{selectedAgent.mcp.length ? "此卡片只声明这些 MCP" : "全部允许（沿用原生 OpenCode 能力）"}</small></label><label><span>Skills</span><input placeholder="留空 = 不设 Template 限制" value={selectedAgent.skills.join(", ")} onChange={(event) => updateCard(selectedAgentIndex, { skills: splitAllowlist(event.target.value) })} /><small>{selectedAgent.skills.length ? "此卡片只声明这些 Skills" : "全部允许（沿用原生 OpenCode 能力）"}</small></label></div><button className="agent-loop-advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? "收起高级设置" : "高级设置：默认输出、说明、卡片 ID"}<ChevronRight size={15} /></button>{advancedOpen && <div className="agent-loop-card-advanced"><label>默认输出约定<textarea rows={3} value={selectedAgent.expectedOutput} onChange={(event) => updateCard(selectedAgentIndex, { expectedOutput: event.target.value })} /></label><label>补充说明<textarea rows={3} value={selectedAgent.instructions} onChange={(event) => updateCard(selectedAgentIndex, { instructions: event.target.value })} /></label><label>卡片 ID<input value={selectedAgent.id} onChange={(event) => { updateCard(selectedAgentIndex, { id: event.target.value }); setSelectedAgentId(event.target.value); }} /></label></div>}</div>
         </section>}
-        {activePane === "loop" && <section className="agent-loop-loop-settings"><div className="agent-loop-settings-copy"><strong>Conductor Charter</strong><p>这是 Conductor 的决策偏好，不是 Runtime 执行的路由、派发数量或完成门槛。</p></div><label>Conductor 如何根据任务、Session 返回与用户补充决定下一步<textarea rows={8} value={draft.conductor.charter ?? ""} onChange={(event) => onChange({ ...draft, conductor: { ...draft.conductor, charter: event.target.value } })} placeholder="例如：优先并行收集相互独立的证据；发现关键冲突时先重新派发核实；需要落地文件时，由 Conductor 按当前证据选择合适的 Session Agent。" /><small>不要写成固定的 Research → Review → Publish 流程。每次下一步始终由 Conductor 决定。</small></label><label>交付路径偏好（可选）<input placeholder="docs/report.md" value={draft.delivery.artifactPath} onChange={(event) => onChange({ ...draft, delivery: { ...draft.delivery, artifactPath: event.target.value, ownerAgentId: "" } })} /><small>它只帮助 Conductor 了解用户期望的落地位置；不会指定负责人，也不会阻止 Conductor 声明交付。</small></label></section>}
+        {activePane === "loop" && <section className="agent-loop-loop-settings"><div className="agent-loop-settings-copy"><strong>Conductor Charter</strong><p>这是 Template 唯一的编排说明：适用任务、协作方式和决策偏好都写在这里。它会固化给新 Task 的 Conductor，但不构成 Runtime 路由。</p></div><label>Conductor 如何根据任务、Session 返回与用户补充决定下一步<textarea rows={10} value={draft.conductor.charter ?? ""} onChange={(event) => onChange({ ...draft, conductor: { ...draft.conductor, charter: event.target.value } })} placeholder="例如：优先并行收集相互独立的证据；发现关键冲突时先重新派发核实；需要落地文件时，由 Conductor 按当前证据选择合适的 Session Agent。" /><small>写清模板适用任务、可用卡片如何协作以及决策偏好。不要写成固定的 Research → Review → Publish 流程；每次下一步仍由 Conductor 决定。</small></label></section>}
       </div>
       <footer className="agent-loop-drawer-footer"><button className="harness-secondary-button" onClick={onClose}>取消</button><button className="harness-primary-button" disabled={!enabled || busy || !draft.name.trim() || !draft.agents.length} onClick={onSave}>{busy ? "保存中…" : "保存新版本"}</button></footer>
     </section>
   </div>;
 }
 
-function TemplateStarterDialog({ description, busy, enabled, onDescription, onClose, onManual, onGenerate }: { description: string; busy: boolean; enabled: boolean; onDescription: (value: string) => void; onClose: () => void; onManual: () => void; onGenerate: () => void }) {
+function TemplateStarterDialog({ brief, busy, enabled, onBrief, onClose, onManual, onGenerate }: { brief: string; busy: boolean; enabled: boolean; onBrief: (value: string) => void; onClose: () => void; onManual: () => void; onGenerate: () => void }) {
   return <div className="agent-loop-drawer-backdrop" role="dialog" aria-modal="true" aria-label="新建 Template">
     <button className="agent-loop-drawer-scrim" aria-label="取消新建 Template" onClick={onClose} />
     <section className="agent-loop-drawer agent-loop-starter-drawer">
       <header className="agent-loop-drawer-header"><div><h2>新建 Agent Loop Template</h2><p>先描述想要的协作方式。OpenCode 只生成可编辑草案，不创建 Task，也不会启动任何 Session。</p></div><button className="agent-loop-drawer-close" onClick={onClose} aria-label="关闭">×</button></header>
       <div className="agent-loop-drawer-scroll">
         <section className="agent-loop-template-generator-copy"><strong>一句话生成模板</strong><p>例如：&ldquo;调研一个主题，保留多个可独立调研的 Session 卡片；Conductor 根据证据缺口决定是否再派发、核实或让某个 Agent 落地 Markdown。&rdquo;</p></section>
-        <label className="agent-loop-template-prompt">你希望 Conductor 怎样使用 Session Agent？<textarea autoFocus rows={7} value={description} onChange={(event) => onDescription(event.target.value)} placeholder="描述目标、可用角色、交付偏好，以及 Conductor 的决策原则。" /><small>生成结果会落在下一步的卡片与 Conductor Charter 编辑器中；你可以再修改 Agent、模型、MCP、Skills 和 Charter。</small></label>
+        <label className="agent-loop-template-prompt">你希望 Conductor 怎样使用 Session Agent？<textarea autoFocus rows={7} value={brief} onChange={(event) => onBrief(event.target.value)} placeholder="写清适用任务、可用角色、交付偏好，以及 Conductor 的决策原则。" /><small>OpenCode 会把这段内容编排成 Conductor Charter 与 Session Agent 卡片；你可以再修改 Agent、模型、MCP、Skills 和 Charter。</small></label>
         <section className="agent-loop-manual-entry"><strong>不想生成？</strong><p>直接从空白模板配置 Conductor 和原生 Session Agent 卡片。</p><button className="harness-secondary-button compact" disabled={busy} onClick={onManual}><Pencil size={14} /> 手工创建</button></section>
       </div>
-      <footer className="agent-loop-drawer-footer"><button className="harness-secondary-button" disabled={busy} onClick={onClose}>取消</button><button className="harness-primary-button" disabled={!enabled || busy || !description.trim()} onClick={onGenerate}>{busy ? "OpenCode 生成中…" : "生成可编辑草案"}</button></footer>
+      <footer className="agent-loop-drawer-footer"><button className="harness-secondary-button" disabled={busy} onClick={onClose}>取消</button><button className="harness-primary-button" disabled={!enabled || busy || !brief.trim()} onClick={onGenerate}>{busy ? "OpenCode 生成中…" : "生成可编辑草案"}</button></footer>
     </section>
   </div>;
 }
 
-function TaskDialog({ templates, title, goal, templateId, busy, enabled, onTitle, onGoal, onTemplate, onClose, onCreateTemplate, onCreate }: { templates: NativeAgentLoopTemplate[]; title: string; goal: string; templateId: string; busy: boolean; enabled: boolean; onTitle: (value: string) => void; onGoal: (value: string) => void; onTemplate: (value: string) => void; onClose: () => void; onCreateTemplate: () => void; onCreate: () => void }) {
+function TaskDialog({ templates, title, goal, templateId, projectPath, busy, enabled, onTitle, onGoal, onTemplate, onChooseProject, onClose, onCreateTemplate, onCreate }: { templates: NativeAgentLoopTemplate[]; title: string; goal: string; templateId: string; projectPath: string; busy: boolean; enabled: boolean; onTitle: (value: string) => void; onGoal: (value: string) => void; onTemplate: (value: string) => void; onChooseProject: () => void; onClose: () => void; onCreateTemplate: () => void; onCreate: () => void }) {
   return <div className="agent-loop-drawer-backdrop" role="dialog" aria-modal="true" aria-label="创建 Task">
     <button className="agent-loop-drawer-scrim" aria-label="取消创建任务" onClick={onClose} />
     <section className="agent-loop-drawer agent-loop-task-drawer">
       <header className="agent-loop-drawer-header"><div><h2>创建 Task</h2><p>选择已保存的 Agent Loop Template。创建后会固化快照；之后修改模板不会影响这个 Task。</p></div><button className="agent-loop-drawer-close" onClick={onClose} aria-label="关闭">×</button></header>
       <div className="agent-loop-drawer-scroll">
-        <section className="agent-loop-drawer-basics"><label>任务标题<input autoFocus value={title} onChange={(event) => onTitle(event.target.value)} placeholder="例如：整理产品竞品调研" /></label><label>任务目标<textarea rows={5} value={goal} onChange={(event) => onGoal(event.target.value)} placeholder="写清交付物、范围和验收标准。Conductor 会据此形成每次派发的工作契约。" /></label></section>
+        <section className="agent-loop-drawer-basics"><label>任务标题<input autoFocus value={title} onChange={(event) => onTitle(event.target.value)} placeholder="例如：整理产品竞品调研" /></label><label>任务目标<textarea rows={5} value={goal} onChange={(event) => onGoal(event.target.value)} placeholder="写清交付物、范围和验收标准。Conductor 会据此形成每次派发的工作契约。" /></label><label>项目文件夹<div className="agent-loop-project-path"><code title={projectPath}>{projectPath}</code><button className="harness-secondary-button compact" type="button" disabled={busy || !enabled} onClick={onChooseProject}>选择文件夹…</button></div><small>这是此 Task 的项目根目录。原生 Session、相对产物路径及 `.agent-workspace/runtime` 都以此为准。</small></label></section>
         <section className="agent-loop-task-template-choice"><div><strong>选择协作模板</strong><p>模板保存 Conductor Charter 与 Session Agent 的稳定能力，不包含本次任务的固定路线。</p></div><label>Agent Loop Template<select value={templateId} onChange={(event) => onTemplate(event.target.value)}>{templates.map((template) => <option value={template.id} key={template.id}>{template.name} · v{template.version}</option>)}</select></label><div className="agent-loop-task-template-alternative"><span>没有合适的模板？</span><button className="harness-secondary-button compact" disabled={busy || !goal.trim()} onClick={onCreateTemplate}><Plus size={14} /> 根据任务目标生成新 Template</button><small>会先进入 Template 草案编辑器；保存后再回到这里创建 Task。</small></div></section>
         <section className="agent-loop-task-snapshot-note"><strong>创建后会发生什么</strong><p>Task 会保存当前 Template 的版本快照。启动后，只有 Conductor 可以异步派发原生 OpenCode Session Agent；每个 Session 的结果、失败或需要输入才会唤醒 Conductor。</p></section>
       </div>
@@ -873,35 +1173,140 @@ function AgentCard({ card }: { card: NativeSessionAgentCard }) { return <article
 function InspectorRow({ label, value }: { label: string; value: string }) { return <div className="harness-inspector-row"><span>{label}</span><strong title={value}>{value}</strong></div>; }
 function Empty({ title, detail }: { title: string; detail: string }) { return <div className="harness-empty"><strong>{title}</strong><p>{detail}</p></div>; }
 
-type TimelineItem = { id: string; kind: "user" | "conductor" | "runtime" | "session"; title: string; detail: string; meta: string };
-function buildTimeline(task?: NativeAgentLoopTask, run?: NativeAgentLoopRunDetail): TimelineItem[] {
+function taskQuestionDraftKey(question: Pick<TaskQuestion, "sessionId" | "questionId">) { return `${question.sessionId}:${question.questionId}`; }
+export function pendingTaskQuestions(run?: NativeAgentLoopRunDetail): TaskQuestion[] {
+  const answered = new Set((run?.runtimeState.questionResponses ?? [])
+    .filter(isRecord)
+    .filter((record) => ["submitted", "resolved"].includes(String(record.status ?? "")))
+    .map((record) => `${String(record.sessionId ?? "")}:${String(record.questionId ?? "")}`));
+  const liveTerminalIncarnationBySession = new Map((run?.turns ?? [])
+    .filter((turn) => turn.terminalStatus === "live" && Boolean(turn.terminal?.incarnationId))
+    .map((turn) => [turn.sessionId, String(turn.terminal?.incarnationId)]));
+  return (run?.runtimeState.sessions ?? [])
+    .filter((session) => session.state === "waiting_input")
+    .map((session) => {
+      const data = session.lastStateData ?? {};
+      const questionId = stringField(data, "providerQuestionPartId");
+      const observedTerminalIncarnationId = stringField(data, "terminalIncarnationId");
+      const currentTerminalIncarnationId = liveTerminalIncarnationBySession.get(session.sessionId);
+      const question = stringField(data, "question") || session.lastStateSummary || "OpenCode 正在等待你的回答。";
+      return {
+        sessionId: session.sessionId,
+        questionId,
+        question,
+        createdAt: session.updatedAt,
+        pairedWithCurrentTerminal: Boolean(questionId && observedTerminalIncarnationId && observedTerminalIncarnationId === currentTerminalIncarnationId),
+      };
+    })
+    // The card is a remote control for one live native modal, not a rendering
+    // of historical waiting_input. After restart the old fact remains durable,
+    // but it cannot accept text until Provider observation re-pairs it to the
+    // current PTY incarnation.
+    .filter((question) => question.pairedWithCurrentTerminal)
+    .map(({ pairedWithCurrentTerminal: _pairedWithCurrentTerminal, ...question }) => question)
+    .filter((question) => !answered.has(taskQuestionDraftKey(question)))
+    .sort((left, right) => String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? "")));
+}
+
+type TimelineItem = { id: string; kind: "user" | "conductor" | "runtime" | "session"; title: string; detail: string; meta: string; sortTime: number; showFull?: boolean };
+export function buildTimeline(task?: NativeAgentLoopTask, run?: NativeAgentLoopRunDetail): TimelineItem[] {
   if (!task) return [];
-  const items: TimelineItem[] = [{ id: "task", kind: "user", title: "任务输入", detail: `# ${task.title}\n\n${task.goal}`, meta: "用户 → Conductor" }];
+  const items: TimelineItem[] = [{ id: "task", kind: "user", title: "任务输入", detail: task.goal, meta: "用户 → Conductor", sortTime: timelineTime(task.createdAt, 0) }];
   for (const event of run?.events ?? []) {
     if (event.type === "task.user_message") {
-      items.push({ id: `event-${event.sequence}`, kind: "user", title: "你发给 Conductor 的消息", detail: stringField(event.data, "message") || event.summary, meta: event.createdAt });
+      items.push({ id: `event-${event.sequence}`, kind: "user", title: "你发给 Conductor 的消息", detail: stringField(event.data, "message") || event.summary, meta: event.createdAt, sortTime: timelineTime(event.createdAt) });
       continue;
     }
-    items.push({ id: `event-${event.sequence}`, kind: event.type.startsWith("conductor") ? "conductor" : "runtime", title: event.type, detail: event.summary, meta: event.createdAt });
+    if (event.type === "task.user_message_retrying") {
+      items.push({
+        id: `event-${event.sequence}`,
+        kind: "runtime",
+        title: "正在重新发送此前消息",
+        detail: "此前消息尚未获得 OpenCode 回执；Runtime 正在复用原输入继续当前 Conductor 对话。",
+        meta: event.createdAt,
+        sortTime: timelineTime(event.createdAt),
+      });
+      continue;
+    }
+    if (event.type === "session.question_answer_submitted") {
+      items.push({ id: `event-${event.sequence}`, kind: "user", title: `你回答 ${shortSession(stringField(event.data, "sessionId"))}`, detail: stringField(event.data, "answer") || event.summary, meta: event.createdAt, sortTime: timelineTime(event.createdAt) });
+      continue;
+    }
+    items.push({ id: `event-${event.sequence}`, kind: event.type.startsWith("conductor") ? "conductor" : "runtime", title: event.type, detail: event.summary, meta: event.createdAt, sortTime: timelineTime(event.createdAt) });
   }
-  for (const dispatch of run?.runtimeState.dispatches ?? []) items.push({ id: `dispatch-${String(dispatch.dispatchId)}`, kind: "conductor", title: `Conductor 派发 → ${shortSession(String(dispatch.toSessionId ?? ""))}`, detail: dispatchTimelineDetail(dispatch), meta: String(dispatch.createdAt ?? "") });
+  for (const event of run?.runtimeState.events ?? []) {
+    if (event.type === "question.response_submitted") continue;
+    if (["permission.response_submitted", "permission.resolved", "permission.response_recovery_queued", "permission.reissued", "permission.response_retry_required"].includes(event.type)) {
+      const response = stringField(event.data ?? {}, "response");
+      const responseLabel = response === "reject" ? "拒绝" : response === "always" ? "始终允许" : "仅此次允许";
+      const resolved = event.type === "permission.resolved";
+      const replaying = event.type === "permission.reissued";
+      const queued = event.type === "permission.response_recovery_queued";
+      const retryRequired = event.type === "permission.response_retry_required";
+      items.push({
+        id: `task-event-${event.id}`,
+        kind: "runtime",
+        title: `${shortSession(event.sessionId)} ${resolved ? "已确认授权答复" : replaying ? "正在重新交付授权答复" : queued ? "已保留授权答复" : retryRequired ? "需要重新选择授权答复" : "已提交授权答复"}`,
+        detail: resolved
+          ? `OpenCode 已确认：${responseLabel}。`
+          : replaying
+            ? "OpenCode 已重发相同范围的授权请求；Runtime 正在通过新会话通道交付你已选择的答复。"
+            : queued
+              ? "原会话通道不可用；已保留你的选择，正在恢复原生 Session。"
+              : retryRequired
+                ? "OpenCode 尚未接收上次答复，请在右侧授权卡片重新选择。"
+          : `已将你的选择（${responseLabel}）发送给 OpenCode；等待 Provider 确认。`,
+        meta: event.createdAt,
+        sortTime: timelineTime(event.createdAt),
+      });
+      continue;
+    }
+    if (event.sessionId !== run?.run.conductorSessionId) continue;
+    const message = stringField(event.data ?? {}, "message");
+    if (event.type === "conductor.message") {
+      items.push({ id: `task-event-${event.id}`, kind: "conductor", title: "Conductor 返回", detail: message || event.summary, meta: event.createdAt, sortTime: timelineTime(event.createdAt), showFull: true });
+      continue;
+    }
+    if (event.type === "task.completion_claim") {
+      items.push({ id: `task-event-${event.id}`, kind: "conductor", title: "Conductor 提交交付", detail: message || event.summary, meta: event.createdAt, sortTime: timelineTime(event.createdAt), showFull: true });
+      continue;
+    }
+    if (event.type === "conductor.wakeup.observed" && stringField(event.data ?? {}, "kind") === "user_message") {
+      items.push({
+        id: `task-event-${event.id}`,
+        kind: "runtime",
+        title: "OpenCode 已确认输入",
+        detail: "已记录这条原始输入；正在等待 Conductor 的下一次完整回复。",
+        meta: event.createdAt,
+        sortTime: timelineTime(event.createdAt),
+      });
+    }
+  }
+  for (const dispatch of run?.runtimeState.dispatches ?? []) items.push({ id: `dispatch-${String(dispatch.dispatchId)}`, kind: "conductor", title: `Conductor 派发 → ${shortSession(String(dispatch.toSessionId ?? ""))}`, detail: dispatchTimelineDetail(dispatch), meta: String(dispatch.createdAt ?? ""), sortTime: timelineTime(dispatch.createdAt) });
   for (const result of run?.runtimeState.results ?? []) {
     const output = run?.turns.find((turn) => turn.sessionId === result.sessionId)?.output?.answerText ?? result.answerPreview ?? "Provider 已返回结果；在运行现场查看原生 Session。";
-    items.push({ id: `result-${String(result.resultId ?? result.dispatchId)}`, kind: "session", title: `${shortSession(String(result.sessionId ?? "Session Agent"))} 返回`, detail: output, meta: String(result.createdAt ?? "") });
+    items.push({ id: `result-${String(result.resultId ?? result.dispatchId)}`, kind: "session", title: `${shortSession(String(result.sessionId ?? "Session Agent"))} 返回`, detail: output, meta: String(result.createdAt ?? ""), sortTime: timelineTime(result.createdAt) });
   }
-  for (const message of run?.runtimeState.messages ?? []) items.push({ id: `conductor-${String(message.providerMessageId ?? message.dispatchId ?? message.createdAt)}`, kind: "conductor", title: "Conductor 回应", detail: message.answerText, meta: String(message.createdAt ?? "") });
+  for (const message of run?.runtimeState.messages ?? []) items.push({ id: `conductor-${String(message.providerMessageId ?? message.dispatchId ?? message.createdAt)}`, kind: "conductor", title: "Conductor 回应", detail: message.answerText, meta: String(message.createdAt ?? ""), sortTime: timelineTime(message.createdAt) });
   for (const attention of run?.runtimeState.pendingDecisions ?? []) {
     if (attention.type === "worker_result_available") continue;
+    const permissionRequest = attention.type === "permission_requested";
+    // A Provider permission is a structured Task-page decision card, not a
+    // duplicate Timeline message. Its submission and Provider confirmation are
+    // represented above as compact durable facts.
+    if (permissionRequest || attention.type === "session_waiting_input") continue;
     items.push({
       id: `attention-${attention.type}-${attention.sessionId}-${("cursor" in attention ? attention.cursor : "") ?? ""}`,
       kind: "runtime",
       title: `${shortSession(attention.sessionId)} 需要处理`,
-      detail: attention.summary ?? "Runtime 观察到原生 Session 需要输入、权限或恢复处理。请进入运行现场，在该 Session 的真实终端中查看与回复。",
+      detail: attention.summary ?? "Runtime 观察到原生 Session 需要输入或恢复处理。请进入运行现场，在该 Session 的真实终端中查看与回复。",
       meta: attention.actionHint ?? attention.type,
+      sortTime: Number.MAX_SAFE_INTEGER,
     });
   }
-  return items;
+  return items.sort((left, right) => left.sortTime - right.sortTime || left.id.localeCompare(right.id));
 }
+function timelineTime(value: unknown, fallback = Number.MAX_SAFE_INTEGER - 1) { const parsed = Date.parse(String(value ?? "")); return Number.isFinite(parsed) ? parsed : fallback; }
 function dispatchTimelineDetail(dispatch: Record<string, unknown>) {
   const contextPackets = Array.isArray(dispatch.contextPackets) ? dispatch.contextPackets : [];
   const resultReferences = contextPackets
@@ -916,31 +1321,30 @@ function dispatchTimelineDetail(dispatch: Record<string, unknown>) {
     resultReferences ? `**引用的 Session 结果**\n\n${resultReferences}` : "",
   ].filter(Boolean).join("\n\n");
 }
-function TimelineMessage({ item }: { item: TimelineItem }) { return <article className={`harness-conversation-message ${item.kind}`}><div className="harness-conversation-avatar">{item.kind === "user" ? "U" : item.kind === "conductor" ? "C" : item.kind === "session" ? "S" : "R"}</div><div className="harness-conversation-content"><header><strong>{item.title}</strong><small>{item.meta}</small></header><div className="harness-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.detail}</ReactMarkdown></div></div></article>; }
-function TaskConversationComposer({ disabled, onSubmit }: { disabled: boolean; onSubmit: (message: string) => Promise<void> }) {
-  const [message, setMessage] = useState("");
-  const submit = async (event: import("react").FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (disabled || !message.trim()) return;
-    const submitted = message.trim();
-    setMessage("");
-    try {
-      await onSubmit(submitted);
-    } catch {
-      setMessage(submitted);
-    }
-  };
-  return <form className="harness-conductor-composer" onSubmit={(event) => void submit(event)}><label>继续和 Conductor 对话<textarea id="task-conductor-message" rows={3} disabled={disabled} value={message} onChange={(event) => setMessage(event.target.value)} placeholder="补充目标、纠正结论，或要求 Conductor 再次核实；由 Conductor 决定是否重新派发。" /></label><div><button className="harness-primary-button compact" disabled={disabled || !message.trim()} type="submit">发送</button></div></form>;
+function TimelineMessage({ item }: { item: TimelineItem }) {
+  const collapsible = !item.showFull && item.kind !== "user" && timelinePlainText(item.detail).length > 260;
+  const [expanded, setExpanded] = useState(false);
+  const compact = collapsible && !expanded;
+  return <article className={`harness-conversation-message ${item.kind} ${compact ? "compact" : "expanded"}`}>
+    <div className="harness-conversation-avatar">{item.kind === "user" ? "U" : item.kind === "conductor" ? "C" : item.kind === "session" ? "S" : "R"}</div>
+    <div className="harness-conversation-content">
+      <header><strong>{item.title}</strong><small>{item.meta}</small>{collapsible && <button className="harness-timeline-expand" type="button" onClick={() => setExpanded((current) => !current)}>{expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}{expanded ? "收起" : "展开"}</button>}</header>
+      {compact
+        ? <p className="harness-timeline-preview">{timelinePreview(item.detail)}</p>
+        : <div className="harness-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.detail}</ReactMarkdown></div>}
+    </div>
+  </article>;
 }
+function timelinePlainText(value: string) { return value.replace(/`([^`]+)`/g, "$1").replace(/[*_#>|]/g, " ").replace(/\s+/g, " ").trim(); }
+function timelinePreview(value: string) { const plain = timelinePlainText(value); return plain.length > 320 ? `${plain.slice(0, 317).trimEnd()}…` : plain; }
 function templateDraftFrom(template: NativeAgentLoopTemplate): TemplateDraft { const { version: _version, archivedAt: _archivedAt, createdAt: _createdAt, updatedAt: _updatedAt, ...draft } = template; return structuredClone(draft); }
-function repairTemplateDraft(template: NativeAgentLoopTemplate): TemplateDraft { return templateDraftFrom(template); }
 function splitAllowlist(value: string) { return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))]; }
 function allowlistLabel(value: string[]) { return value.length ? value.join(", ") : "全部允许"; }
 function agentKindLabel(kind: NativeSessionAgentCard["kind"]) { return ({ researcher: "调研", publisher: "交付", reviewer: "复核", general: "通用" } as Record<NativeSessionAgentCard["kind"], string>)[kind]; }
-function templateExecutionIssue(_template: NativeAgentLoopTemplate) { return ""; }
-function statusLabel(status: string) { return ({ queued: "待启动", running: "运行中", delivery_ready: "待检查产物", achieved: "achieved", archived: "已归档" } as Record<string, string>)[status] ?? status; }
 function sessionDispatchLabel(status: string) { return ({ queued: "已排队", input_accepted: "输入已接收", delivered: "Provider 已接收", result_available: "结果可用", provider_failed: "Provider 失败", failed: "派发失败", not_dispatched: "未派发", running: "运行中", succeeded: "结果可用" } as Record<string, string>)[status] ?? status; }
-function terminalLifecycleLabel(status?: string) { return ({ live: "终端在线", running: "终端在线", stopping: "终端停止中", stopped: "终端已停止", not_started: "尚未启动" } as Record<string, string>)[status ?? "not_started"] ?? status ?? "尚未启动"; }
+function terminalLifecycleLabel(status?: string) { return ({ live: "终端在线", running: "终端在线", stopping: "终端停止中", stopped: "终端已停止", not_live: "终端不在线", not_started: "尚未启动" } as Record<string, string>)[status ?? "not_started"] ?? status ?? "尚未启动"; }
 function shortSession(value: string) { const parts = value.split(":"); return parts[parts.length - 1] ?? value; }
+function projectNameFromPath(value: string) { const normalized = value.replace(/[\\/]+$/, ""); return normalized.split(/[\\/]/).pop() || "local"; }
+function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function stringField(value: Record<string, unknown>, key: string) { return typeof value[key] === "string" ? value[key] : ""; }
 function messageFor(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }

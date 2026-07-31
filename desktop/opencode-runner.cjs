@@ -3,6 +3,7 @@ const fs = require("node:fs");
 
 const defaultCandidates = [
   process.env.OPENCODE_PATH,
+  process.env.HOME ? `${process.env.HOME}/.opencode/bin/opencode` : undefined,
   "/opt/homebrew/bin/opencode",
   "/usr/local/bin/opencode",
   "opencode",

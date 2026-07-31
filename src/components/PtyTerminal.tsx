@@ -29,6 +29,8 @@ type PtyTerminalProps = {
   readOnly?: boolean;
   onData?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
+  /** The terminal surface follows its owning workbench theme. */
+  theme?: "dark" | "light";
 };
 
 export function PtyTerminal({
@@ -46,6 +48,7 @@ export function PtyTerminal({
   readOnly = false,
   onData,
   onResize,
+  theme = "dark",
 }: PtyTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XtermTerminalInstance | null>(null);
@@ -84,11 +87,15 @@ export function PtyTerminal({
     setHasOutput(true);
   };
 
+  const setTerminalBufferMode = (next: "normal" | "alternate") => {
+    setBufferMode(next);
+  };
+
   const replayLegacySessionSnapshot = (terminal: XtermTerminalInstance, targetSession: NativePtySession) => {
     void readNativePtySession(targetSession.id, 0).then((snapshot) => {
       if (!snapshot || sessionRef.current?.id !== targetSession.id || terminalRef.current !== terminal) return;
       terminal.reset();
-      setBufferMode("normal");
+      setTerminalBufferMode("normal");
       for (const chunk of snapshot.transcript) {
         terminal.write(chunk);
       }
@@ -115,26 +122,39 @@ export function PtyTerminal({
   };
 
   const restoreFromHostSnapshot = (terminal: XtermTerminalInstance, targetSession: NativePtySession) => {
+    // Orca reaps a dead host session (and its headless emulator) after exit.
+    // Historical output belongs to the persisted terminal-history surface, not
+    // to a new live stream attachment.  Attaching here used to surface the
+    // misleading `terminal_session_not_live` IPC error for an already-ended
+    // Session.
+    if (targetSession.status !== "running") return;
     const generation = createTerminalClientId();
     attachmentRef.current = { sessionId: targetSession.id, generation };
-    void attachNativeTerminalClient({ sessionId: targetSession.id, clientId: clientIdRef.current, generation }).then((attached) => {
-      const activeAttachment = attachmentRef.current;
-      if (!attached || !activeAttachment || activeAttachment.generation !== generation) return;
-      if (terminalRef.current !== terminal || sessionRef.current?.id !== targetSession.id) return;
-      terminal.reset();
-      setBufferMode(attached.snapshot.bufferMode ?? "normal");
-      if (terminal.cols !== attached.snapshot.cols || terminal.rows !== attached.snapshot.rows) {
-        terminal.resize(attached.snapshot.cols, attached.snapshot.rows);
-      }
-      const confirmSnapshotParsed = () => {
-        if (terminalRef.current !== terminal || attachmentRef.current?.generation !== generation) return;
-        writeStateRef.current = { sessionId: targetSession.id, cursor: attached.snapshot.cursor };
-        if (attached.snapshot.ansi) markHasOutput();
-        acknowledgeHostCursor(terminal, targetSession, generation, attached.snapshot.cursor);
-      };
-      if (attached.snapshot.ansi) terminal.write(attached.snapshot.ansi, confirmSnapshotParsed);
-      else confirmSnapshotParsed();
-    });
+    void attachNativeTerminalClient({ sessionId: targetSession.id, clientId: clientIdRef.current, generation })
+      .then((attached) => {
+        const activeAttachment = attachmentRef.current;
+        if (!attached || !activeAttachment || activeAttachment.generation !== generation) return;
+        if (terminalRef.current !== terminal || sessionRef.current?.id !== targetSession.id) return;
+        terminal.reset();
+        setTerminalBufferMode(attached.snapshot.bufferMode ?? "normal");
+        if (terminal.cols !== attached.snapshot.cols || terminal.rows !== attached.snapshot.rows) {
+          terminal.resize(attached.snapshot.cols, attached.snapshot.rows);
+        }
+        const confirmSnapshotParsed = () => {
+          if (terminalRef.current !== terminal || attachmentRef.current?.generation !== generation) return;
+          writeStateRef.current = { sessionId: targetSession.id, cursor: attached.snapshot.cursor };
+          if (attached.snapshot.ansi) markHasOutput();
+          acknowledgeHostCursor(terminal, targetSession, generation, attached.snapshot.cursor);
+        };
+        if (attached.snapshot.ansi) terminal.write(attached.snapshot.ansi, confirmSnapshotParsed);
+        else confirmSnapshotParsed();
+      })
+      .catch(() => {
+        // A Session can exit between the renderer's live-state check and its
+        // attach RPC.  The next render reads durable history; never surface a
+        // transport race as a Task failure.
+        if (attachmentRef.current?.generation === generation) attachmentRef.current = undefined;
+      });
   };
 
   useEffect(() => {
@@ -154,12 +174,7 @@ export function PtyTerminal({
         fontSize: clampTerminalFontSize(fontSize),
         lineHeight: 1.08,
         scrollback: 5000,
-        theme: {
-          background: "#101626",
-          foreground: "#d7fbe8",
-          cursor: "#d7fbe8",
-          selectionBackground: "#2f415f",
-        },
+        theme: terminalTheme(theme),
       });
       const fitAddon: FitAddonInstance = new fitModule.FitAddon();
       terminal.loadAddon(fitAddon);
@@ -215,6 +230,10 @@ export function PtyTerminal({
           onResizeRef.current?.(size.cols, size.rows);
         }
       });
+      // Leave wheel handling to xterm. In a normal buffer xterm scrolls its
+      // own scrollback. When a TUI enables terminal mouse tracking, xterm
+      // emits the protocol-correct mouse-wheel report to that TUI. Never turn
+      // a reader's wheel gesture into synthetic Up/Down keyboard input.
       // FitAddon resize reflows the whole xterm scrollback.  During a split
       // drag a ResizeObserver can fire dozens of times per frame, which is
       // precisely the expensive path Orca debounces.  A hidden Session stays
@@ -240,8 +259,7 @@ export function PtyTerminal({
           sessionId: currentSession.id,
           cursor: currentSession.cursor ?? currentSession.transcript.length,
         };
-        if (!readOnly && currentSession.status === "running") terminal.focus();
-        if (canUseHostTerminalTransport) restoreFromHostSnapshot(terminal, currentSession);
+        if (canUseHostTerminalTransport && currentSession.status === "running") restoreFromHostSnapshot(terminal, currentSession);
         else replayLegacySessionSnapshot(terminal, currentSession);
       }
 
@@ -277,6 +295,15 @@ export function PtyTerminal({
   }, [fontSize, isVisible]);
 
   useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    // Updating xterm options preserves the live PTY attachment and its
+    // scrollback. Recreating the terminal here would make a visual theme
+    // toggle look like a terminal reconnect.
+    terminal.options.theme = terminalTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
     if (!isVisible) return;
     const fit = fitTerminalRef.current;
     if (!fit) return;
@@ -289,6 +316,7 @@ export function PtyTerminal({
 
     if (!session) {
       terminal.reset();
+      setTerminalBufferMode("normal");
       writeStateRef.current = { sessionId: "", cursor: 0 };
       hasOutputRef.current = false;
       setHasOutput(false);
@@ -296,6 +324,7 @@ export function PtyTerminal({
     }
 
     terminal.reset();
+    setTerminalBufferMode("normal");
     writeStateRef.current = { sessionId: session.id, cursor: 0 };
     hasOutputRef.current = false;
     setHasOutput(false);
@@ -311,7 +340,7 @@ export function PtyTerminal({
       markHasOutput();
     }
 
-    if (canUseHostTerminalTransport) restoreFromHostSnapshot(terminal, session);
+    if (canUseHostTerminalTransport && session.status === "running") restoreFromHostSnapshot(terminal, session);
     else replayLegacySessionSnapshot(terminal, session);
   }, [canUseHostTerminalTransport, session?.id]);
 
@@ -355,7 +384,7 @@ export function PtyTerminal({
         return;
       }
 
-      setBufferMode(event.bufferMode ?? "normal");
+      setTerminalBufferMode(event.bufferMode ?? "normal");
 
       const writeState = writeStateRef.current;
       if (event.cursor <= writeState.cursor) {
@@ -402,9 +431,9 @@ export function PtyTerminal({
   const showWaitingState = Boolean(session && session.status === "running" && !hasOutput);
 
   return (
-    <div className={baseClassName} aria-label={ariaLabel}>
+    <div className={baseClassName} aria-label={ariaLabel} onPointerDown={() => terminalRef.current?.focus()}>
       <div className="xterm-terminal-host" ref={containerRef} />
-      {bufferMode === "alternate" ? <div className="terminal-buffer-mode" title="OpenCode 全屏 TUI 使用 alternate screen；滚轮交给原生 TUI，长期语义历史在任务时间线。">OpenCode TUI</div> : null}
+      {bufferMode === "alternate" ? <div className="terminal-buffer-mode" title="滚轮由 xterm 按 OpenCode 声明的原生鼠标协议处理，绝不会转换为键盘输入；可拖拽选择当前屏幕文字。需要完整保留输出时请使用终端历史。">OpenCode TUI</div> : null}
       {showEmptyState ? (
         <div className="terminal-empty-state terminal-start-overlay">
           <strong>{emptyTitle}</strong>
@@ -425,6 +454,22 @@ export function PtyTerminal({
 function clampTerminalFontSize(value: number) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.min(18, Math.max(8, Math.round(numeric))) : 11;
+}
+
+function terminalTheme(theme: "dark" | "light") {
+  return theme === "light"
+    ? {
+      background: "#f8fafc",
+      foreground: "#17212b",
+      cursor: "#17212b",
+      selectionBackground: "#bfd6ff",
+    }
+    : {
+      background: "#101626",
+      foreground: "#d7fbe8",
+      cursor: "#d7fbe8",
+      selectionBackground: "#2f415f",
+    };
 }
 
 function createTerminalClientId() {

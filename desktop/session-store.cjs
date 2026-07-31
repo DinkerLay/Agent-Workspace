@@ -52,6 +52,28 @@ function createSessionStore({
     return resolveRoot({ taskId, cwd });
   }
 
+  /**
+   * Delete only the Runtime-owned directory for one Task. Project delivery
+   * files live outside this directory, so this operation never removes a
+   * Markdown/HTML artifact the user asked an agent to create.
+   */
+  function deleteTask(input = {}) {
+    const taskId = String(input.taskId ?? "");
+    const cwd = String(input.cwd ?? "");
+    if (!taskId) throw new Error("Session Store task deletion requires taskId.");
+    if (!cwd) throw new Error("Session Store task deletion requires cwd.");
+    const resolvedRoot = path.resolve(resolveRoot({ taskId, cwd }));
+    const taskDirectory = path.resolve(resolvedRoot, safeSegment(taskId));
+    if (!taskDirectory.startsWith(`${resolvedRoot}${path.sep}`)) {
+      throw new Error("Session Store task deletion escaped Runtime root.");
+    }
+    const existed = fs.existsSync(taskDirectory);
+    if (existed) fs.rmSync(taskDirectory, { recursive: true, force: true });
+    taskRoots.delete(safeSegment(taskId));
+    notifyTaskChange({ taskId, type: "task.deleted" });
+    return { deleted: true, taskId, runtimeDirectoryRemoved: existed };
+  }
+
   function startSession(session) {
     ensureSessionDir(session);
     const cursor = appendEvent(session, "session.started", undefined, `Started ${session.command ?? "session"}`);
@@ -151,6 +173,285 @@ function createSessionStore({
     return cursor;
   }
 
+  // A native Provider question is a one-shot, Session-owned interaction. The
+  // reply is persisted separately from transient session state so a polling
+  // observer cannot resurrect the Task-page card before OpenCode consumes it.
+  function readQuestionResponse(input = {}) {
+    const session = questionResponseSession(input);
+    const questionId = requiredQuestionId(input);
+    return readJsonLines(pathFor(session, "question-responses.jsonl"))
+      .find((record) => String(record.questionId ?? "") === questionId);
+  }
+
+  function recordQuestionResponseSubmitted(input = {}) {
+    const session = questionResponseSession(input);
+    const questionId = requiredQuestionId(input);
+    const answer = String(input.answer ?? "").trim();
+    if (!answer) throw new Error("Question response requires answer.");
+    const file = pathFor(session, "question-responses.jsonl");
+    const records = readJsonLines(file);
+    const existing = records.find((record) => String(record.questionId ?? "") === questionId);
+    if (existing?.status === "submitted" || existing?.status === "resolved") return { ...existing, changed: false };
+    const submittedAt = new Date().toISOString();
+    const record = { questionId, answer, status: "submitted", submittedAt, updatedAt: submittedAt };
+    upsertQuestionResponseRecord(file, questionId, record);
+    appendEvent(session, "question.response_submitted", undefined, "用户已将回答发送到 OpenCode 原生问题，等待 Provider 继续。", { questionId, answer });
+    return { ...record, changed: true };
+  }
+
+  function questionResponseSession(input) {
+    const taskId = String(input.taskId ?? "");
+    const sessionId = String(input.sessionId ?? "");
+    if (!taskId || !sessionId) throw new Error("Question response requires taskId and sessionId.");
+    return { taskId, sessionId, cwd: input.cwd };
+  }
+
+  function requiredQuestionId(input) {
+    const questionId = String(input.questionId ?? "").trim();
+    if (!questionId) throw new Error("Question response requires questionId.");
+    return questionId;
+  }
+
+  // Permission requests are Provider facts. `permissionId` is a short-lived
+  // Provider transport instance, not the logical user decision. OpenCode can
+  // ask the same scoped question again after a Session resumes with a new
+  // request id. Keep the historical records, but let one new instance take
+  // over the retained response instead of creating two pending Task actions.
+  function recordPermissionRequested(input = {}) {
+    const session = permissionSession(input);
+    const permissionId = requiredPermissionId(input);
+    const file = pathFor(session, "permissions.jsonl");
+    const records = readJsonLines(file);
+    const existing = records.find((record) => String(record.permissionId ?? "") === permissionId);
+    if (existing && ["requested", "submitted", "replaying", "recovery_pending", "reply_failed"].includes(String(existing.status ?? ""))) {
+      return { ...existing, changed: false };
+    }
+    const requestedAt = new Date().toISOString();
+    const record = {
+      permissionId,
+      requestId: boundedPermissionString(input.requestId, 200),
+      provider: boundedPermissionString(input.provider || "opencode", 80),
+      permission: boundedPermissionString(input.permission || "unknown", 160),
+      patterns: boundedPermissionStrings(input.patterns, 24, 400),
+      summary: boundedPermissionString(input.summary || "OpenCode 请求授权。", 1200),
+      status: "requested",
+      requestedAt: existing?.requestedAt ?? requestedAt,
+      updatedAt: requestedAt,
+    };
+    record.scopeKey = permissionScopeKey(record);
+    const retained = records.filter((candidate) =>
+      candidate.permissionId !== permissionId &&
+      hasReplayablePermissionResponse(candidate) &&
+      permissionScopeKey(candidate) === record.scopeKey,
+    );
+    if (retained.length) {
+      const source = retained.at(-1);
+      const response = normalizePermissionResponse(source?.response);
+      const previousPermissionIds = retained.map((candidate) => String(candidate.permissionId));
+      const nextRecords = records
+        .filter((candidate) => String(candidate.permissionId ?? "") !== permissionId)
+        .map((candidate) => retained.some((sourceRecord) => sourceRecord.permissionId === candidate.permissionId)
+          ? {
+              ...candidate,
+              status: "reissued",
+              reissuedAt: requestedAt,
+              reissuedByPermissionId: permissionId,
+              updatedAt: requestedAt,
+            }
+          : candidate,
+        );
+      const replayed = {
+        ...record,
+        status: "replaying",
+        response,
+        replayedFromPermissionIds: previousPermissionIds,
+        replayStartedAt: requestedAt,
+      };
+      nextRecords.push(replayed);
+      writeJsonLines(file, nextRecords);
+      appendEvent(session, "permission.reissued", undefined, "OpenCode 已重新请求相同范围的授权；Runtime 正在交付已保留的用户答复。", {
+        permissionId,
+        previousPermissionIds,
+        provider: replayed.provider,
+        permission: replayed.permission,
+        patterns: replayed.patterns,
+        response,
+      });
+      recordState(session, "permission_required", "OpenCode 已重新请求相同范围的授权；正在交付已保留的答复。", {
+        permissionId,
+        previousPermissionIds,
+        provider: replayed.provider,
+        permission: replayed.permission,
+        patterns: replayed.patterns,
+        recovery: "replaying",
+      });
+      return { ...replayed, changed: true, replayedResponse: response };
+    }
+    upsertPermissionRecord(file, permissionId, record);
+    appendEvent(session, "permission.requested", undefined, record.summary, {
+      permissionId: record.permissionId,
+      provider: record.provider,
+      permission: record.permission,
+      patterns: record.patterns,
+    });
+    recordState(session, "permission_required", "OpenCode 正在等待用户授权。", {
+      permissionId: record.permissionId,
+      permission: record.permission,
+      patterns: record.patterns,
+    });
+    return { ...record, changed: true };
+  }
+
+  function recordPermissionSubmitted(input = {}) {
+    const session = permissionSession(input);
+    const permissionId = requiredPermissionId(input);
+    const response = normalizePermissionResponse(input.response);
+    const file = pathFor(session, "permissions.jsonl");
+    const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
+    if (!existing) return { permissionId, status: "missing", changed: false };
+    if (String(existing.status) === "submitted" && String(existing.response) === response) return { ...existing, changed: false };
+    if (["approved", "denied", "resolved"].includes(String(existing.status))) return { ...existing, changed: false };
+    const record = { ...existing, status: "submitted", response, submittedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    upsertPermissionRecord(file, permissionId, record);
+    appendEvent(session, "permission.response_submitted", undefined, "用户已提交 OpenCode 授权答复，等待 Provider 确认。", { permissionId, response });
+    recordState(session, "permission_required", "已提交授权答复，等待 OpenCode 确认。", { permissionId, response });
+    return { ...record, changed: true };
+  }
+
+  // A Provider reply endpoint is intentionally process-local. When Electron
+  // restarts, persist the user's exact choice but never pretend that it reached
+  // the old endpoint. The Runtime recovers the same logical Session. A later
+  // equivalent Provider request receives the retained answer through its own
+  // fresh, Main-process-only transport.
+  function recordPermissionRecoveryPending(input = {}) {
+    const session = permissionSession(input);
+    const permissionId = requiredPermissionId(input);
+    const response = normalizePermissionResponse(input.response);
+    const file = pathFor(session, "permissions.jsonl");
+    const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
+    if (!existing) return { permissionId, status: "missing", changed: false };
+    if (String(existing.status) === "recovery_pending" && String(existing.response) === response) return { ...existing, changed: false };
+    if (["approved", "denied", "resolved"].includes(String(existing.status))) return { ...existing, changed: false };
+    const record = {
+      ...existing,
+      status: "recovery_pending",
+      response,
+      responseQueuedAt: existing.responseQueuedAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    upsertPermissionRecord(file, permissionId, record);
+    appendEvent(session, "permission.response_recovery_queued", undefined, "应用重启后旧授权通道不可用；已保留用户答复并等待恢复原生 Session。", { permissionId, response });
+    recordState(session, "permission_required", "已保留授权答复；正在恢复原生 Session，等待 OpenCode 重新请求。", { permissionId, response, recovery: true });
+    return { ...record, changed: true };
+  }
+
+  function recordPermissionRecoveryFailed(input = {}) {
+    const session = permissionSession(input);
+    const permissionId = requiredPermissionId(input);
+    const file = pathFor(session, "permissions.jsonl");
+    const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
+    if (!existing) return { permissionId, status: "missing", changed: false };
+    const record = {
+      ...existing,
+      status: "recovery_failed",
+      recoveryFailedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    upsertPermissionRecord(file, permissionId, record);
+    appendEvent(session, "permission.response_recovery_failed", undefined, "未能恢复原生 Session；授权答复尚未送达 OpenCode，可在 Task 页重试。", { permissionId });
+    recordState(session, "permission_required", "无法恢复原生 Session；授权答复尚未送达 OpenCode。", { permissionId, recovery: "failed" });
+    return { ...record, changed: true };
+  }
+
+  function recordPermissionReplyFailed(input = {}) {
+    const session = permissionSession(input);
+    const permissionId = requiredPermissionId(input);
+    const response = normalizePermissionResponse(input.response);
+    const file = pathFor(session, "permissions.jsonl");
+    const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
+    if (!existing) return { permissionId, status: "missing", changed: false };
+    if (["approved", "denied", "resolved"].includes(String(existing.status))) return { ...existing, changed: false };
+    // Provider hook delivery and Runtime sampling can both observe the same
+    // failed reply. A failed attempt is one user-visible fact, not a heartbeat:
+    // keep the card actionable but do not grow the Timeline or refresh its
+    // timestamp until the person explicitly chooses a different retry.
+    if (String(existing.status) === "reply_failed" && String(existing.response) === response) {
+      return { ...existing, changed: false };
+    }
+    const record = {
+      ...existing,
+      status: "reply_failed",
+      response,
+      replyFailedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    upsertPermissionRecord(file, permissionId, record);
+    appendEvent(session, "permission.response_retry_required", undefined, "OpenCode 未接收这次授权答复；需要在 Task 页重新选择。", { permissionId });
+    recordState(session, "permission_required", "OpenCode 未接收授权答复；需要在 Task 页重新选择。", { permissionId, retryRequired: true });
+    return { ...record, changed: true };
+  }
+
+  function recordPermissionResolved(input = {}) {
+    const session = permissionSession(input);
+    const permissionId = requiredPermissionId(input);
+    const response = normalizePermissionResponse(input.response);
+    const file = pathFor(session, "permissions.jsonl");
+    const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
+    if (!existing) return { permissionId, status: "missing", changed: false };
+    const status = response === "reject" ? "denied" : "approved";
+    if (String(existing.status) === status && String(existing.response) === response) return { ...existing, changed: false };
+    const record = { ...existing, status, response, resolvedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    upsertPermissionRecord(file, permissionId, record);
+    appendEvent(session, "permission.resolved", undefined, `OpenCode 已确认用户${response === "reject" ? "拒绝" : "授权"}该请求。`, { permissionId, response });
+    recordState(session, "running", "OpenCode 已确认用户的授权答复。", { permissionId, response });
+    return { ...record, changed: true };
+  }
+
+  function permissionSession(input) {
+    const taskId = String(input.taskId ?? "");
+    const sessionId = String(input.sessionId ?? "");
+    if (!taskId || !sessionId) throw new Error("Permission record requires taskId and sessionId.");
+    return { taskId, sessionId, cwd: input.cwd };
+  }
+
+  function requiredPermissionId(input) {
+    const permissionId = String(input.permissionId ?? "").trim();
+    if (!permissionId) throw new Error("Permission record requires permissionId.");
+    return permissionId.slice(0, 300);
+  }
+
+  function hasReplayablePermissionResponse(record) {
+    return ["recovery_pending", "submitted", "replaying", "reply_failed"].includes(String(record?.status ?? ""))
+      && Boolean(normalizePermissionResponse(record?.response));
+  }
+
+  function permissionScopeKey(input = {}) {
+    const provider = String(input.provider ?? "opencode").trim().toLowerCase();
+    const permission = String(input.permission ?? "unknown").trim().toLowerCase();
+    const patterns = [...new Set(
+      (Array.isArray(input.patterns) ? input.patterns : [])
+        .map((pattern) => String(pattern ?? "").trim())
+        .filter(Boolean),
+    )].sort((left, right) => left.localeCompare(right));
+    return JSON.stringify([provider, permission, patterns]);
+  }
+
+  function upsertPermissionRecord(file, permissionId, record) {
+    const records = readJsonLines(file);
+    const index = records.findIndex((entry) => String(entry.permissionId ?? "") === permissionId);
+    if (index === -1) records.push(record);
+    else records[index] = record;
+    writeJsonLines(file, records);
+  }
+
+  function upsertQuestionResponseRecord(file, questionId, record) {
+    const records = readJsonLines(file);
+    const index = records.findIndex((entry) => String(entry.questionId ?? "") === questionId);
+    if (index === -1) records.push(record);
+    else records[index] = record;
+    writeJsonLines(file, records);
+  }
+
   function recordDispatch(input) {
     const session = { taskId: input.taskId, sessionId: input.toSessionId };
     const existingTaskDispatches = readTaskDispatches(input.taskId);
@@ -209,6 +510,11 @@ function createSessionStore({
         incarnationId: input.incarnationId ? String(input.incarnationId) : undefined,
         generation: input.generation ? String(input.generation) : undefined,
       },
+      dispatchPatch: {
+        transport: input.transport ? String(input.transport) : "terminal_runtime",
+        terminalIncarnationId: input.incarnationId ? String(input.incarnationId) : undefined,
+        terminalGeneration: input.generation ? String(input.generation) : undefined,
+      },
     });
   }
 
@@ -226,19 +532,24 @@ function createSessionStore({
         providerSessionId: input.providerSessionId ? String(input.providerSessionId) : undefined,
         providerMessageId: input.providerMessageId ? String(input.providerMessageId) : undefined,
         dispatchMessageCreatedAt: Number.isFinite(input.dispatchMessageCreatedAt) ? input.dispatchMessageCreatedAt : undefined,
+        databaseSourceId: input.databaseSourceId ? String(input.databaseSourceId) : undefined,
       },
       dispatchPatch: {
         provider: input.provider ? String(input.provider) : "opencode",
         providerSessionId: input.providerSessionId ? String(input.providerSessionId) : undefined,
         providerMessageId: input.providerMessageId ? String(input.providerMessageId) : undefined,
         dispatchMessageCreatedAt: Number.isFinite(input.dispatchMessageCreatedAt) ? input.dispatchMessageCreatedAt : undefined,
+        databaseSourceId: input.databaseSourceId ? String(input.databaseSourceId) : undefined,
       },
     });
   }
 
   function recordDispatchProviderFailure(input) {
     return updateDispatchStatus(input, {
-      from: new Set(["delivered", "input_accepted", "queued"]),
+      // A Provider failure must be tied to a Provider receipt.  A PTY that
+      // exits before OpenCode records the exact marker is a transport failure,
+      // not a Provider fact; use recordDispatchDeliveryFailure for that case.
+      from: new Set(["delivered"]),
       status: "provider_failed",
       timestampField: "providerFailedAt",
       eventType: "dispatch.provider.failed",
@@ -263,6 +574,132 @@ function createSessionStore({
         stepFinishReason: input.stepFinishReason ? String(input.stepFinishReason) : undefined,
       },
     });
+  }
+
+  // Terminal Runtime owns this fact: an accepted byte stream ended before the
+  // OpenCode observer found the exact persisted Dispatch marker.  Keep it
+  // distinct from Provider failure so the Conductor can decide what to do
+  // without being told OpenCode rejected work it never received.
+  function recordDispatchDeliveryFailure(input) {
+    return updateDispatchStatus(input, {
+      from: new Set(["queued", "input_accepted"]),
+      status: "delivery_failed",
+      timestampField: "deliveryFailedAt",
+      eventType: "dispatch.delivery_failed",
+      eventSummary: input.message ?? `Terminal Runtime ended before Dispatch ${input.dispatchId} was observed by OpenCode`,
+      sessionState: "delivery_failed",
+      stateSummary: input.message ?? "Terminal Runtime ended before OpenCode recorded this dispatch.",
+      data: {
+        reason: input.reason ? String(input.reason) : "terminal_exit_before_receipt",
+        terminalState: input.terminalState ? String(input.terminalState) : "exited",
+      },
+      dispatchPatch: {
+        failureReason: input.reason ? String(input.reason) : "terminal_exit_before_receipt",
+        failureMessage: input.message ? String(input.message) : undefined,
+      },
+    });
+  }
+
+  // A Conductor cancellation is a durable command first.  The Runtime must
+  // not report success merely because it accepted a stop request: a terminal
+  // exit (or an equally authoritative Provider fact) is the confirmation.
+  function markDispatchCancellationRequested(input) {
+    return updateDispatchStatus(input, {
+      from: new Set(["queued", "input_accepted", "delivered", "cancel_failed"]),
+      status: "cancellation_requested",
+      timestampField: "cancellationRequestedAt",
+      eventType: "dispatch.cancellation_requested",
+      eventSummary: input.message ?? `Conductor requested cancellation of Dispatch ${input.dispatchId}`,
+      sessionState: "cancellation_requested",
+      stateSummary: input.message ?? "Conductor requested cancellation; awaiting terminal or Provider confirmation.",
+      data: {
+        reason: input.reason ? String(input.reason) : "conductor_cancelled",
+        terminalIncarnationId: input.terminalIncarnationId ? String(input.terminalIncarnationId) : undefined,
+        terminalGeneration: input.terminalGeneration ? String(input.terminalGeneration) : undefined,
+      },
+      dispatchPatch: {
+        cancellationReason: input.reason ? String(input.reason) : "conductor_cancelled",
+        cancellationMessage: input.message ? String(input.message) : undefined,
+        cancellationTerminalIncarnationId: input.terminalIncarnationId ? String(input.terminalIncarnationId) : undefined,
+        cancellationTerminalGeneration: input.terminalGeneration ? String(input.terminalGeneration) : undefined,
+      },
+    });
+  }
+
+  // Cancellation is confirmed only from a Runtime or Provider observation.
+  // Keep it distinct from transport/provider failure so the next Conductor
+  // decision can reason about why the work stopped.
+  function markDispatchCancelled(input) {
+    return updateDispatchStatus(input, {
+      from: new Set(["cancellation_requested"]),
+      status: "cancelled",
+      timestampField: "cancelledAt",
+      eventType: "dispatch.cancelled",
+      eventSummary: input.message ?? `Dispatch ${input.dispatchId} cancellation confirmed`,
+      sessionState: "cancelled",
+      stateSummary: input.message ?? "Terminal Runtime confirmed the dispatch was cancelled.",
+      data: {
+        reason: input.reason ? String(input.reason) : "conductor_cancelled",
+        confirmation: input.confirmation ? String(input.confirmation) : "terminal_exit",
+      },
+      dispatchPatch: {
+        cancellationReason: input.reason ? String(input.reason) : "conductor_cancelled",
+        cancellationMessage: input.message ? String(input.message) : undefined,
+        cancellationConfirmation: input.confirmation ? String(input.confirmation) : "terminal_exit",
+      },
+    });
+  }
+
+  // An interrupt transport failure is a fact, not permission to reuse the
+  // worker card. The Conductor may inspect it and explicitly retry/ask the
+  // user for a force stop, but Runtime never invents a replacement route.
+  function markDispatchCancellationFailed(input) {
+    return updateDispatchStatus(input, {
+      from: new Set(["cancellation_requested"]),
+      status: "cancel_failed",
+      timestampField: "cancellationFailedAt",
+      eventType: "dispatch.cancel_failed",
+      eventSummary: input.message ?? `Terminal Runtime could not cancel Dispatch ${input.dispatchId}`,
+      sessionState: "cancellation_failed",
+      stateSummary: input.message ?? "Cancellation request could not be delivered to the terminal.",
+      data: { reason: input.reason ? String(input.reason) : "terminal_interrupt_failed" },
+      dispatchPatch: {
+        cancellationFailureReason: input.reason ? String(input.reason) : "terminal_interrupt_failed",
+        cancellationFailureMessage: input.message ? String(input.message) : undefined,
+      },
+    });
+  }
+
+  // Scanner outages are facts about the observer, not an instruction to retry
+  // or a reason to mutate dispatch status.  Persist one deduplicated record so
+  // it is visible after restart while normal polling may continue later.
+  function recordDispatchObservationUnavailable(input) {
+    const session = { taskId: input.taskId, sessionId: input.sessionId };
+    const dispatchesPath = pathFor(session, "dispatches.jsonl");
+    const reason = String(input.reason ?? "opencode_database_unavailable");
+    let changed = false;
+    let updated;
+    const dispatches = readJsonLines(dispatchesPath).map((dispatch) => {
+      if (dispatch.dispatchId !== input.dispatchId) return dispatch;
+      updated = dispatch;
+      if (dispatch.lastObservationUnavailableReason === reason) return dispatch;
+      changed = true;
+      updated = {
+        ...dispatch,
+        lastObservationUnavailableReason: reason,
+        lastObservationUnavailableAt: new Date().toISOString(),
+      };
+      return updated;
+    });
+    if (!updated) return { dispatchId: input.dispatchId, status: "missing", changed: false };
+    if (changed) {
+      writeJsonLines(dispatchesPath, dispatches);
+      appendEvent(session, "dispatch.provider.observation_unavailable", undefined, `OpenCode observation unavailable for Dispatch ${input.dispatchId}`, {
+        dispatchId: input.dispatchId,
+        reason,
+      });
+    }
+    return { dispatchId: input.dispatchId, status: updated.status, changed };
   }
 
   function updateDispatchStatus(input, transition) {
@@ -434,26 +871,118 @@ function createSessionStore({
   }
 
   function recordConductorWakeup(input) {
-    const session = { taskId: input.taskId, sessionId: input.sessionId };
-    const status = input.status === "sent" ? "sent" : "queued";
-    return appendEvent(
-      session,
-      `conductor.wakeup.${status}`,
-      undefined,
-      input.summary ?? `Conductor wakeup ${status} for ${input.workerSessionId ?? "worker session"}`,
-      {
-        dispatchId: input.dispatchId,
-        resultId: input.resultId,
-        workerSessionId: input.workerSessionId,
-        workerState: input.workerState,
-        cursor: Number.isFinite(input.cursor) ? input.cursor : undefined,
-      },
-    );
+    const session = { taskId: String(input.taskId ?? ""), sessionId: String(input.sessionId ?? "") };
+    if (!session.taskId || !session.sessionId) throw new Error("Conductor wakeup requires taskId and sessionId.");
+    const wakeupKey = String(input.wakeupKey ?? input.key ?? "").trim();
+    if (!wakeupKey) throw new Error("Conductor wakeup requires wakeupKey.");
+    const file = conductorWakeupsPath(session);
+    const entries = readJsonLines(file);
+    const prior = entries.find((entry) => entry.wakeupKey === wakeupKey);
+    const requestedStatus = ["queued", "attempting", "sent", "observed"].includes(String(input.status))
+      ? String(input.status)
+      : "queued";
+    const kind = input.kind ? String(input.kind) : prior?.kind ?? "result";
+    // Builds before the Provider-receipt gate treated a started replacement
+    // terminal as a delivered user message.  That left a durable `sent`
+    // record without a Provider message id, and the normal monotonic guard
+    // below made the exact same user input impossible to retry forever.
+    //
+    // This is deliberately narrower than a general status rollback: only a
+    // caller that explicitly identifies that legacy state may return one
+    // unobserved user message to `queued`.  An observed Provider receipt can
+    // never be replayed through this path.
+    const retryingLegacyUnconfirmed = input.retryLegacyUnconfirmed === true
+      && requestedStatus === "queued"
+      && String(prior?.status ?? "") === "sent"
+      && kind === "user_message"
+      && !prior?.providerMessageId
+      && !prior?.observedAt;
+    // A recovered scanner can rediscover the same immutable result. Never turn
+    // a delivered wakeup back into a queue item merely because it is observed
+    // again after restart.
+    const status = !retryingLegacyUnconfirmed
+      && ["sent", "observed"].includes(String(prior?.status))
+      && ["queued", "attempting"].includes(requestedStatus)
+      ? prior.status
+      : requestedStatus;
+    const timestamp = new Date().toISOString();
+    const record = {
+      ...prior,
+      wakeupKey,
+      taskId: session.taskId,
+      sessionId: session.sessionId,
+      kind,
+      workerSessionId: input.workerSessionId ? String(input.workerSessionId) : prior?.workerSessionId,
+      agentId: input.agentId ? String(input.agentId) : prior?.agentId,
+      dispatchId: input.dispatchId ? String(input.dispatchId) : prior?.dispatchId,
+      resultId: input.resultId ? String(input.resultId) : prior?.resultId,
+      workerState: input.workerState ? String(input.workerState) : prior?.workerState,
+      cursor: Number.isFinite(input.cursor) ? input.cursor : prior?.cursor,
+      reason: input.reason ? String(input.reason) : prior?.reason,
+      answerText: input.answerText ? String(input.answerText) : prior?.answerText,
+      messageText: input.messageText ? String(input.messageText) : prior?.messageText,
+      userMessageId: input.userMessageId ? String(input.userMessageId) : prior?.userMessageId,
+      status,
+      createdAt: prior?.createdAt ?? timestamp,
+      attemptingAt: status === "attempting" ? timestamp : retryingLegacyUnconfirmed ? undefined : prior?.attemptingAt,
+      sentAt: status === "sent" ? timestamp : retryingLegacyUnconfirmed ? undefined : prior?.sentAt,
+      observedAt: status === "observed" ? timestamp : retryingLegacyUnconfirmed ? undefined : prior?.observedAt,
+      provider: input.provider ? String(input.provider) : prior?.provider,
+      providerSessionId: input.providerSessionId ? String(input.providerSessionId) : prior?.providerSessionId,
+      providerMessageId: input.providerMessageId ? String(input.providerMessageId) : prior?.providerMessageId,
+      dispatchMessageCreatedAt: Number.isFinite(input.dispatchMessageCreatedAt)
+        ? input.dispatchMessageCreatedAt
+        : prior?.dispatchMessageCreatedAt,
+      databaseSourceId: input.databaseSourceId ? String(input.databaseSourceId) : prior?.databaseSourceId,
+    };
+    const next = prior ? entries.map((entry) => (entry.wakeupKey === wakeupKey ? record : entry)) : [...entries, record];
+    writeJsonLines(file, next);
+    if (!prior || prior.status !== status) {
+      appendEvent(
+        session,
+        `conductor.wakeup.${status}`,
+        undefined,
+        input.summary ?? `Conductor wakeup ${status} for ${record.workerSessionId ?? "worker session"}`,
+        {
+          wakeupKey,
+          kind: record.kind,
+          dispatchId: record.dispatchId,
+          resultId: record.resultId,
+          workerSessionId: record.workerSessionId,
+          workerState: record.workerState,
+          cursor: record.cursor,
+          reason: record.reason,
+        },
+      );
+    }
+    return record;
+  }
+
+  function listPendingConductorWakeups(input = {}) {
+    const taskId = String(input.taskId ?? "");
+    if (!taskId) throw new Error("Conductor wakeup list requires taskId.");
+    const sessionId = input.sessionId ? String(input.sessionId) : undefined;
+    return readJsonLines(conductorWakeupsPath({ taskId }))
+      .filter((entry) => entry.status === "queued" && (!sessionId || entry.sessionId === sessionId))
+      .sort((left, right) => String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? "")));
+  }
+
+  function listUnconfirmedConductorWakeups(input = {}) {
+    const taskId = String(input.taskId ?? "");
+    if (!taskId) throw new Error("Conductor wakeup list requires taskId.");
+    const sessionId = input.sessionId ? String(input.sessionId) : undefined;
+    return readJsonLines(conductorWakeupsPath({ taskId }))
+      .filter((entry) => ["attempting", "sent"].includes(String(entry.status)) && (!sessionId || entry.sessionId === sessionId))
+      .sort((left, right) => String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? "")));
+  }
+
+  function markConductorWakeupObserved(input = {}) {
+    return recordConductorWakeup({ ...input, status: "observed" });
   }
 
   function recordConductorMessage(input) {
     const message = String(input.message ?? "");
-    return recordTaskEvent({
+    const event = recordTaskEvent({
       taskId: input.taskId,
       sessionId: input.sessionId,
       cwd: input.cwd,
@@ -471,6 +1000,24 @@ function createSessionStore({
         cursor: Number.isFinite(input.cursor) ? input.cursor : undefined,
       },
     });
+    // A completed Conductor turn is the canonical point at which OpenCode has
+    // identified the conversation that this logical Workspace Session owns.
+    // Persist that binding beside the Timeline fact so a replacement PTY can
+    // resume and observe the same Provider Session rather than rediscovering
+    // it from its own newer transport start time.
+    if (String(input.provider ?? "") === "opencode" && String(input.providerSessionId ?? "").trim()) {
+      writeState(
+        { taskId: input.taskId, sessionId: input.sessionId, cwd: input.cwd },
+        {
+          providerBinding: {
+            provider: "opencode",
+            providerSessionId: String(input.providerSessionId).trim(),
+          },
+          updatedAt: new Date().toISOString(),
+        },
+      );
+    }
+    return event;
   }
 
   function recordTaskCompletionClaim(input) {
@@ -508,12 +1055,14 @@ function createSessionStore({
       sessionId: input.sessionId,
       ...projection,
       cursor: state.cursor ?? events.at(-1)?.cursor ?? 0,
+      providerBinding: state.providerBinding,
       cleanTranscriptTail: "",
       events,
       dispatches,
       results,
       messages: taskMessages,
       permissions: readViewJsonLines(path.join(dir, "permissions.jsonl")),
+      questionResponses: readViewJsonLines(path.join(dir, "question-responses.jsonl")),
       artifacts: readViewJsonLines(path.join(dir, "artifacts.jsonl")),
     };
   }
@@ -532,7 +1081,9 @@ function createSessionStore({
     const dispatches = [];
     const results = [];
     const messages = readViewJsonLines(path.join(taskRoot, "messages.jsonl"));
+    const wakeups = readViewJsonLines(path.join(taskRoot, "conductor-wakeups.jsonl"));
     const permissions = [];
+    const questionResponses = [];
     const artifacts = [];
 
     for (const entry of sessionDirs) {
@@ -541,6 +1092,7 @@ function createSessionStore({
       const state = readJson(path.join(dir, "state.json")) ?? {};
       const sessionResults = readViewJsonLines(path.join(dir, "results.jsonl"));
       const sessionPermissions = readViewJsonLines(path.join(dir, "permissions.jsonl"));
+      const sessionQuestionResponses = readViewJsonLines(path.join(dir, "question-responses.jsonl"));
       const sessionArtifacts = readViewJsonLines(path.join(dir, "artifacts.jsonl"));
       const sessionId = state.sessionId ?? sessionDispatches[0]?.toSessionId ?? sessionResults[0]?.sessionId ?? entry.name;
 
@@ -552,10 +1104,12 @@ function createSessionStore({
         updatedAt: state.updatedAt,
         lastStateSummary: state.lastStateSummary,
         lastStateData: state.lastStateData,
+        providerBinding: state.providerBinding,
       });
       dispatches.push(...sessionDispatches);
       results.push(...sessionResults);
       permissions.push(...sessionPermissions.map((record) => ({ sessionId, ...record })));
+      questionResponses.push(...sessionQuestionResponses.map((record) => ({ sessionId, ...record })));
       artifacts.push(...sessionArtifacts.map((record) => ({ sessionId, ...record })));
     }
 
@@ -567,9 +1121,11 @@ function createSessionStore({
       dispatches,
       results,
       messages,
+      wakeups,
       permissions,
+      questionResponses,
       artifacts,
-      pendingDecisions: buildTaskPendingDecisions({ sessions, dispatches, results, permissions }),
+      pendingDecisions: buildTaskPendingDecisions({ sessions, dispatches, results, permissions, wakeups }),
     };
   }
 
@@ -646,10 +1202,24 @@ function createSessionStore({
   function writeState(session, patch) {
     const file = pathFor(session, "state.json");
     const current = readJson(file) ?? {};
+    const providerBinding = nextProviderBinding(current.providerBinding, patch.providerBinding ?? patch.lastStateData);
     fs.writeFileSync(
       file,
-      `${JSON.stringify({ ...current, taskId: session.taskId, sessionId: session.sessionId, ...patch }, null, 2)}\n`,
+      `${JSON.stringify({ ...current, taskId: session.taskId, sessionId: session.sessionId, ...patch, providerBinding }, null, 2)}\n`,
     );
+  }
+
+  function nextProviderBinding(current, candidate) {
+    const provider = String(candidate?.provider ?? "").trim();
+    const providerSessionId = String(candidate?.providerSessionId ?? "").trim();
+    if (provider === "opencode" && providerSessionId) {
+      return {
+        provider,
+        providerSessionId,
+        observedAt: new Date().toISOString(),
+      };
+    }
+    return current && typeof current === "object" ? current : undefined;
   }
 
   function ensureSessionDir(session) {
@@ -692,27 +1262,48 @@ function createSessionStore({
       .flatMap((entry) => readJsonLines(path.join(sessionsRoot, entry.name, "dispatches.jsonl")));
   }
 
+  function conductorWakeupsPath(session) {
+    return path.join(resolveRoot({ taskId: session.taskId, cwd: session.cwd }), safeSegment(session.taskId), "conductor-wakeups.jsonl");
+  }
+
   function readViewJsonLines(file) {
     return readJsonLines(file, { maxBytes: jsonlReadTailBytes });
   }
 
   return {
     bindTaskRoot,
+    deleteTask,
     onTaskChange,
     startSession,
     recordOutput,
     readTerminalLog,
     recordState,
+    readQuestionResponse,
+    recordQuestionResponseSubmitted,
+    recordPermissionRequested,
+    recordPermissionSubmitted,
+    recordPermissionRecoveryPending,
+    recordPermissionRecoveryFailed,
+    recordPermissionReplyFailed,
+    recordPermissionResolved,
     recordDispatch,
     markDispatchInputAccepted,
     markDispatchDelivered,
     markDispatchProviderReceived,
     markDispatchFailed,
     recordDispatchProviderFailure,
+    recordDispatchDeliveryFailure,
+    markDispatchCancellationRequested,
+    markDispatchCancelled,
+    markDispatchCancellationFailed,
+    recordDispatchObservationUnavailable,
     recordDispatchFailure,
     recordDispatchResult,
     recordConductorMessage,
     recordConductorWakeup,
+    listPendingConductorWakeups,
+    listUnconfirmedConductorWakeups,
+    markConductorWakeupObserved,
     recordTaskCompletionClaim,
     readSession,
     readTaskState,
@@ -721,12 +1312,31 @@ function createSessionStore({
   };
 }
 
-function buildTaskPendingDecisions({ sessions, dispatches, results, permissions }) {
+function buildTaskPendingDecisions({ sessions, dispatches, results, permissions, wakeups = [] }) {
   const resultIds = new Set(results.map((result) => result.resultId).filter(Boolean));
+  const unresolvedPermissionSessionIds = new Set(
+    permissions
+      .filter((permission) => !["resolved", "approved", "denied", "reissued"].includes(String(permission.status ?? "requested")))
+      .map((permission) => String(permission.sessionId ?? ""))
+      .filter(Boolean),
+  );
+  // A result is an inbox item until its immutable wakeup was observed by the
+  // next Conductor Provider turn.  `contextRefs` answer a different question:
+  // which complete result packets the Conductor explicitly handed to another
+  // Session Agent.  Treating a context handoff as result consumption made the
+  // attention count both premature and permanent for every result that was not
+  // forwarded.  The original result remains durable/readable after the inbox
+  // item is consumed.
+  const observedResultIds = new Set(
+    wakeups
+      .filter((wakeup) => wakeup.kind === "result" && wakeup.status === "observed")
+      .map((wakeup) => String(wakeup.resultId ?? ""))
+      .filter(Boolean),
+  );
   const decisions = [];
 
   for (const dispatch of dispatches) {
-    if (dispatch.status !== "result_available") continue;
+    if (dispatch.status !== "result_available" || observedResultIds.has(String(dispatch.resultId ?? ""))) continue;
     decisions.push({
       type: "worker_result_available",
       dispatchId: dispatch.dispatchId,
@@ -738,34 +1348,68 @@ function buildTaskPendingDecisions({ sessions, dispatches, results, permissions 
     });
   }
 
+  // A dispatch failure is a durable control-plane fact.  Do not collapse it
+  // into the Session's current state: the same native OpenCode Session may
+  // successfully complete a later assignment while an earlier assignment
+  // still needs a Conductor decision.  A later result is not an implicit
+  // retry, replacement, or resolution of an earlier dispatch.
+  for (const dispatch of dispatches) {
+    if (!["failed", "delivery_failed", "provider_failed", "cancel_failed"].includes(dispatch.status)) continue;
+    decisions.push({
+      type: `dispatch_${dispatch.status}`,
+      dispatchId: dispatch.dispatchId,
+      sessionId: dispatch.toSessionId,
+      summary:
+        dispatch.failureMessage ??
+        dispatch.failureReason ??
+        `Dispatch ${dispatch.dispatchId} did not complete.`,
+      severity: "blocking",
+      actionHint: dispatchDecisionActionHint(dispatch.status),
+    });
+  }
+
+  for (const wakeup of wakeups) {
+    if (wakeup.status !== "queued") continue;
+    decisions.push({
+      type: "conductor_wakeup_queued",
+      sessionId: wakeup.sessionId,
+      dispatchId: wakeup.dispatchId,
+      resultId: wakeup.resultId,
+      cursor: wakeup.cursor,
+      summary: wakeup.reason || `Runtime wakeup queued for ${wakeup.agentId || wakeup.workerSessionId || "Session Agent"}.`,
+      severity: "info",
+      actionHint: "deliver_conductor_wakeup",
+    });
+  }
+
   for (const session of sessions) {
     if (
       session.state === "waiting_input" ||
-      session.state === "permission_required" ||
+      (session.state === "permission_required" && !unresolvedPermissionSessionIds.has(String(session.sessionId))) ||
       session.state === "blocked" ||
       session.state === "timeout" ||
       session.state === "delivery_failed" ||
       session.state === "result_invalid" ||
       session.state === "exited"
     ) {
-      const sessionDispatches = dispatches.filter((dispatch) => dispatch.toSessionId === session.sessionId);
+      // Dispatch failures are emitted above as individual control-plane facts.
+      // Keep this fallback only for provider/process states which do not map to
+      // a known dispatch record.
+      if (session.state === "delivery_failed" && session.unresolvedFailureDispatchId) continue;
       decisions.push({
         type: `session_${session.state}`,
         sessionId: session.sessionId,
-        dispatchId: session.state === "delivery_failed" ? session.unresolvedFailureDispatchId : undefined,
         cursor: session.cursor,
         summary: session.lastStateSummary,
         severity: sessionDecisionSeverity(session.state),
         actionHint: sessionDecisionActionHint(session.state),
-        relatedDispatchIds:
-          session.state === "delivery_failed" ? relatedDispatchIdsForDeliveryFailure(session, sessionDispatches) : undefined,
       });
     }
   }
 
   for (const permission of permissions) {
     const status = String(permission.status ?? "requested");
-    if (status === "resolved" || status === "approved" || status === "denied") continue;
+    if (!["requested", "reply_failed"].includes(status)) continue;
     decisions.push({
       type: "permission_requested",
       sessionId: permission.sessionId,
@@ -782,15 +1426,15 @@ function buildTaskPendingDecisions({ sessions, dispatches, results, permissions 
 function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
   const state = normalizeSessionRuntimeState(rawState);
   const resultDispatches = dispatches.filter((dispatch) => dispatch.status === "result_available");
-  const activeDispatches = dispatches.filter((dispatch) => ["queued", "input_accepted", "delivered"].includes(dispatch.status));
-  const failedDispatches = dispatches.filter((dispatch) => ["failed", "provider_failed"].includes(dispatch.status));
+  const activeDispatches = dispatches.filter((dispatch) => ["queued", "input_accepted", "delivered", "cancellation_requested", "cancel_failed"].includes(dispatch.status));
+  const failedDispatches = dispatches.filter((dispatch) => ["failed", "delivery_failed", "provider_failed", "cancel_failed"].includes(dispatch.status));
   const latestActiveDispatch = activeDispatches.at(-1);
   const latestResultDispatch = resultDispatches.at(-1);
   const latestFailedDispatch = failedDispatches.at(-1);
-  const latestFailedIndex = latestFailedDispatch ? dispatches.findLastIndex((dispatch) => dispatch === latestFailedDispatch) : -1;
-  const latestResultIndex = latestResultDispatch ? dispatches.findLastIndex((dispatch) => dispatch === latestResultDispatch) : -1;
-  const unresolvedFailureDispatch =
-    latestFailedDispatch && latestFailedIndex >= latestResultIndex ? latestFailedDispatch : undefined;
+  // Keep the most recent failed dispatch as a convenience pointer, but never
+  // use ordering against a later result to decide whether it disappeared.  The
+  // Task-level projection exposes every failed dispatch independently.
+  const unresolvedFailureDispatch = latestFailedDispatch;
   const latestResult = results.at(-1);
   const resultCount = Math.max(results.length, resultDispatches.filter((dispatch) => dispatch.resultId).length);
   const lastResultId = latestResult?.resultId ?? latestResultDispatch?.resultId;
@@ -805,13 +1449,18 @@ function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
     projectedState = "queued";
   } else if (latestActiveDispatch?.status === "delivered") {
     projectedState = state === "running" ? "running" : "delivered_pending";
-  } else if (unresolvedFailureDispatch) {
-    projectedState = unresolvedFailureDispatch.status === "provider_failed" ? "blocked" : "delivery_failed";
+  } else if (latestActiveDispatch?.status === "cancellation_requested") {
+    projectedState = "cancellation_requested";
+  } else if (latestActiveDispatch?.status === "cancel_failed") {
+    projectedState = "cancellation_failed";
   } else if (latestResultDispatch || latestResult) {
     projectedState = "result_available";
+  } else if (unresolvedFailureDispatch) {
+    projectedState = unresolvedFailureDispatch.status === "provider_failed" ? "blocked" : "delivery_failed";
   }
 
   if (ATTENTION_RUNTIME_STATES.has(projectedState)) attentionHints.push(projectedState);
+  if (failedDispatches.length) attentionHints.push("dispatch_failed");
   if (resultCount > 0 || lastResultId) attentionHints.push("result_available");
 
   return {
@@ -847,14 +1496,14 @@ function sessionDecisionActionHint(state) {
   return hints[state] ?? "inspect_state";
 }
 
-function relatedDispatchIdsForDeliveryFailure(session, dispatches) {
-  const ids = [];
-  for (const dispatch of dispatches) {
-    if (dispatch.status === "result_available" || dispatch.dispatchId === session.unresolvedFailureDispatchId) {
-      ids.push(dispatch.dispatchId);
-    }
-  }
-  return [...new Set(ids.filter(Boolean))];
+function dispatchDecisionActionHint(status) {
+  const hints = {
+    failed: "inspect_dispatch_failure",
+    delivery_failed: "recover_delivery",
+    provider_failed: "inspect_provider_failure",
+    cancel_failed: "inspect_cancellation_failure",
+  };
+  return hints[status] ?? "inspect_dispatch_failure";
 }
 
 function assignmentReadinessHintForState(state, context = {}) {
@@ -877,6 +1526,8 @@ const ATTENTION_RUNTIME_STATES = new Set([
   "blocked",
   "timeout",
   "delivery_failed",
+  "cancellation_requested",
+  "cancellation_failed",
   "result_invalid",
   "exited",
   "start_failed",
@@ -1080,6 +1731,26 @@ function normalizeCursor(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric < 0) return 0;
   return Math.floor(numeric);
+}
+
+function normalizePermissionResponse(value) {
+  const response = String(value ?? "").trim();
+  if (!new Set(["once", "always", "reject"]).has(response)) {
+    throw new Error("Permission response must be once, always, or reject.");
+  }
+  return response;
+}
+
+function boundedPermissionString(value, maxLength) {
+  return String(value ?? "").trim().slice(0, maxLength);
+}
+
+function boundedPermissionStrings(value, maxItems, maxLength) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => boundedPermissionString(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
 }
 
 function safeSegment(value) {

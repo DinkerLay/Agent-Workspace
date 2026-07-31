@@ -130,6 +130,23 @@ describe("Orca-derived terminal runtime core", () => {
     authority.close();
   });
 
+  it("replaces a stale active owner profile only after its physical PTY is gone", async () => {
+    const manager = createFakePtyManager();
+    const authority = createSessionAuthority({ ptyManager: manager });
+    authority.registerLaunchProfile(profile());
+    await authority.activateSession({ workspaceSessionId: profile().workspaceSessionId, operationId: "op-1" });
+
+    // The durable owner says active, but Electron Main can no longer find a
+    // physical terminal after a restart. A changed bridge/profile is safe to
+    // register only in that proven-stale condition.
+    manager.get(profile().workspaceSessionId).status = "stopped";
+    expect(() => authority.registerLaunchProfile(profile({ args: ["--model", "new-bridge-profile"] }))).not.toThrow();
+    const replacement = await authority.activateSession({ workspaceSessionId: profile().workspaceSessionId, operationId: "op-2" });
+    expect(replacement.disposition).toBe("created");
+    expect(manager.starts).toHaveLength(2);
+    authority.close();
+  });
+
   it("orders concurrent terminal input by source priority and rejects stale incarnation input", async () => {
     const writes = [];
     const owner = { status: "active", incarnationId: "incarnation-current" };

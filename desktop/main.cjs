@@ -1,19 +1,12 @@
 const path = require("node:path");
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const {
   createConductorToolBridge,
   startConductorToolBridgeHttpServer,
 } = require("./conductor-tool-bridge.cjs");
 const { ensureNodePtySpawnHelperExecutable } = require("./node-pty-runtime.cjs");
 const { inspectOpencodeProcesses } = require("./opencode/process-inspector.cjs");
-const {
-  findProviderSessionForConductorTask,
-  inspectDispatchProviderState,
-  getDispatchAssistantAnswer,
-  getLastEffectiveAssistantAnswer,
-  getLastPendingQuestionForDirectory,
-  getLastPendingQuestionForConductorTask,
-} = require("./opencode/session-adapter.cjs");
+const { createOpenCodeProviderObserver } = require("./opencode/opencode-provider-observer.cjs");
 const { getRuntimeStatus, listOpencodeAgents, resolveOpencodePath, runOpencode } = require("./opencode-runner.cjs");
 const { resolveProjectWindowContext, withProjectWindowContext } = require("./project-window-context.cjs");
 const { createOrcaTerminalDaemonManager } = require("./runtime/orca-terminal-daemon-manager.cjs");
@@ -27,6 +20,7 @@ const { createSessionStore } = require("./session-store.cjs");
 const { generateAgentLoopTemplate } = require("./agent-loop-template-assistant.cjs");
 const { generateTaskDraft } = require("./task-draft-assistant.cjs");
 const { runVerification } = require("./verification-runner.cjs");
+const { isCanonicalWorkspaceSessionId, taskIdFromWorkspaceSessionId } = require("./workspace-session-id.cjs");
 
 let mainWindow;
 let ptyManager;
@@ -40,6 +34,7 @@ let sessionWakeupMonitor;
 let agentLoopRuntime;
 let orchestrationHarness;
 let openCodeHookService;
+let openCodeProviderObserver;
 let realPtyAvailable = false;
 let ptyBackend = "process-fallback";
 const terminalClientAttachments = new Map();
@@ -102,25 +97,36 @@ ptyManager.onClientEvent((event, attachment) => {
 conductorToolBridge = createConductorToolBridge({
   sessionStore: runtimeSessionStore,
   ptyManager,
-  activateWorkerSession: async ({ sessionId, operationId }) =>
+  activateWorkerSession: async ({ sessionId, operationId, interactiveTui }) =>
     sessionAuthority.activateSession({
       workspaceSessionId: sessionId,
       operationId,
       callerId: "conductor-tool-bridge",
       reason: "conductor-dispatch",
+      interactiveTui: interactiveTui === true,
     }),
   prepareWorkerSession: ({ taskId, agentId, sessionId, initialPrompt }) =>
     agentLoopRuntime?.hasTask(taskId)
       ? agentLoopRuntime.prepareWorkerInitialDispatch({ taskId, agentId, sessionId, initialPrompt })
       : { initialPromptSubmitted: false, sessionId },
-  enqueueWorkerInput: ({ sessionId, expectedIncarnationId, payload, idempotencyKey }) =>
+  enqueueWorkerInput: ({ sessionId, expectedIncarnationId, source = "dispatch", payload, idempotencyKey }) =>
     sessionAuthority.enqueueInput({
       workspaceSessionId: sessionId,
       expectedIncarnationId,
-      source: "dispatch",
+      source,
       payload,
       idempotencyKey,
     }),
+  enqueueWorkerInteractiveSubmission: ({ sessionId, expectedIncarnationId, source = "dispatch", text, idempotencyKey }) =>
+    sessionAuthority.enqueueInteractiveSubmission({
+      workspaceSessionId: sessionId,
+      expectedIncarnationId,
+      source,
+      text,
+      idempotencyKey,
+    }),
+  readTerminalSessionFact: ({ workspaceSessionId, incarnationId, generation }) =>
+    sessionAuthority.readSessionOwner({ workspaceSessionId, incarnationId, generation }),
   resolveAgentSession: ({ taskId, agentId }) =>
     agentLoopRuntime?.hasTask(taskId) ? agentLoopRuntime.resolveAgentSession({ taskId, agentId }) : undefined,
   getTaskAgentMap: ({ taskId }) =>
@@ -135,10 +141,6 @@ conductorToolBridge = createConductorToolBridge({
     if (!agentLoopRuntime?.hasTask(taskId)) return { contextRefs: contextRefs ?? [], contextPackets: [] };
     return agentLoopRuntime.prepareDispatchContext({ taskId, agentId, toSessionId, contextRefs });
   },
-  resumeTaskForDispatch: ({ taskId, agentId, toSessionId }) => {
-    if (!agentLoopRuntime?.hasTask(taskId)) return undefined;
-    return agentLoopRuntime.resumeTaskForDispatch({ taskId, agentId, toSessionId });
-  },
   onCompletionClaim: ({ taskId }) => {
     if (!agentLoopRuntime?.hasTask(taskId)) return undefined;
     return agentLoopRuntime.recordCompletionClaim({ taskId });
@@ -148,11 +150,9 @@ conductorToolBridge = createConductorToolBridge({
 sessionWakeupMonitor = createSessionWakeupMonitor({
   ptyManager,
   sessionStore: runtimeSessionStore,
-  dispatchStateReader: readProviderDispatchState,
-  dispatchResultReader: readProviderDispatchResult,
+  providerObserver: (openCodeProviderObserver ??= createOpenCodeProviderObserver()),
   conductorMessageReader: readProviderConductorMessage,
   conductorQuestionReader: readProviderConductorQuestion,
-  workerQuestionReader: readProviderWorkerQuestion,
   resolveAgentId: ({ taskId, sessionId }) => {
     if (!agentLoopRuntime?.hasTask(taskId)) return undefined;
     return agentLoopRuntime.taskAgentMap({ taskId })[sessionId];
@@ -165,9 +165,31 @@ sessionWakeupMonitor = createSessionWakeupMonitor({
       payload,
       idempotencyKey,
     }),
+  enqueueConductorInteractiveSubmission: ({ sessionId, expectedIncarnationId, source, text, idempotencyKey }) =>
+    sessionAuthority.enqueueInteractiveSubmission({
+      workspaceSessionId: sessionId,
+      expectedIncarnationId,
+      source,
+      text,
+      idempotencyKey,
+    }),
+  ensureConductorWakeupTarget: ({ taskId, sessionId }) => {
+    return agentLoopRuntime?.hasTask(taskId)
+      ? agentLoopRuntime.ensureConductorWakeupTarget({ taskId, sessionId })
+      : undefined;
+  },
+  listConductorWakeupTargets: () => agentLoopRuntime?.listConductorWakeupTargets() ?? [],
   onConductorWaiting: ({ taskId }) =>
     agentLoopRuntime?.hasTask(taskId)
       ? agentLoopRuntime.flushPendingUserMessages({ taskId }).catch(() => undefined)
+      : undefined,
+  onConductorWakeupAccepted: ({ taskId, wakeupKey }) =>
+    agentLoopRuntime?.hasTask(taskId)
+      ? agentLoopRuntime.resumeTaskForConductorInput({
+        taskId,
+        cause: "runtime_wakeup",
+        inputId: wakeupKey,
+      })
       : undefined,
 });
 sessionWakeupMonitor.start();
@@ -239,6 +261,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   sessionWakeupMonitor?.stop?.();
+  void openCodeProviderObserver?.close?.();
   agentLoopRuntime?.close?.();
   orchestrationHarness?.close?.();
   void openCodeHookService?.close?.();
@@ -438,7 +461,7 @@ function registerIpc() {
     ensureAgentLoopRuntime().generateTemplateDraft({
       cwd: String(input?.cwd ?? process.cwd()),
       projectName: input?.projectName ? String(input.projectName) : undefined,
-      description: String(input?.description ?? ""),
+      brief: String(input?.brief ?? ""),
       model: input?.model ? String(input.model) : undefined,
     }),
   );
@@ -458,6 +481,17 @@ function registerIpc() {
   ipcMain.handle("native:delete-agent-loop-template", (_event, input) =>
     ensureAgentLoopRuntime().deleteTemplate({ templateId: String(input?.templateId ?? "") }),
   );
+
+  ipcMain.handle("native:choose-agent-loop-project-directory", async (event, input) => {
+    const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: "选择 Task 项目文件夹",
+      defaultPath: input?.defaultPath ? String(input.defaultPath) : process.cwd(),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || !result.filePaths[0]) return undefined;
+    const cwd = path.resolve(result.filePaths[0]);
+    return { path: cwd, name: path.basename(cwd) || cwd };
+  });
 
   ipcMain.handle("native:create-agent-loop-task", (_event, input) =>
     ensureAgentLoopRuntime().createTask({
@@ -481,9 +515,10 @@ function registerIpc() {
     ensureAgentLoopRuntime().startRun({ taskId: String(input?.taskId ?? "") }),
   );
 
-  ipcMain.handle("native:read-agent-loop-run", (_event, input) =>
-    ensureAgentLoopRuntime().readRun({ runId: String(input?.runId ?? "") }),
-  );
+  ipcMain.handle("native:read-agent-loop-run", (_event, input) => {
+    const runId = String(input?.runId ?? "");
+    return runId ? ensureAgentLoopRuntime().readRun({ runId }) : undefined;
+  });
   ipcMain.handle("native:read-agent-loop-workbench-layout", (_event, input) =>
     ensureAgentLoopRuntime().readWorkbenchLayout({ runId: String(input?.runId ?? "") }),
   );
@@ -497,6 +532,32 @@ function registerIpc() {
 
   ipcMain.handle("native:mark-agent-loop-task-achieved", (_event, input) =>
     ensureAgentLoopRuntime().markTaskAchieved({ taskId: String(input?.taskId ?? "") }),
+  );
+
+  ipcMain.handle("native:stop-agent-loop-task", (_event, input) =>
+    ensureAgentLoopRuntime().stopTask({ taskId: String(input?.taskId ?? "") }),
+  );
+
+  ipcMain.handle("native:respond-agent-loop-permission", (_event, input) =>
+    ensureAgentLoopRuntime().respondPermission({
+      taskId: String(input?.taskId ?? ""),
+      sessionId: String(input?.sessionId ?? ""),
+      permissionId: String(input?.permissionId ?? ""),
+      response: String(input?.response ?? ""),
+    }),
+  );
+
+  ipcMain.handle("native:respond-agent-loop-question", (_event, input) =>
+    ensureAgentLoopRuntime().respondSessionQuestion({
+      taskId: String(input?.taskId ?? ""),
+      sessionId: String(input?.sessionId ?? ""),
+      questionId: String(input?.questionId ?? ""),
+      answer: String(input?.answer ?? ""),
+    }),
+  );
+
+  ipcMain.handle("native:delete-agent-loop-task", (_event, input) =>
+    ensureAgentLoopRuntime().deleteTask({ taskId: String(input?.taskId ?? "") }),
   );
 
   ipcMain.handle("native:append-task-event", async (_event, input) => {
@@ -666,15 +727,7 @@ function ensureAgentLoopRuntime() {
     sessionStore: runtimeSessionStore,
     opencodePath: resolvedOpencodePath,
     databasePath: path.join(app.getPath("userData"), "agent-workspace", "agent-loop-v1.sqlite"),
-    generateTemplateFromDescription: (input) => generateAgentLoopTemplate(input),
-    registerProviderHook: ({ sessionId, cwd }) => {
-      openCodeHookService ??= createOpenCodeHookService();
-      return openCodeHookService.registerSession({
-        sessionId,
-        cwd,
-        onEvent: (event) => sessionWakeupMonitor?.handleProviderHookEvent(event),
-      });
-    },
+    generateTemplateFromBrief: (input) => generateAgentLoopTemplate(input),
     enqueueConductorInput: ({ workspaceSessionId, expectedIncarnationId, source, payload, idempotencyKey }) =>
       sessionAuthority.enqueueInput({
         workspaceSessionId,
@@ -683,11 +736,32 @@ function ensureAgentLoopRuntime() {
         payload,
         idempotencyKey,
       }),
+    enqueueConductorInteractiveSubmission: ({ workspaceSessionId, expectedIncarnationId, source, text, idempotencyKey }) =>
+      sessionAuthority.enqueueInteractiveSubmission({
+        workspaceSessionId,
+        expectedIncarnationId,
+        source,
+        text,
+        idempotencyKey,
+      }),
+    openCodeHookService: (openCodeHookService ??= createOpenCodeHookService()),
+    onProviderHookEvent: (event) => sessionWakeupMonitor?.handleProviderHookEvent(event),
+    respondToPermission: (input) => sessionWakeupMonitor?.respondPermission(input),
+    reconcileTaskCancellations: ({ taskId }) => conductorToolBridge.reconcileTaskCancellations({ taskId }),
     getConductorBridgeConfig: async () => {
       await conductorToolBridgeHttpServerPromise;
       return conductorToolBridgeRuntimeConfig;
     },
   });
+  // Startup may reveal durable wakeups whose prior Conductor PTY was reaped
+  // while Electron was closed.  The monitor will hydrate them from the newly
+  // restored task registry and ask this runtime to create a fresh generation.
+  void sessionWakeupMonitor?.tick?.().catch(() => undefined);
+  // A saved permission answer has a separate user-owned continuation path.
+  // If Electron closed before OpenCode reissued the same request, restore its
+  // existing logical Session now; the fresh hook transport will deliver the
+  // retained answer once OpenCode asks again.
+  void agentLoopRuntime.resumePendingPermissionRecoveries().catch(() => undefined);
   return agentLoopRuntime;
 }
 
@@ -696,7 +770,6 @@ function sanitizeAgentLoopTemplate(input) {
   return {
     id: value.id ? String(value.id) : undefined,
     name: String(value.name ?? ""),
-    description: value.description ? String(value.description) : "",
     source: value.source ? String(value.source) : "manual",
     conductor: value.conductor && typeof value.conductor === "object" ? {
       role: value.conductor.role ? String(value.conductor.role) : undefined,
@@ -764,63 +837,26 @@ function resolvePtyCommand(command) {
   return resolveOpencodePath() ?? command;
 }
 
-function readProviderDispatchResult({ session, dispatch }) {
+async function readProviderConductorMessage({ session, afterMessageCreatedAt, providerSessionId }) {
   if (!isOpencodeSession(session)) return undefined;
-  return getDispatchAssistantAnswer({
-    dispatchId: dispatch.dispatchId,
-    cwd: session.cwd,
-    dispatchCreatedAt: dispatch.createdAt,
-  }).catch(() => undefined);
+  const fact = await (openCodeProviderObserver ??= createOpenCodeProviderObserver())
+    .observeConductor({ session, afterMessageCreatedAt, providerSessionId })
+    .catch(() => undefined);
+  return fact?.kind === "result" ? fact.result : undefined;
 }
 
-function readProviderDispatchState({ session, dispatch }) {
+async function readProviderConductorQuestion({ session, afterMessageCreatedAt, providerSessionId }) {
   if (!isOpencodeSession(session)) return undefined;
-  return inspectDispatchProviderState({
-    dispatchId: dispatch.dispatchId,
-    cwd: session.cwd,
-    dispatchCreatedAt: dispatch.createdAt,
-  }).catch(() => undefined);
-}
-
-async function readProviderConductorMessage({ session, afterMessageCreatedAt }) {
-  if (!isOpencodeSession(session)) return undefined;
-  const providerSession = await findProviderSessionForConductorTask({
-    cwd: session.cwd,
-    taskId: session.taskId,
-  }).catch(() => undefined);
-  if (!providerSession?.providerSessionId) return undefined;
-  return getLastEffectiveAssistantAnswer({
-    providerSessionId: providerSession.providerSessionId,
-    afterMessageCreatedAt,
-  }).catch(() => undefined);
-}
-
-function readProviderConductorQuestion({ session, afterMessageCreatedAt }) {
-  if (!isOpencodeSession(session)) return undefined;
-  return getLastPendingQuestionForConductorTask({
-    cwd: session.cwd,
-    taskId: session.taskId,
-    afterMessageCreatedAt,
-  }).catch(() => undefined);
-}
-
-function readProviderWorkerQuestion({ session, afterMessageCreatedAt }) {
-  if (!isOpencodeSession(session)) return undefined;
-  return getLastPendingQuestionForDirectory({
-    cwd: session.cwd,
-    afterMessageCreatedAt,
-  }).catch(() => undefined);
+  const fact = await (openCodeProviderObserver ??= createOpenCodeProviderObserver())
+    .observeConductor({ session, afterMessageCreatedAt, providerSessionId })
+    .catch(() => undefined);
+  return fact?.kind === "attention" ? fact.attention : undefined;
 }
 
 function isOpencodeSession(session) {
   const provider = String(session?.provider ?? "");
   const command = String(session?.command ?? "");
   return provider === "opencode" || path.basename(command) === "opencode";
-}
-
-function isCanonicalWorkspaceSessionId(sessionId) {
-  const value = String(sessionId ?? "");
-  return /^[a-z0-9-]+:[^:]+:[^:]+:[^:]+$/i.test(value);
 }
 
 function buildWorkspaceSessionLaunchProfile(input) {
@@ -881,9 +917,4 @@ function sanitizeRuntimeFiles(files) {
 function sanitizeJsonObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return JSON.parse(JSON.stringify(value));
-}
-
-function taskIdFromWorkspaceSessionId(sessionId) {
-  const parts = String(sessionId ?? "").split(":");
-  return parts.length >= 3 ? parts[2] : undefined;
 }

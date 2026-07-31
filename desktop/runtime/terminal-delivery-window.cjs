@@ -187,11 +187,12 @@ function normalizeDelta(input) {
   const chunk = typeof input?.chunk === "string" ? input.chunk : String(input?.chunk ?? "");
   const startCursor = normalizeCursor(input?.startCursor);
   const cursor = normalizeCursor(input?.cursor);
+  const bufferMode = input?.bufferMode === "alternate" ? "alternate" : "normal";
   const bytes = Buffer.byteLength(chunk, "utf8");
   if (!chunk || cursor <= startCursor || cursor - startCursor !== bytes) {
     throw new Error("terminal_delivery_delta_invalid");
   }
-  return { chunk, startCursor, cursor, bytes };
+  return { chunk, startCursor, cursor, bytes, bufferMode };
 }
 
 function unacknowledgedBytes(attachment) {

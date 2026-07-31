@@ -24,6 +24,9 @@ describe("OpenCode hook service", () => {
     const pluginPath = path.join(launch.env.OPENCODE_CONFIG_DIR, "plugins", "agent-workspace-hook.js");
 
     expect(fs.readFileSync(pluginPath, "utf8")).toContain("permission.asked");
+    expect(fs.readFileSync(pluginPath, "utf8")).toContain("permission.replied");
+    expect(fs.readFileSync(pluginPath, "utf8")).toContain("client.postSessionIdPermissionsPermissionId");
+    expect(fs.readFileSync(pluginPath, "utf8")).toContain("new URL('/permission/reply', permissionReplyServer.url.href).href");
     expect(fs.readFileSync(pluginPath, "utf8")).toContain("question.asked");
 
     const event = {

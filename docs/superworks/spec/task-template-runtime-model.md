@@ -29,7 +29,7 @@ prompt as a hidden route. Agent Loop Template cannot be serialized as a Workflow
 | Session | Terminal Runtime | logical provider-native execution identity with current PTY incarnation |
 | Dispatch | Coordinator | immutable Conductor command plus transport/provider receipts |
 | Provider Result | Provider Adapter | exact semantic result/attention/failure associated with a dispatch |
-| Artifact reference | Runtime index | safe task-relative path declared or discovered for user inspection |
+| Artifact reference | Runtime index | safe task-relative file confirmed to exist before user inspection |
 
 Template creation belongs to **Template Builder**, not the Task dialog. A
 Task dialog may link to Template Builder, but cannot silently create a reusable
@@ -38,7 +38,7 @@ Template through an incomplete Task form.
 ## Template Draft And Version
 
 ```text
-description or manual editor
+natural-language Charter brief or manual editor
   -> Template Draft
   -> user review/edit
   -> explicit save
@@ -50,18 +50,24 @@ Session, terminal, Provider Session, dispatch, or artifact.
 
 A Loop Template Version contains:
 
-- Conductor role, model, and editable Charter;
+- Conductor role, model, and one editable Charter. The Charter captures the
+  Template's suitable task context, collaboration intent, and decision
+  preferences; it is snapshotted and supplied to each Conductor incarnation
+  as dynamic orchestration context;
 - native Session Agent Cards, each with an identity, display name, capability
   guidance, model, optional MCP/Skills configuration, and default output
   guidance;
 - default concurrency / dispatch bounds;
-- optional delivery preference (a path or output kind), which is advice to
-  Conductor and never a Runtime route or completion condition.
+- no required delivery path or output kind. Legacy path data is retained only
+  as a passive lookup candidate for an already existing project file; it is not
+  supplied to Conductor and never becomes a Runtime route or completion
+  condition.
 
 It cannot contain graph nodes, edges, declared role order, fixed worker count,
-review gate, remediation chain, retry route, or automatic achieved rule. Empty
-MCP/Skill lists mean the native provider capabilities are unrestricted by the
-Template.
+remediation chain, retry route, dispatch prerequisite, or automatic achieved
+rule. A Charter may recommend review, evidence collection, or publication, but
+every next dispatch remains the Conductor's decision. Empty MCP/Skill lists
+mean the native provider capabilities are unrestricted by the Template.
 
 Version operations are explicit: save an edited version, copy, archive, and
 delete an unreferenced identity. Archiving hides normal selection but never
@@ -71,7 +77,7 @@ references the Template.
 ## Task Architecture And Task Run
 
 ```text
-saved Loop Template Version + user title/goal
+saved Loop Template Version + user title/goal + selected writable project root
   -> confirm Task Architecture snapshot
   -> queued Task
   -> explicit Start
@@ -79,13 +85,28 @@ saved Loop Template Version + user title/goal
 ```
 
 The Task Architecture records Template id/version, copied Charter, copied
-Agent Cards, project cwd, user goal, and delivery preference. Later Template
-edits cannot change it. A separate Start action begins runtime execution.
+Agent Cards, the user-selected project
+`cwd`, and user goal. Native Sessions, relative artifacts, and Session Store
+metadata are rooted at that `cwd`; the global Task list does not change this
+ownership. Later Template edits cannot change the snapshot. A separate Start action begins runtime execution.
 
 Every start creates a fresh Task Run and fresh logical Session identities. It
 must not reuse another Task's terminal, dispatch, Provider context, result,
 artifact index, or layout state. A resumed run attaches to its own existing
 logical Sessions through the Terminal Runtime's claim/attach protocol.
+
+Stopping a Task ends the current Run's native Sessions but preserves its
+history. The later **restart** action creates a new Run and new Conductor
+identity; it does not ask OpenCode to resume an old provider Session. A desktop
+process restart is distinct: Runtime may reconnect to a still-live Terminal
+Host for the same Run, but it must not silently replace a missing native Session
+with a new Run or a replacement terminal. A missing Conductor terminal puts
+the Run into explicit recovery: first attempt exact reattach, then let the user
+choose provider-native resume when provable, recovery with a new Conductor
+incarnation in the same Run, or a fresh new Run. A Task-page follow-up remains
+pending until one of those actions yields an exact delivery receipt. The
+human-facing contract is defined in
+`task-run-continuity-and-terminal-experience.md`.
 
 ## Agent Loop Control Cycle
 
@@ -110,20 +131,24 @@ output or let workers communicate directly.
 
 | Entity | States / meaning |
 | --- | --- |
-| Task | `queued`, `running`, `delivery_ready`, `achieved`, `archived` |
-| Run | `running`, `delivery_ready`, `achieved` |
-| Dispatch | `queued`, `input_accepted`, `delivered`, `result_available`, `waiting_input`, `failed` |
+| Task | `queued`, `running`, `delivery_ready`, `stopped`, `achieved`, `archived` |
+| Run | delivery lifecycle plus control state: `active`, `recovery_required`, `stopped`, or `failed` |
+| Dispatch | `queued`, `input_accepted`, `delivered`, `result_available`, `waiting_input`, `cancellation_requested`, `cancelled`, `cancel_failed`, `failed` |
 | Session | Runtime transport lifecycle plus Provider-derived semantic state |
 
 `delivery_ready` is Conductor's recorded delivery claim, not a quality verdict.
-`achieved` is an explicit user action after inspecting the actual artifact.
-Neither the presence of a file, a worker's “done”, nor raw terminal text can
-make a Task achieved.
+`achieved` is an explicit user action after accepting the current delivery; an
+artifact is optional supporting evidence, not a requirement. Neither a file,
+a worker's “done”, nor raw terminal text can make a Task achieved.
 
-When a Template declares a relative artifact preference, it is resolved from
-the Task project root. `.agent-workspace/` is Runtime metadata and is never an
-artifact root. The Conductor includes that project root in any bounded
-artifact-producing dispatch so the indexed file is the file the user can open.
+An achieved Task's later follow-up explicitly creates a new Run with preserved
+Task history as context. It does not pretend that the accepted Run's old native
+provider Session is still a continuation target.
+
+If legacy path data names a relative artifact, Runtime resolves it from the
+Task project root only after the file exists. `.agent-workspace/` is Runtime
+metadata and is never an artifact root. This passive lookup does not enter the
+Conductor prompt or a worker dispatch.
 
 ## Future Workflow Boundary
 

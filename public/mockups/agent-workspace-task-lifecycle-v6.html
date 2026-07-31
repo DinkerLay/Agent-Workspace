@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Workspace · Task lifecycle mock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1319;
+      --chrome: #10171d;
+      --panel: #121a21;
+      --panel-2: #17212a;
+      --line: #26333e;
+      --soft-line: #1d2831;
+      --text: #e6edf3;
+      --soft: #b7c2ce;
+      --muted: #8090a0;
+      --faint: #5c6d7d;
+      --blue: #4384f7;
+      --blue-soft: #182d4c;
+      --green: #50cc80;
+      --amber: #e7ad3a;
+      --violet: #9b78f6;
+      --danger: #ee6470;
+      --mono: "SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-width: 1180px; min-height: 100%; margin: 0; }
+    body { overflow: hidden; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    h1, h2, h3, p { margin: 0; }
+    svg { display: block; }
+    .app { height: 100vh; display: grid; grid-template-columns: 286px 370px minmax(560px, 1fr) 420px; grid-template-rows: 42px 72px minmax(0, 1fr); background: var(--bg); }
+
+    .windowbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 11px; padding: 0 10px; border-bottom: 1px solid var(--soft-line); background: #302d29; }
+    .traffic { display: flex; gap: 10px; }
+    .traffic i { width: 14px; height: 14px; border-radius: 50%; }
+    .traffic .red { background: #ff5f57; } .traffic .yellow { background: #febc2e; } .traffic .green { background: #28c840; }
+    .windowbar strong { color: #d6d6d6; font-size: 16px; font-weight: 650; }
+
+    .sidebar { grid-row: 2 / -1; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: #10171d; }
+    .brand { display: flex; align-items: center; gap: 13px; height: 75px; padding: 0 23px; font-size: 17px; font-weight: 680; }
+    .brand-mark { width: 24px; height: 24px; color: var(--blue); }
+    nav { display: grid; gap: 8px; padding: 42px 12px 0; }
+    .nav-item { display: flex; align-items: center; gap: 15px; height: 52px; padding: 0 13px; color: #9aa9b8; border: 0; border-radius: 8px; background: transparent; font-size: 17px; text-align: left; }
+    .nav-item:hover { color: var(--text); background: var(--panel); }
+    .nav-item.active { color: #fff; background: var(--blue); }
+    .nav-item svg { width: 23px; height: 23px; stroke-width: 1.85; }
+    .sidebar-bottom { display: flex; align-items: center; gap: 12px; margin-top: auto; padding: 24px 28px 36px; color: var(--muted); font-size: 13px; }
+    .sidebar-bottom:before { content: "☼"; color: var(--muted); font-size: 23px; }
+    .sidebar-bottom span { overflow: hidden; padding-left: 13px; border-left: 1px solid var(--line); text-overflow: ellipsis; white-space: nowrap; }
+
+    .projectbar { grid-column: 2 / -1; display: flex; align-items: center; justify-content: space-between; padding: 0 28px; border-bottom: 1px solid var(--line); background: #0f161c; }
+    .project-title { display: flex; align-items: center; gap: 15px; min-width: 0; }
+    .project-title strong { font-size: 17px; font-weight: 690; }
+    .project-title span { overflow: hidden; color: #627386; font-family: var(--mono); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+    .project-actions { display: flex; align-items: center; gap: 18px; }
+    .runtime { display: flex; align-items: center; gap: 8px; color: var(--green); font-size: 14px; font-weight: 650; }
+    .runtime i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .refresh { display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 12px; color: var(--soft); border: 1px solid var(--line); border-radius: 7px; background: #10171d; font-size: 14px; font-weight: 650; }
+
+    .task-list { grid-column: 2; grid-row: 3; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: #111920; }
+    .list-title { display: flex; align-items: center; justify-content: space-between; height: 83px; padding: 0 22px; border-bottom: 1px solid var(--line); }
+    .list-title h1 { font-size: 22px; letter-spacing: -.02em; }
+    .new-task { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 13px; color: #fff; border: 1px solid #5e99ff; border-radius: 7px; background: var(--blue); font-size: 16px; font-weight: 680; }
+    .new-task b { font-size: 25px; font-weight: 350; line-height: 1; }
+    .list-caption { min-height: 71px; padding: 17px 24px 13px; color: #6f8192; border-bottom: 1px solid var(--soft-line); font-size: 15px; line-height: 1.5; }
+    .task-scroll { min-height: 0; overflow: auto; }
+    .task-row { position: relative; display: grid; grid-template-columns: 12px minmax(0, 1fr) 20px; gap: 10px; width: 100%; min-height: 94px; padding: 17px 18px 14px 22px; color: var(--text); border: 0; border-bottom: 1px solid var(--soft-line); background: transparent; text-align: left; }
+    .task-row:hover { background: #15202a; }
+    .task-row.active { background: #1b3151; box-shadow: inset 4px 0 0 var(--blue); }
+    .state-dot { width: 11px; height: 11px; margin-top: 5px; border-radius: 50%; background: #6a7b8b; }
+    .state-dot.running { background: var(--blue); box-shadow: 0 0 0 3px rgba(67,132,247,.13); }
+    .state-dot.ready { background: #728293; }
+    .state-dot.achieved { background: var(--green); }
+    .task-row strong { display: block; overflow: hidden; font-size: 16px; font-weight: 660; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+    .task-row small { display: block; margin-top: 6px; color: #91a0af; font-size: 14px; }
+    .row-state { align-self: center; color: #91a0af; font-family: var(--mono); font-size: 12px; writing-mode: vertical-rl; }
+    .archive-entry { display: flex; align-items: center; justify-content: space-between; min-height: 57px; margin: 12px; padding: 0 13px; color: #9eb4ca; border: 1px dashed #38516a; border-radius: 7px; background: #101a23; font-size: 14px; text-align: left; }
+    .archive-entry:hover { border-color: var(--blue); color: #e8f0f8; }
+    .archive-entry span { display: flex; align-items: center; gap: 9px; } .archive-entry b { color: var(--blue); font-family: var(--mono); font-weight: 650; }
+
+    .detail { grid-column: 3; grid-row: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: #0e151b; }
+    #activeDetail, #archiveDetail { flex: 1; min-height: 0; overflow: hidden; }
+    #activeDetail { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+    #archiveDetail { display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
+    .task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 39px 40px 25px; border-bottom: 1px solid var(--line); }
+    .crumb { color: var(--blue); font-family: var(--mono); font-size: 15px; }
+    .task-head h2 { margin-top: 18px; color: #f0f4f8; font-size: 31px; letter-spacing: -.035em; line-height: 1.16; }
+    .task-head p { max-width: 660px; margin-top: 14px; color: #9baaba; font-size: 18px; line-height: 1.5; }
+    .terminal-link { display: inline-flex; flex: none; align-items: center; gap: 8px; height: 46px; margin-top: 6px; padding: 0 14px; color: #bcc8d4; border: 1px solid #324250; border-radius: 7px; background: #10181f; font-size: 15px; font-weight: 650; }
+    .terminal-link svg { width: 18px; }
+    .route { display: flex; align-items: center; gap: 13px; min-height: 54px; padding: 0 40px; color: #7d8d9d; border-bottom: 1px solid var(--line); font-size: 15px; }
+    .route b { color: #b9c8d6; } .route i { color: #718295; font-style: normal; font-size: 21px; }
+    .timeline { min-height: 0; overflow: auto; margin: 16px 30px 0; padding: 12px; border: 1px solid #2d4050; border-radius: 9px; background: #101820; box-shadow: inset 0 1px 0 rgba(255,255,255,.018); overscroll-behavior: contain; scrollbar-gutter: stable; }
+    #archiveDetail .timeline { margin-bottom: 20px; }
+    .message { position: relative; margin-bottom: 9px; padding: 12px 14px 12px 56px; border: 1px solid #2a3a47; border-radius: 7px; background: #151f28; }
+    .message:last-child { margin-bottom: 0; }
+    .message:before { position: absolute; top: 12px; left: 13px; display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-family: var(--mono); font-size: 11px; font-weight: 650; content: attr(data-initial); }
+    .message.user { border-left: 4px solid var(--blue); color: var(--blue); }
+    .message.conductor { border-left: 4px solid var(--amber); color: var(--amber); }
+    .message.runtime { border-left: 4px solid var(--violet); color: var(--violet); }
+    .message.archive { border-left: 4px solid var(--green); color: var(--green); }
+    .message-head { display: flex; align-items: center; gap: 9px; color: var(--text); }
+    .message-head strong { font-size: 14px; } .message-head span { color: #758494; font-family: var(--mono); font-size: 11px; }
+    .message p { margin-top: 6px; color: #9ba9b6; font-size: 13px; line-height: 1.48; }
+    .message .contract { margin-top: 8px; padding: 9px 10px; color: #d4dee7; border: 1px solid #334556; background: #111a22; font-size: 12px; line-height: 1.5; }
+    .contract b { color: var(--text); } .contract code { color: #8eb7ff; font-family: var(--mono); font-size: 11px; }
+    .composer { display: flex; gap: 10px; padding: 12px 30px 16px; background: #0e151b; }
+    .composer input { min-width: 0; flex: 1; height: 38px; padding: 0 11px; color: var(--soft); border: 1px solid #344657; border-radius: 6px; outline: 0; background: #0d141a; font-size: 13px; }
+    .composer button { width: 68px; color: #fff; border: 0; border-radius: 6px; background: var(--blue); font-size: 13px; font-weight: 650; }
+
+    .inspector { grid-column: 4; grid-row: 3; min-width: 0; overflow: auto; border-left: 1px solid var(--line); background: #111920; }
+    .inspect-section { padding: 28px 23px; border-bottom: 1px solid var(--line); }
+    .inspect-section h2 { margin-bottom: 25px; font-size: 19px; }
+    .facts { margin: 0; }
+    .facts div { display: grid; grid-template-columns: 132px minmax(0, 1fr); min-height: 39px; align-items: center; border-bottom: 1px solid #27333d; }
+    .facts dt { color: #758697; font-size: 14px; } .facts dd { overflow: hidden; margin: 0; color: #aab8c6; font-family: var(--mono); font-size: 14px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+    .inspect-section h3 { margin: 0 0 15px; font-size: 16px; } .inspect-section p { color: #9aa9b7; font-size: 15px; line-height: 1.55; }
+    .artifact-path { display: block; margin-top: 14px; padding: 12px; overflow-wrap: anywhere; color: #4f97ff; border: 1px solid #304454; border-radius: 6px; background: #101820; font-family: var(--mono); font-size: 14px; line-height: 1.45; }
+    .inspect-action { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 48px; margin-top: 22px; padding: 0 13px; color: #4f97ff; border: 1px solid #334657; border-radius: 6px; background: #101820; font-size: 15px; font-weight: 650; text-align: left; }
+    .inspect-action:hover { border-color: var(--blue); background: #14243b; }
+    .inspect-action svg { width: 18px; }
+    .archive-note { color: #8495a6 !important; }
+    .archive-actions { display: grid; gap: 10px; margin-top: 19px; }
+    .archive-actions button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; color: #c1cfdb; border: 1px solid #405162; border-radius: 6px; background: #101820; font-size: 14px; font-weight: 650; }
+    .archive-actions button.primary { color: #fff; border-color: var(--blue); background: #2468d9; }
+    .archive-actions button.danger { color: #ff9aa0; border-color: #8f3b46; background: #231619; }
+
+    .hidden { display: none !important; }
+    .toast { position: fixed; right: 25px; bottom: 25px; z-index: 8; display: flex; align-items: center; gap: 9px; padding: 13px 15px; color: var(--text); border: 1px solid #35516b; border-radius: 7px; background: #152331; box-shadow: 0 12px 36px rgba(0,0,0,.32); font-size: 14px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .18s ease; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .modal-backdrop { position: fixed; inset: 0; z-index: 10; display: none; place-items: center; background: rgba(3,8,12,.67); backdrop-filter: blur(3px); }
+    .modal-backdrop.show { display: grid; }
+    .modal { width: 500px; border: 1px solid #46596c; border-radius: 10px; background: #121b23; box-shadow: 0 28px 80px rgba(0,0,0,.56); }
+    .modal header { display: flex; align-items: center; justify-content: space-between; padding: 22px 23px 17px; border-bottom: 1px solid var(--line); }
+    .modal h2 { font-size: 18px; } .close { width: 28px; height: 28px; color: #9aacbc; border: 0; border-radius: 5px; background: transparent; font-size: 23px; }
+    .modal main { padding: 20px 23px; } .modal main p { color: #a2b0bd; font-size: 15px; line-height: 1.55; }
+    .delete-scope { display: grid; gap: 10px; margin-top: 18px; }
+    .scope-row { display: flex; gap: 10px; padding: 12px; color: #c8d2dc; border: 1px solid #334352; border-radius: 6px; background: #101820; font-size: 14px; line-height: 1.4; }
+    .scope-row input { accent-color: var(--blue); } .scope-row small { display: block; margin-top: 4px; color: #8090a0; font-size: 12px; }
+    .scope-row.locked { color: #77899a; } .scope-row.locked input { opacity: .45; }
+    .modal footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 23px; border-top: 1px solid var(--line); }
+    .modal footer button { min-height: 38px; padding: 0 13px; color: #bfccd7; border: 1px solid #465768; border-radius: 6px; background: #151f28; font-size: 14px; font-weight: 650; }
+    .modal footer .confirm-delete { color: #fff; border-color: #b14450; background: #b53e4a; }
+
+    @media (max-width: 1450px) { .app { grid-template-columns: 236px 330px minmax(500px,1fr) 330px; } .task-head, .route { padding-left: 26px; padding-right: 26px; } .timeline { margin-left: 20px; margin-right: 20px; } .composer { padding-left: 20px; padding-right: 20px; } .task-head h2 { font-size: 27px; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="windowbar"><div class="traffic"><i class="red"></i><i class="yellow"></i><i class="green"></i></div><strong>Agent Workspace Prototype</strong></header>
+
+    <aside class="sidebar">
+      <div class="brand"><svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 2 3 5-3 2-3-2 3-5Z"/><path d="m6 7 3 5-3 2-3-2 3-5Z"/><path d="m18 7 3 5-3 2-3-2 3-5Z"/><path d="m12 12 3 5-3 2-3-2 3-5Z"/><path d="m6 17 3 5-3 2-3-2 3-5Z"/><path d="m18 17 3 5-3 2-3-2 3-5Z"/></svg><span>Agent Workspace</span></div>
+      <nav>
+        <button class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="m9 4 1-2h4l1 2M9 12l2 2 4-4"/></svg>任务</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 17l9 5 9-5"/></svg>模板</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></svg>运行现场</button>
+      </nav>
+      <div class="sidebar-bottom"><span>OpenCode · opencode-go</span></div>
+    </aside>
+
+    <header class="projectbar"><div class="project-title"><strong>Agent-WorkSpace</strong><span>/Users/dingyujie/CODES/Agent-WorkSpace</span></div><div class="project-actions"><span class="runtime"><i></i>Runtime online</span><button class="refresh">↻　刷新</button></div></header>
+
+    <aside class="task-list">
+      <div class="list-title"><h1 id="listHeading">任务</h1><button class="new-task" id="newTask"><b>＋</b>新建</button></div>
+      <p class="list-caption" id="listCaption">每个 Task 固定快照一个 Agent Loop Template；完成交付后可标记 achieved。</p>
+      <div class="task-scroll" id="activeTasks">
+        <button class="task-row active" data-active-title="分析股票中国铝业" data-active-goal="从多个维度分析股票中国铝业，最后告诉我，这只股票是什么类型。值不值得买入。"><i class="state-dot running"></i><span><strong>分析股票中国铝业</strong><small>DeepSearch · v5</small></span><em class="row-state">运行中</em></button>
+        <button class="task-row" data-active-title="分析股票中国铝业" data-active-goal="补充行业周期、估值和技术面的来源核验。"><i class="state-dot achieved"></i><span><strong>分析股票中国铝业</strong><small>DeepSearch · v5</small></span><em class="row-state">待查产物</em></button>
+        <button class="task-row" data-active-title="分析股票， 中国铝业" data-active-goal="等待 Conductor 基于下一轮用户要求分派新的 Session Agent。"><i class="state-dot ready"></i><span><strong>分析股票， 中国铝业</strong><small>DeepSearch · v5</small></span><em class="row-state">待查产物</em></button>
+        <button class="task-row" data-active-title="整体 OpenCode 和 Codex 的差距问题" data-active-goal="整理两套产品的运行时、编排和终端体验差异。"><i class="state-dot ready"></i><span><strong>整体 OpenCode 和 Codex 的差距问题</strong><small>DeepSearch · v3</small></span><em class="row-state">待查产物</em></button>
+        <button class="task-row" data-active-title="opencode 的历史发展" data-active-goal="收集 OpenCode 的版本演进、社区与产品能力变化。"><i class="state-dot running"></i><span><strong>opencode 的历史发展</strong><small>DeepSearch · v2</small></span><em class="row-state">运行中</em></button>
+      </div>
+      <div class="task-scroll hidden" id="archiveTasks">
+        <button class="task-row active archive-row" data-archive-title="整体 OpenCode 和 Codex 的差距问题" data-artifact="docs/research/opencode-vs-codex.md" data-date="2026-07-27 14:08"><i class="state-dot achieved"></i><span><strong>整体 OpenCode 和 Codex 的差距问题</strong><small>DeepSearch · v3 · 已完成</small></span><em class="row-state">achieved</em></button>
+        <button class="task-row archive-row" data-archive-title="OpenCode 发展历史" data-artifact="docs/research/opencode-history.md" data-date="2026-07-26 17:22"><i class="state-dot achieved"></i><span><strong>OpenCode 发展历史</strong><small>DeepSearch · v2 · 已完成</small></span><em class="row-state">achieved</em></button>
+        <button class="task-row archive-row" data-archive-title="中国铝业多维度分析" data-artifact="outputs/chalco-analysis.md" data-date="2026-07-26 11:41"><i class="state-dot achieved"></i><span><strong>中国铝业多维度分析</strong><small>DeepSearch · v5 · 已完成</small></span><em class="row-state">achieved</em></button>
+        <button class="task-row archive-row" data-archive-title="OpenCode 与 Claude Code 功能对比" data-artifact="docs/research/opencode-vs-claude.md" data-date="2026-07-25 18:05"><i class="state-dot achieved"></i><span><strong>OpenCode 与 Claude Code 功能对比</strong><small>DeepSearch · v2 · 已完成</small></span><em class="row-state">achieved</em></button>
+        <button class="task-row archive-row" data-archive-title="Task Runtime 重构说明" data-artifact="docs/superworks/spec/orca-terminal-runtime.md" data-date="2026-07-25 10:16"><i class="state-dot achieved"></i><span><strong>Task Runtime 重构说明</strong><small>DeepSearch · v2 · 已完成</small></span><em class="row-state">achieved</em></button>
+      </div>
+      <button class="archive-entry" id="openArchive"><span>✓　已完成任务</span><b id="archiveCount">5　›</b></button>
+    </aside>
+
+    <main class="detail">
+      <section id="activeDetail">
+        <header class="task-head"><div><div class="crumb">Task / Agent Loop</div><h2 id="activeTitle">分析股票中国铝业</h2><p id="activeGoal">从多个维度分析股票中国铝业，最后告诉我，这只股票是什么类型。值不值得买入。</p></div><button class="terminal-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></svg>进入运行现场</button></header>
+        <div class="route"><b>Agent Loop</b><i>›</i><span>Conductor 派发原生 Session Agent；每次结果、失败或需要输入才唤醒 Conductor。</span></div>
+        <section class="timeline">
+          <article class="message user" data-initial="U"><div class="message-head"><strong>任务输入</strong><span>用户 → Conductor</span></div><p>分析股票中国铝业，从基本面、技术面、行业与市场环境给出可追溯的结论。</p></article>
+          <article class="message conductor" data-initial="C"><div class="message-head"><strong>conductor.started</strong><span>2026-07-27T04:52:26.697Z</span></div><p>Conductor 已启动，等待其异步派发原生 Session Agent。</p></article>
+          <article class="message conductor" data-initial="C"><div class="message-head"><strong>Conductor 派发 → publisher</strong><span>2026-07-27T04:59:32.227Z</span></div><div class="contract"><b>工作契约</b><br>任务：输出最终分析报告<br><span>只在 Reviewer 的完整 Provider message 已由 Conductor 明确转交时工作。</span><br><code>contextRefs: result:F03BF56</code></div></article>
+          <article class="message runtime" data-initial="R"><div class="message-head"><strong>task.continued</strong><span>2026-07-27T05:00:47.812Z</span></div><p>Conductor 在交付主张后发起新的原生 Session 派发；Task 回到运行中。</p></article>
+        </section>
+        <div class="composer"><input placeholder="给 Conductor 发消息，例如：先核实这条来源，再决定是否继续。" /><button id="send">发送</button></div>
+      </section>
+
+      <section id="archiveDetail" class="hidden">
+        <header class="task-head"><div><div class="crumb">Task / Achieved</div><h2 id="archiveTitle">整体 OpenCode 和 Codex 的差距问题</h2><p>此 Task 已从运行现场退出。这里保留最终产物、对话时间线和可审计的 Session 返回；不保留活跃终端。</p></div></header>
+        <div class="route"><b>已完成任务</b><i>›</i><span>查看历史不会恢复旧 PTY；重新执行会由 Conductor 创建一个新的 Run。</span></div>
+        <section class="timeline">
+          <article class="message archive" data-initial="✓"><div class="message-head"><strong>已检查产物，标记 achieved</strong><span id="archiveDate">2026-07-27 14:08</span></div><p>用户已确认最终交付可用。Task、Run 与原生终端已退出执行面，历史仍可查阅。</p></article>
+          <article class="message conductor" data-initial="C"><div class="message-head"><strong>Conductor 最终交付主张</strong><span>已保留</span></div><div class="contract"><b>最终产物</b><br><code id="archiveArtifact">docs/research/opencode-vs-codex.md</code><br><span>完整 Provider message、转交关系和 Timeline 都仍属于此 Task 的历史记录。</span></div></article>
+          <article class="message runtime" data-initial="R"><div class="message-head"><strong>Runtime 已释放会话</strong><span>已保留诊断记录</span></div><p>原生终端不再显示在运行现场；Session 日志可在删除前继续查看。</p></article>
+        </section>
+      </section>
+    </main>
+
+    <aside class="inspector">
+      <section class="inspect-section" id="activeInspector"><h2>Task Architecture</h2><dl class="facts"><div><dt>模式</dt><dd>Agent Loop</dd></div><div><dt>Template</dt><dd>DeepSearch v5</dd></div><div><dt>Session cards</dt><dd>5</dd></div><div><dt>状态</dt><dd>运行中</dd></div></dl></section>
+      <section class="inspect-section" id="activeInspector2"><h3>控制边界</h3><p>所有 Session Agent 都是 Conductor 派发的原生 OpenCode。Runtime 异步管理 PTY 与语义状态；它不自行推进图。</p><span class="artifact-path">等待产物　Users/dingyujie/tmp/Agent-Test/</span><button class="inspect-action" id="viewTerminal">查看真实终端 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg></button></section>
+      <section class="inspect-section hidden" id="archiveInspector"><h2>Task Archive</h2><dl class="facts"><div><dt>状态</dt><dd style="color:var(--green)">✓ achieved</dd></div><div><dt>Template</dt><dd>DeepSearch v3</dd></div><div><dt>最终产物</dt><dd id="archiveArtifactShort">opencode-vs-codex.md</dd></div><div><dt>达成时间</dt><dd id="archiveDateShort">2026-07-27 14:08</dd></div></dl><h3 style="margin-top:25px">管理动作</h3><p class="archive-note">已完成 Task 不再占用运行现场。重新执行会生成新的 Run；历史 Run 只读保留。</p><div class="archive-actions"><button class="primary" id="viewArtifact">查看产物</button><button id="rerun">重新执行（新 Run）</button><button class="danger" id="deleteTask">删除任务…</button></div></section>
+    </aside>
+  </div>
+
+  <div class="modal-backdrop" id="deleteModal" role="dialog" aria-modal="true" aria-labelledby="deleteTitle"><div class="modal"><header><h2 id="deleteTitle">删除已完成任务？</h2><button class="close" id="closeModal">×</button></header><main><p>将删除 <b id="deleteTaskName">整体 OpenCode 和 Codex 的差距问题</b> 的 Task 记录。这个操作不会恢复到运行现场。</p><div class="delete-scope"><label class="scope-row"><input type="checkbox" checked /><span>删除 Runtime 数据与历史记录<small>包含 Session 状态、终端日志、Timeline 和转交快照。</small></span></label><label class="scope-row locked"><input type="checkbox" disabled /><span>保留项目里的最终交付文件<small>默认保留，避免误删用户项目产物；可在文件管理器中单独处理。</small></span></label></div></main><footer><button id="cancelDelete">取消</button><button class="confirm-delete" id="confirmDelete">删除 Task</button></footer></div></div>
+  <div class="toast" id="toast"><i></i><span>已保存</span></div>
+
+  <script>
+    const el = (id) => document.getElementById(id);
+    let archiveMode = false;
+    let selectedArchive = { title: "整体 OpenCode 和 Codex 的差距问题", artifact: "docs/research/opencode-vs-codex.md", date: "2026-07-27 14:08" };
+    function toast(message) { const node = el("toast"); node.querySelector("span").textContent = message; node.classList.add("show"); window.setTimeout(() => node.classList.remove("show"), 2200); }
+    function selectActive(button) {
+      document.querySelectorAll("#activeTasks .task-row").forEach((row) => row.classList.toggle("active", row === button));
+      el("activeTitle").textContent = button.dataset.activeTitle;
+      el("activeGoal").textContent = button.dataset.activeGoal;
+    }
+    function selectArchive(button) {
+      document.querySelectorAll(".archive-row").forEach((row) => row.classList.toggle("active", row === button));
+      selectedArchive = { title: button.dataset.archiveTitle, artifact: button.dataset.artifact, date: button.dataset.date };
+      el("archiveTitle").textContent = selectedArchive.title;
+      el("archiveArtifact").textContent = selectedArchive.artifact;
+      el("archiveArtifactShort").textContent = selectedArchive.artifact.split("/").pop();
+      el("archiveDate").textContent = selectedArchive.date;
+      el("archiveDateShort").textContent = selectedArchive.date;
+      el("deleteTaskName").textContent = selectedArchive.title;
+    }
+    function activeTaskCount() { return document.querySelectorAll("#activeTasks .task-row").length; }
+    function archiveTaskCount() { return document.querySelectorAll("#archiveTasks .task-row").length; }
+    function refreshArchiveEntry() {
+      el("archiveCount").textContent = archiveMode ? String(activeTaskCount()) : `${archiveTaskCount()}　›`;
+    }
+    function setArchiveMode(next) {
+      archiveMode = next;
+      el("activeTasks").classList.toggle("hidden", next);
+      el("archiveTasks").classList.toggle("hidden", !next);
+      el("activeDetail").classList.toggle("hidden", next);
+      el("archiveDetail").classList.toggle("hidden", !next);
+      el("activeInspector").classList.toggle("hidden", next);
+      el("activeInspector2").classList.toggle("hidden", next);
+      el("archiveInspector").classList.toggle("hidden", !next);
+      el("listHeading").textContent = next ? "已完成任务" : "任务";
+      el("listCaption").textContent = next ? "已完成 Task 不在运行现场显示。这里统一查看历史、重新执行或删除运行记录。" : "每个 Task 固定快照一个 Agent Loop Template；完成交付后可标记 achieved。";
+      el("newTask").classList.toggle("hidden", next);
+      el("openArchive").innerHTML = next ? "<span>‹　返回进行中任务</span><b id=\"archiveCount\"></b>" : "<span>✓　已完成任务</span><b id=\"archiveCount\"></b>";
+      refreshArchiveEntry();
+      toast(next ? "已进入已完成任务管理" : "已返回进行中任务");
+    }
+    document.querySelectorAll("#activeTasks .task-row").forEach((button) => button.addEventListener("click", () => selectActive(button)));
+    document.querySelectorAll(".archive-row").forEach((button) => button.addEventListener("click", () => selectArchive(button)));
+    el("openArchive").addEventListener("click", () => setArchiveMode(!archiveMode));
+    el("send").addEventListener("click", () => toast("已把消息写入 Task Timeline，等待 Conductor 唤醒。"));
+    el("newTask").addEventListener("click", () => toast("这里会打开新建 Task；本 mock 不创建真实 Runtime。"));
+    el("viewTerminal").addEventListener("click", () => toast("运行现场仅显示仍在执行的 Task。"));
+    el("viewArtifact").addEventListener("click", () => toast("将打开最终产物：" + selectedArchive.artifact));
+    el("rerun").addEventListener("click", () => {
+      const archivedRow = document.querySelector(".archive-row.active");
+      if (!archivedRow) return;
+      const activeRow = document.createElement("button");
+      activeRow.className = "task-row";
+      activeRow.dataset.activeTitle = selectedArchive.title;
+      activeRow.dataset.activeGoal = "已重新执行：Conductor 会创建新的 Run，并从当前 Task 的历史与新任务输入中重新派发原生 Session Agent。";
+      activeRow.innerHTML = `<i class="state-dot running"></i><span><strong>${selectedArchive.title}</strong><small>新 Run · ${archivedRow.querySelector("small").textContent.split(" · ")[0]}</small></span><em class="row-state">运行中</em>`;
+      activeRow.addEventListener("click", () => selectActive(activeRow));
+      el("activeTasks").prepend(activeRow);
+      archivedRow.remove();
+      selectActive(activeRow);
+      setArchiveMode(false);
+      refreshArchiveEntry();
+      toast("已创建新的 Run：Conductor 将重新开始派发；旧 Run 仍保留在此 Task 历史中。");
+    });
+    el("deleteTask").addEventListener("click", () => el("deleteModal").classList.add("show"));
+    el("closeModal").addEventListener("click", () => el("deleteModal").classList.remove("show"));
+    el("cancelDelete").addEventListener("click", () => el("deleteModal").classList.remove("show"));
+    el("deleteModal").addEventListener("click", (event) => { if (event.target === el("deleteModal")) el("deleteModal").classList.remove("show"); });
+    el("confirmDelete").addEventListener("click", () => {
+      const archivedRow = document.querySelector(".archive-row.active");
+      archivedRow?.remove();
+      const nextArchive = document.querySelector(".archive-row");
+      if (nextArchive) selectArchive(nextArchive);
+      else setArchiveMode(false);
+      el("deleteModal").classList.remove("show");
+      refreshArchiveEntry();
+      toast("Mock：已删除 Task 运行数据，项目产物保持不变。");
+    });
+  </script>
+</body>
+</html>

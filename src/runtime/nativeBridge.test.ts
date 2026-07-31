@@ -25,6 +25,8 @@ import {
   subscribeNativePtyEvents,
   subscribeNativeAgentLoopRuntimeEvents,
   stopNativePtySession,
+  stopNativeAgentLoopTask,
+  chooseNativeAgentLoopProjectDirectory,
   type NativePtyEvent,
 } from "./nativeBridge";
 
@@ -39,6 +41,23 @@ describe("native runtime bridge", () => {
       mode: "browser",
       message: "浏览器模式无法直接启动本地 opencode。请使用桌面壳运行。",
     });
+  });
+
+  it("delegates Task project-folder selection to the desktop preload bridge", async () => {
+    const paths: Array<string | undefined> = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
+        chooseAgentLoopProjectDirectory: async (input) => {
+          paths.push(input?.defaultPath);
+          return { path: "/tmp/selected-project", name: "selected-project" };
+        },
+      },
+    };
+
+    await expect(chooseNativeAgentLoopProjectDirectory("/tmp/current-project")).resolves.toEqual({ path: "/tmp/selected-project", name: "selected-project" });
+    expect(paths).toEqual(["/tmp/current-project"]);
   });
 
   it("reads raw terminal diagnostics only through the desktop bridge", async () => {
@@ -733,5 +752,22 @@ describe("native runtime bridge", () => {
       processes: [],
       error: "浏览器模式无法直接启动本地 opencode。请使用桌面壳运行。",
     });
+  });
+
+  it("delegates Task stop requests to the desktop preload bridge", async () => {
+    const taskIds: string[] = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
+        stopAgentLoopTask: async ({ taskId }) => {
+          taskIds.push(taskId);
+          return undefined;
+        },
+      },
+    };
+
+    await expect(stopNativeAgentLoopTask("task-stop-1")).resolves.toBeUndefined();
+    expect(taskIds).toEqual(["task-stop-1"]);
   });
 });

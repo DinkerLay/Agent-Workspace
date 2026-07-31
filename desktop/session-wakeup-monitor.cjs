@@ -10,11 +10,32 @@ function createSessionWakeupMonitor({
   conductorMessageReader,
   conductorQuestionReader,
   workerQuestionReader,
+  // The Observer is an OpenCode-specific, read-only semantic source.  It is
+  // deliberately optional during migration so legacy fixture tests can remain
+  // narrow; production supplies it for every native OpenCode worker.
+  providerObserver,
   resolveConductorSessionId = inferConductorSessionId,
   resolveAgentId = () => undefined,
   enqueueConductorInput,
+  // OpenCode consumes a bracketed paste asynchronously. Prefer the owned
+  // two-phase TUI submission path whenever Session Authority is available;
+  // the raw payload writer remains only for narrow legacy harnesses.
+  enqueueConductorInteractiveSubmission,
+  // Starting/re-attaching a logical Conductor is owned by the Agent Loop
+  // Runtime.  The monitor may request a live target for an already-durable
+  // wakeup, but never chooses a retry route or creates a worker Session.
+  ensureConductorWakeupTarget,
+  listConductorWakeupTargets,
   onConductorWaiting,
+  // A Task may only re-open its dispatch window after the Terminal Runtime has
+  // accepted a semantic input for the Conductor.  This callback is owned by the
+  // Agent Loop runtime; the monitor never chooses the next business action.
+  onConductorWakeupAccepted,
   formatWakeupInput = formatInteractivePtyInput,
+  // Permission decisions are user-owned. This transport only submits the
+  // selected Provider response; it never chooses a response or wakes the
+  // Conductor to decide one.
+  submitPermissionReply = postOpenCodePermissionReply,
 } = {}) {
   if (!ptyManager) throw new Error("Session wakeup monitor requires ptyManager.");
   if (!sessionStore) throw new Error("Session wakeup monitor requires sessionStore.");
@@ -26,6 +47,8 @@ function createSessionWakeupMonitor({
   const recordedWorkerFailureKeys = new Set();
   const recordedConductorMessageCursors = new Map();
   const providerHookErrors = new Map();
+  const pendingPermissionReplies = new Map();
+  const inFlightPermissionReplies = new Map();
   let timer;
   let pendingWakeupTimer;
   let unsubscribeEvents;
@@ -43,6 +66,10 @@ function createSessionWakeupMonitor({
       }, intervalMs);
       timer.unref?.();
     }
+    // Wakeups are durable Coordinator commands, not a best-effort in-memory
+    // debounce. Rehydrate them whenever the monitor starts; delivery still
+    // waits for the Conductor's provider-derived idle boundary.
+    hydratePendingWakeups();
   }
 
   function stop() {
@@ -61,15 +88,9 @@ function createSessionWakeupMonitor({
   async function tick() {
     const sessions = typeof ptyManager.list === "function" ? ptyManager.list() : [];
     const sampled = new Map();
-    const result = {
-      sampled: 0,
-      resultAvailable: 0,
-      wakeupsSent: 0,
-      wakeupsQueued: 0,
-      conductorMessagesRecorded: 0,
-      providerFailures: 0,
-    };
+    const result = emptyResult();
 
+    hydratePendingWakeups(sessions);
     addStats(result, await drainPendingWakeups(sessions, sampled));
 
     for (const session of sessions) {
@@ -96,6 +117,11 @@ function createSessionWakeupMonitor({
   function handleProviderHookEvent(event) {
     const sessionId = String(event?.sessionId ?? "");
     if (!sessionId) return;
+    if (event.kind === "permission") {
+      handlePermissionHookEvent(sessionId, event.payload);
+      scheduleSessionInspect(sessionId);
+      return;
+    }
     if (event.kind === "status" && String(event.payload?.type ?? "") === "error") {
       providerHookErrors.set(sessionId, {
         message: providerHookErrorMessage(event.payload?.error),
@@ -103,6 +129,116 @@ function createSessionWakeupMonitor({
       });
     }
     scheduleSessionInspect(sessionId);
+  }
+
+  function handlePermissionHookEvent(sessionId, payload = {}) {
+    const session = findSession(sessionId);
+    if (!session?.taskId || typeof sessionStore.recordPermissionRequested !== "function") return;
+    const requestId = providerPermissionRequestId(payload);
+    if (!requestId) return;
+    const permissionId = `opencode:${requestId}`;
+    const key = permissionReplyKey(session.taskId, session.id, permissionId);
+    const phase = String(payload.phase ?? "asked");
+    if (phase === "replied") {
+      pendingPermissionReplies.delete(key);
+      inFlightPermissionReplies.delete(key);
+      const response = providerPermissionResponse(payload);
+      if (!response) return;
+      sessionStore.recordPermissionResolved?.({
+        taskId: session.taskId,
+        sessionId: session.id,
+        cwd: session.cwd,
+        permissionId,
+        response,
+      });
+      return;
+    }
+
+    const requested = sessionStore.recordPermissionRequested({
+      taskId: session.taskId,
+      sessionId: session.id,
+      cwd: session.cwd,
+      permissionId,
+      requestId,
+      provider: "opencode",
+      permission: String(payload.permission ?? payload.action ?? "unknown"),
+      patterns: providerPermissionPatterns(payload),
+      summary: providerPermissionSummary(payload),
+    });
+    const endpoint = String(payload.replyEndpoint ?? "");
+    const token = String(payload.replyToken ?? "");
+    if (endpoint && token && requested?.status !== "approved" && requested?.status !== "denied") {
+      // This transport capability stays Main-process-only. The persisted
+      // Workbench projection deliberately receives neither endpoint nor token.
+      pendingPermissionReplies.set(key, { endpoint, token, requestId });
+      // A response chosen before an Electron restart is durable user intent,
+      // not a reusable endpoint credential. Session Store may have rebound an
+      // equivalent logical permission to this new Provider request id; only
+      // this fresh hook transport can receive the retained answer.
+      const retainedResponse = String(requested?.response ?? "");
+      // Only a *fresh Provider request* which adopted a durable answer may be
+      // delivered automatically. `submitted` is awaiting a receipt and
+      // `reply_failed` is intentionally a user-actionable retry state.  If we
+      // include either here, a repeated Provider observation turns one failed
+      // delivery into an unbounded background retry loop and makes the Task
+      // page's buttons appear ineffective.
+      if (String(requested?.status ?? "") === "replaying"
+        && ["once", "always", "reject"].includes(retainedResponse)) {
+        void respondPermission({
+          taskId: session.taskId,
+          sessionId: session.id,
+          permissionId,
+          response: retainedResponse,
+        });
+      }
+    }
+  }
+
+  async function respondPermission(input = {}) {
+    const taskId = String(input.taskId ?? "");
+    const sessionId = String(input.sessionId ?? "");
+    const permissionId = String(input.permissionId ?? "");
+    const response = normalizePermissionResponse(input.response);
+    if (!taskId || !sessionId || !permissionId || !response) {
+      return { ok: false, status: "invalid", errorCode: "permission_response_invalid" };
+    }
+    const key = permissionReplyKey(taskId, sessionId, permissionId);
+    const view = sessionStore.readSession?.({ taskId, sessionId, maxChars: 0 });
+    const permission = view?.permissions?.find((item) => String(item.permissionId ?? "") === permissionId);
+    if (!permission) return { ok: false, status: "missing", errorCode: "permission_request_not_found" };
+    if (["approved", "denied", "resolved"].includes(String(permission.status ?? ""))) {
+      return { ok: true, status: String(permission.status), changed: false };
+    }
+    if (String(permission.status ?? "") === "submitted") {
+      return { ok: true, status: "submitted", changed: false };
+    }
+    const transport = pendingPermissionReplies.get(key);
+    if (!transport) {
+      return { ok: false, status: "requested", errorCode: "permission_reply_transport_unavailable" };
+    }
+    const inFlight = inFlightPermissionReplies.get(key);
+    if (inFlight) return inFlight;
+    const operation = Promise.resolve()
+      .then(async () => {
+        const delivery = await submitPermissionReply({ ...transport, taskId, sessionId, permissionId, response });
+        const accepted = delivery === true || delivery?.accepted === true;
+        const errorCode = delivery && typeof delivery === "object" ? String(delivery.errorCode ?? "") : "";
+        if (!accepted) {
+          const recorded = sessionStore.recordPermissionReplyFailed?.({ taskId, sessionId, permissionId, response });
+          return { ok: true, status: recorded?.status ?? "reply_failed", changed: recorded?.changed !== false, ...(errorCode ? { errorCode } : {}) };
+        }
+        const recorded = sessionStore.recordPermissionSubmitted?.({ taskId, sessionId, permissionId, response });
+        return { ok: true, status: recorded?.status ?? "submitted", changed: recorded?.changed !== false };
+      })
+      .catch((error) => {
+        const recorded = sessionStore.recordPermissionReplyFailed?.({ taskId, sessionId, permissionId, response });
+        const message = error instanceof Error ? error.message : String(error ?? "");
+        const errorCode = message.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 160);
+        return { ok: true, status: recorded?.status ?? "reply_failed", changed: recorded?.changed !== false, ...(errorCode ? { errorCode } : {}) };
+      })
+      .finally(() => inFlightPermissionReplies.delete(key));
+    inFlightPermissionReplies.set(key, operation);
+    return operation;
   }
 
   function scheduleSessionInspect(sessionId) {
@@ -141,6 +277,11 @@ function createSessionWakeupMonitor({
     const status = sampleSession(session, sampled);
     result.sampled += 1;
 
+    if (providerObserver && String(session.provider ?? "opencode") === "opencode") {
+      addStats(result, await inspectObservedWorkerSession({ session, sessions, sampled, status }));
+      return result;
+    }
+
     let view = sessionStore.readSession({
       taskId: session.taskId,
       sessionId: session.id,
@@ -170,6 +311,10 @@ function createSessionWakeupMonitor({
             providerSessionId: providerQuestion.providerSessionId,
             providerMessageId: providerQuestion.providerMessageId ?? providerQuestion.messageId,
             providerQuestionPartId: providerQuestion.providerQuestionPartId ?? providerQuestion.questionPartId,
+            // A Provider question belongs to the physical TUI that exposed it.
+            // A recovered logical Session gets a new PTY incarnation, so an old
+            // observation must never become a writable Task-page prompt there.
+            terminalIncarnationId: session.incarnationId,
             question: providerQuestion.questionText,
           },
         );
@@ -178,7 +323,7 @@ function createSessionWakeupMonitor({
         const conductorSessionId = resolveWakeupConductorSessionId({ session, dispatch: activeDispatch, sessions, resolveConductorSessionId });
         const wakeup = {
           kind: "attention",
-          key: `attention:${session.taskId}:${conductorSessionId}:${session.id}:${attentionKey}`,
+          key: `attention:${session.taskId}:${activeDispatch?.dispatchId ?? "unbound"}:${attentionKey}`,
           taskId: session.taskId,
           conductorSessionId,
           workerSessionId: session.id,
@@ -196,27 +341,20 @@ function createSessionWakeupMonitor({
         if (conductorSessionId && await trySendWakeup(wakeup, sessions, sampled)) {
           result.wakeupsSent += 1;
         } else if (conductorSessionId) {
-          pendingWakeups.set(wakeup.key, wakeup);
-          sessionStore.recordConductorWakeup({
-            taskId: wakeup.taskId,
-            sessionId: wakeup.conductorSessionId,
-            workerSessionId: wakeup.workerSessionId,
-            dispatchId: wakeup.dispatchId,
-            resultId: wakeup.resultId,
-            workerState: wakeup.workerState,
-            cursor: wakeup.cursor,
-            status: "queued",
-            summary: `Conductor wakeup queued for ${roleNameFromSessionId(wakeup.workerSessionId)} attention`,
-          });
+          queueWakeup(wakeup, "attention");
           result.wakeupsQueued += 1;
         }
       }
       return result;
     }
-    const dispatches = view.dispatches.filter((dispatch) => dispatch.status === "delivered");
+    const dispatches = view.dispatches.filter((dispatch) => ["delivered", "cancellation_requested"].includes(dispatch.status));
 
     const latestActiveDispatch = dispatches.at(-1);
     for (const dispatch of dispatches) {
+      if (dispatch.status === "cancellation_requested") {
+        await reconcileCancellationRequested({ session, dispatch, sessions, sampled, status, result });
+        continue;
+      }
       const providerResult = await readDispatchResult({ session, dispatch, status });
       if (!providerResult?.answerText) continue;
       if (!hasCompletedProviderResult(providerResult)) continue;
@@ -247,7 +385,7 @@ function createSessionWakeupMonitor({
       });
       if (!conductorSessionId) continue;
       const wakeup = {
-        key: `${session.taskId}:${conductorSessionId}:${session.id}:${dispatch.dispatchId}`,
+        key: `result:${session.taskId}:${dispatch.dispatchId}`,
         taskId: session.taskId,
         conductorSessionId,
         workerSessionId: session.id,
@@ -266,18 +404,7 @@ function createSessionWakeupMonitor({
       if (await trySendWakeup(wakeup, sessions, sampled)) {
         result.wakeupsSent += 1;
       } else {
-        pendingWakeups.set(wakeup.key, wakeup);
-        sessionStore.recordConductorWakeup({
-          taskId: wakeup.taskId,
-          sessionId: wakeup.conductorSessionId,
-          workerSessionId: wakeup.workerSessionId,
-          dispatchId: wakeup.dispatchId,
-          resultId: wakeup.resultId,
-          workerState: wakeup.workerState,
-          cursor: wakeup.cursor,
-          status: "queued",
-          summary: `Conductor wakeup queued for ${roleNameFromSessionId(wakeup.workerSessionId)} result`,
-        });
+        queueWakeup(wakeup, "result");
         result.wakeupsQueued += 1;
       }
     }
@@ -285,12 +412,284 @@ function createSessionWakeupMonitor({
     return result;
   }
 
+  async function inspectObservedWorkerSession({ session, sessions, sampled, status }) {
+    const result = emptyResult();
+    const view = sessionStore.readSession({
+      taskId: session.taskId,
+      sessionId: session.id,
+      maxChars: 0,
+    });
+    const activeDispatches = view.dispatches.filter((dispatch) => ["queued", "input_accepted", "delivered", "cancellation_requested"].includes(dispatch.status));
+
+    for (const dispatch of activeDispatches) {
+      let fact;
+      try {
+        fact = await providerObserver.observeDispatch({ session, dispatch });
+      } catch (error) {
+        fact = {
+          kind: "observation_unavailable",
+          provider: "opencode",
+          reason: error instanceof Error ? error.message : "opencode_observer_failed",
+        };
+      }
+      const kind = String(fact?.kind ?? "not_observed");
+      const receipt = fact?.receipt;
+      if (dispatch.status === "cancellation_requested") {
+        const cancellationResolved = await reconcileCancellationRequested({ session, dispatch, sessions, sampled, status, result, fact });
+        if (cancellationResolved) continue;
+      }
+      if (receipt) {
+        sessionStore.markDispatchProviderReceived?.({
+          taskId: session.taskId,
+          sessionId: session.id,
+          dispatchId: dispatch.dispatchId,
+          provider: receipt.provider ?? fact?.provider ?? "opencode",
+          providerSessionId: receipt.providerSessionId,
+          providerMessageId: receipt.providerMessageId,
+          dispatchMessageCreatedAt: receipt.dispatchMessageCreatedAt,
+          databaseSourceId: receipt.databaseSourceId,
+        });
+      }
+
+      if (kind === "result" && fact?.result?.answerText) {
+        const updated = sessionStore.recordDispatchResult({
+          taskId: session.taskId,
+          sessionId: session.id,
+          dispatchId: dispatch.dispatchId,
+          reason: "provider-turn-completed",
+          cursor: status.cursor,
+          provider: fact.result.provider ?? fact.provider ?? "opencode",
+          providerSessionId: fact.result.providerSessionId ?? receipt?.providerSessionId,
+          providerMessageId: fact.result.providerMessageId,
+          providerStepFinishId: fact.result.providerStepFinishId,
+          stepFinishReason: fact.result.stepFinishReason,
+          answerText: fact.result.answerText,
+          source: fact.result.source ?? "opencode-sqlite-observer",
+          completedAt: fact.result.completedAt,
+        });
+        if (updated.status === "result_available" && updated.changed !== false) {
+          result.resultAvailable += 1;
+          await sendOrQueueObservedWakeup({
+            wakeup: {
+              kind: "result",
+              key: `result:${session.taskId}:${dispatch.dispatchId}`,
+              taskId: session.taskId,
+              conductorSessionId: resolveWakeupConductorSessionId({ session, dispatch, sessions, resolveConductorSessionId }),
+              workerSessionId: session.id,
+              agentId: dispatchAgentId(dispatch, session, resolveAgentId),
+              dispatchId: dispatch.dispatchId,
+              resultId: updated.resultId,
+              resultSource: updated.source,
+              providerSessionId: updated.providerSessionId,
+              providerMessageId: updated.providerMessageId,
+              providerStepFinishId: updated.providerStepFinishId,
+              answerText: updated.answerText ?? fact.result.answerText,
+              workerState: status.state,
+              cursor: status.cursor,
+            },
+            sessions,
+            sampled,
+            result,
+          });
+        }
+        continue;
+      }
+
+      if (kind === "failed") {
+        const failure = fact.failure ?? {};
+        const updated = sessionStore.recordDispatchProviderFailure?.({
+          taskId: session.taskId,
+          sessionId: session.id,
+          dispatchId: dispatch.dispatchId,
+          reason: failure.reason ?? "provider_terminal_failure",
+          message: failure.message ?? "OpenCode reported a terminal failure for this exact dispatch.",
+          provider: failure.provider ?? fact.provider ?? receipt?.provider ?? "opencode",
+          providerSessionId: failure.providerSessionId ?? receipt?.providerSessionId,
+          providerMessageId: failure.providerMessageId ?? receipt?.providerMessageId,
+          providerStepFinishId: failure.providerStepFinishId,
+          stepFinishReason: failure.stepFinishReason,
+          state: status.state === "exited" ? "exited" : "blocked",
+        });
+        if (updated?.changed) {
+          result.providerFailures += 1;
+          await sendOrQueueObservedWakeup({
+            wakeup: {
+              kind: "failure",
+              key: `failure:${session.taskId}:${dispatch.dispatchId}:${failure.providerStepFinishId ?? failure.providerMessageId ?? "terminal"}`,
+              taskId: session.taskId,
+              conductorSessionId: resolveWakeupConductorSessionId({ session, dispatch, sessions, resolveConductorSessionId }),
+              workerSessionId: session.id,
+              agentId: dispatchAgentId(dispatch, session, resolveAgentId),
+              dispatchId: dispatch.dispatchId,
+              workerState: status.state,
+              cursor: status.cursor,
+              reason: failure.reason ?? "provider_terminal_failure",
+              answerText: failure.message,
+            },
+            sessions,
+            sampled,
+            result,
+          });
+        }
+        continue;
+      }
+
+      if (kind === "attention") {
+        const attention = fact.attention ?? {};
+        const attentionKey = workerAttentionKey(session, attention, status);
+        if (!recordedWorkerAttentionKeys.has(attentionKey)) {
+          sessionStore.recordState(
+            { taskId: session.taskId, sessionId: session.id },
+            "waiting_input",
+            workerQuestionSummary(attention),
+            {
+              source: attention.source ?? "opencode-sqlite-observer",
+              provider: attention.provider ?? fact.provider ?? "opencode",
+              providerSessionId: attention.providerSessionId ?? receipt?.providerSessionId,
+              providerMessageId: attention.providerMessageId ?? receipt?.providerMessageId,
+              providerQuestionPartId: attention.providerQuestionPartId,
+              terminalIncarnationId: session.incarnationId,
+              question: attention.questionText,
+            },
+          );
+          recordedWorkerAttentionKeys.add(attentionKey);
+          await sendOrQueueObservedWakeup({
+            wakeup: {
+              kind: "attention",
+              key: `attention:${session.taskId}:${dispatch.dispatchId}:${attentionKey}`,
+              taskId: session.taskId,
+              conductorSessionId: resolveWakeupConductorSessionId({ session, dispatch, sessions, resolveConductorSessionId }),
+              workerSessionId: session.id,
+              agentId: dispatchAgentId(dispatch, session, resolveAgentId),
+              dispatchId: dispatch.dispatchId,
+              workerState: "waiting_input",
+              cursor: status.cursor,
+              answerText: attention.questionText,
+            },
+            sessions,
+            sampled,
+            result,
+          });
+        }
+        continue;
+      }
+
+      if (kind === "observation_unavailable") {
+        sessionStore.recordDispatchObservationUnavailable?.({
+          taskId: session.taskId,
+          sessionId: session.id,
+          dispatchId: dispatch.dispatchId,
+          reason: fact?.reason,
+        });
+        // A scanner outage is not a Provider failure and does not establish
+        // that OpenCode missed the assignment.  Terminal lifecycle alone is
+        // insufficient while the semantic observer is unavailable: preserve
+        // the existing receipt state and let a recovered observer decide.
+        continue;
+      }
+
+      if (kind === "not_observed" || kind === "observation_unavailable") {
+        if (!terminalExited(status)) continue;
+        const updated = sessionStore.recordDispatchDeliveryFailure?.({
+          taskId: session.taskId,
+          sessionId: session.id,
+          dispatchId: dispatch.dispatchId,
+          reason: "terminal_exit_before_receipt",
+          message: "Terminal Runtime ended before OpenCode recorded the exact dispatch marker.",
+          terminalState: status.state,
+        });
+        if (updated?.changed) {
+          result.deliveryFailures += 1;
+          await sendOrQueueObservedWakeup({
+            wakeup: {
+              kind: "delivery_failure",
+              key: `delivery-failure:${session.taskId}:${dispatch.dispatchId}:${status.cursor}`,
+              taskId: session.taskId,
+              conductorSessionId: resolveWakeupConductorSessionId({ session, dispatch, sessions, resolveConductorSessionId }),
+              workerSessionId: session.id,
+              agentId: dispatchAgentId(dispatch, session, resolveAgentId),
+              dispatchId: dispatch.dispatchId,
+              workerState: "delivery_failed",
+              cursor: status.cursor,
+              reason: "terminal_exit_before_receipt",
+              answerText: "Terminal Runtime ended before OpenCode persisted the exact dispatch receipt.",
+            },
+            sessions,
+            sampled,
+            result,
+          });
+        }
+      }
+    }
+    return result;
+  }
+
+  async function sendOrQueueObservedWakeup({ wakeup, sessions, sampled, result }) {
+    if (!wakeup.conductorSessionId) return;
+    if (await trySendWakeup(wakeup, sessions, sampled)) {
+      result.wakeupsSent += 1;
+      return;
+    }
+    queueWakeup(wakeup, wakeup.kind);
+    result.wakeupsQueued += 1;
+  }
+
+  async function reconcileCancellationRequested({ session, dispatch, sessions, sampled, status, result, fact }) {
+    // A scoped native interrupt deliberately keeps the terminal alive. The
+    // Provider's terminal-failure fact is therefore as authoritative as an
+    // exit event; only a user force-stop kills the Session itself.
+    const providerConfirmed = String(fact?.kind ?? "") === "failed";
+    if (!providerConfirmed && !terminalExited(status)) return false;
+    const confirmation = providerConfirmed ? "provider_interrupted" : "terminal_exit";
+    const updated = sessionStore.markDispatchCancelled?.({
+      taskId: session.taskId,
+      sessionId: session.id,
+      dispatchId: dispatch.dispatchId,
+      reason: dispatch.cancellationReason ?? "conductor_cancelled",
+      confirmation,
+      message: providerConfirmed
+        ? `OpenCode confirmed Dispatch ${dispatch.dispatchId} ended after the Conductor cancellation request.`
+        : `Terminal Runtime confirmed Dispatch ${dispatch.dispatchId} stopped after the Conductor cancellation request.`,
+    });
+    if (!updated?.changed) return false;
+    await sendOrQueueObservedWakeup({
+      wakeup: {
+        kind: "cancellation",
+        key: `cancellation:${session.taskId}:${dispatch.dispatchId}:${status.cursor}`,
+        taskId: session.taskId,
+        conductorSessionId: resolveWakeupConductorSessionId({ session, dispatch, sessions, resolveConductorSessionId }),
+        workerSessionId: session.id,
+        agentId: dispatchAgentId(dispatch, session, resolveAgentId),
+        dispatchId: dispatch.dispatchId,
+        workerState: "cancelled",
+        cursor: status.cursor,
+        reason: dispatch.cancellationReason ?? "conductor_cancelled",
+        answerText: providerConfirmed
+          ? "OpenCode confirmed the worker turn ended after the cancellation request."
+          : "Terminal Runtime confirmed the worker Session stopped after the cancellation request.",
+      },
+      sessions,
+      sampled,
+      result,
+    });
+    return true;
+  }
+
   async function reconcileDispatchProviderFacts({ session, sessions, sampled, view }) {
     const result = emptyResult();
-    const dispatches = view.dispatches.filter((dispatch) => ["queued", "input_accepted", "delivered"].includes(dispatch.status));
+    const dispatches = view.dispatches.filter((dispatch) => ["queued", "input_accepted", "delivered", "cancellation_requested"].includes(dispatch.status));
+    // A session-level OpenCode hook has no dispatch marker. The legacy
+    // compatibility path may attribute it only to the newest outstanding
+    // dispatch in this one native Session; exact per-dispatch facts belong to
+    // the read-only Provider Observer path above.
+    const latestActiveDispatch = dispatches.at(-1);
     const hookError = providerHookErrors.get(String(session.id));
 
     for (const dispatch of dispatches) {
+      if (dispatch.status === "cancellation_requested") {
+        await reconcileCancellationRequested({ session, dispatch, sessions, sampled, status: sampleSession(session, sampled), result });
+        continue;
+      }
       let fact;
       if (typeof dispatchStateReader === "function") {
         try {
@@ -311,6 +710,7 @@ function createSessionWakeupMonitor({
           providerSessionId: fact.receipt?.providerSessionId,
           providerMessageId: fact.receipt?.providerMessageId,
           dispatchMessageCreatedAt: fact.receipt?.dispatchMessageCreatedAt,
+          databaseSourceId: fact.receipt?.databaseSourceId,
         });
       }
 
@@ -360,7 +760,7 @@ function createSessionWakeupMonitor({
       if (!conductorSessionId) continue;
       const wakeup = {
         kind: "failure",
-        key: `failure:${session.taskId}:${conductorSessionId}:${session.id}:${failure.key}`,
+        key: `failure:${session.taskId}:${dispatch.dispatchId}:${failure.key}`,
         taskId: session.taskId,
         conductorSessionId,
         workerSessionId: session.id,
@@ -374,7 +774,7 @@ function createSessionWakeupMonitor({
       if (await trySendWakeup(wakeup, sessions, sampled)) {
         result.wakeupsSent += 1;
       } else {
-        pendingWakeups.set(wakeup.key, wakeup);
+        queueWakeup(wakeup, "failure");
         result.wakeupsQueued += 1;
       }
     }
@@ -391,10 +791,13 @@ function createSessionWakeupMonitor({
       maxChars: 0,
     });
     const afterMessageCreatedAt = sessionStartedAtFromEvents(view.events);
+    const providerSessionId = String(view?.providerBinding?.providerSessionId ?? "").trim() || undefined;
+    await reconcileConductorWakeupReceipts({ session, afterMessageCreatedAt });
     const providerQuestion = await readConductorQuestion({
       session,
       status,
       afterMessageCreatedAt,
+      providerSessionId,
     });
     if (providerQuestion?.answerText || providerQuestion?.questionText) {
       sessionStore.recordState(
@@ -407,6 +810,7 @@ function createSessionWakeupMonitor({
           providerSessionId: providerQuestion.providerSessionId,
           providerMessageId: providerQuestion.providerMessageId ?? providerQuestion.messageId,
           providerQuestionPartId: providerQuestion.providerQuestionPartId ?? providerQuestion.questionPartId,
+          terminalIncarnationId: session.incarnationId,
           question: providerQuestion.questionText,
         },
       );
@@ -419,6 +823,7 @@ function createSessionWakeupMonitor({
       session,
       status,
       afterMessageCreatedAt,
+      providerSessionId,
     });
     if (!providerMessage?.answerText) return result;
     if (!hasCompletedProviderResult(providerMessage)) return result;
@@ -476,6 +881,45 @@ function createSessionWakeupMonitor({
     return result;
   }
 
+  function hydratePendingWakeups(sessions = typeof ptyManager.list === "function" ? ptyManager.list() : []) {
+    if (typeof sessionStore.listPendingConductorWakeups !== "function") return;
+    const seen = new Set();
+    const knownTargets = typeof listConductorWakeupTargets === "function" ? listConductorWakeupTargets() : [];
+    const candidates = [
+      ...sessions
+        .filter((session) => isConductorSessionId(session?.id) && session?.taskId)
+        .map((session) => ({ taskId: session.taskId, sessionId: session.id })),
+      ...knownTargets,
+    ];
+    for (const target of candidates) {
+      const taskId = String(target?.taskId ?? "");
+      const sessionId = String(target?.sessionId ?? "");
+      if (!taskId || !sessionId || seen.has(`${taskId}\0${sessionId}`)) continue;
+      seen.add(`${taskId}\0${sessionId}`);
+      for (const record of sessionStore.listPendingConductorWakeups({ taskId, sessionId })) {
+        const key = String(record.wakeupKey ?? "");
+        if (!key || pendingWakeups.has(key)) continue;
+        pendingWakeups.set(key, wakeupFromRecord(record));
+      }
+    }
+  }
+
+  function queueWakeup(wakeup, label = wakeup.kind) {
+    pendingWakeups.set(wakeup.key, wakeup);
+    persistWakeup(wakeup, "queued", label);
+  }
+
+  function persistWakeup(wakeup, status, label = wakeup.kind) {
+    return sessionStore.recordConductorWakeup?.({
+      ...wakeup,
+      wakeupKey: wakeup.key,
+      taskId: wakeup.taskId,
+      sessionId: wakeup.conductorSessionId,
+      status,
+      summary: `Conductor wakeup ${status} for ${roleNameFromSessionId(wakeup.workerSessionId)} ${label || "result"}`,
+    });
+  }
+
   async function drainPendingWakeups(sessions = typeof ptyManager.list === "function" ? ptyManager.list() : [], sampled = new Map()) {
     const result = emptyResult();
     for (const wakeup of [...pendingWakeups.values()]) {
@@ -488,28 +932,69 @@ function createSessionWakeupMonitor({
   }
 
   async function trySendWakeup(wakeup, sessions, sampled) {
-    const conductor = sessions.find((session) => session.id === wakeup.conductorSessionId);
+    let conductor = sessions.find((session) => session.id === wakeup.conductorSessionId) ?? ptyManager.get?.(wakeup.conductorSessionId);
+    if ((!conductor || conductor.status !== "running") && typeof ensureConductorWakeupTarget === "function") {
+      try {
+        conductor = await ensureConductorWakeupTarget({
+          taskId: wakeup.taskId,
+          sessionId: wakeup.conductorSessionId,
+          wakeupKey: wakeup.key,
+        });
+      } catch (error) {
+        sessionStore.recordTaskEvent?.({
+          taskId: wakeup.taskId,
+          sessionId: wakeup.conductorSessionId,
+          type: "conductor.wakeup.target_unavailable",
+          summary: "Runtime could not restore a live Conductor terminal for a durable wakeup.",
+          data: { wakeupKey: wakeup.key, reason: error instanceof Error ? error.message : "conductor_target_unavailable" },
+        });
+        return false;
+      }
+    }
     if (!conductor || conductor.status !== "running") return false;
     const conductorStatus = sampleSession(conductor, sampled);
     if (!canWakeConductor(conductor, conductorStatus)) return false;
 
+    // Persist the Coordinator command before touching the PTY.  The status
+    // transition is monotonic, so a retry never turns a previous `sent` wakeup
+    // back into a queue item after a process restart.
+    persistWakeup(wakeup, "attempting", wakeup.kind);
+
     const message = wakeup.kind === "attention"
       ? formatAttentionWakeupMessage(wakeup)
-      : wakeup.kind === "failure"
+      : wakeup.kind === "user_message"
+        ? formatUserMessageWakeup(wakeup)
+        : wakeup.kind === "cancellation"
+          ? formatCancellationWakeupMessage(wakeup)
+        : wakeup.kind === "failure" || wakeup.kind === "delivery_failure"
         ? formatFailureWakeupMessage(wakeup)
         : formatWakeupMessage(wakeup);
+    const markedMessage = [
+      `[Agent Workspace] Conductor Input ID ${wakeup.key}`,
+      "",
+      message,
+    ].join("\n");
     let write;
     try {
-      write = typeof enqueueConductorInput === "function"
-        ? await enqueueConductorInput({
+      write = typeof enqueueConductorInteractiveSubmission === "function"
+        ? await enqueueConductorInteractiveSubmission({
           taskId: wakeup.taskId,
           sessionId: wakeup.conductorSessionId,
           expectedIncarnationId: conductor.incarnationId,
           source: "conductor_wakeup",
-          payload: formatWakeupInput(message),
+          text: markedMessage,
           idempotencyKey: `wakeup:${wakeup.key}`,
         })
-        : ptyManager.write(wakeup.conductorSessionId, formatWakeupInput(message));
+        : typeof enqueueConductorInput === "function"
+          ? await enqueueConductorInput({
+            taskId: wakeup.taskId,
+            sessionId: wakeup.conductorSessionId,
+            expectedIncarnationId: conductor.incarnationId,
+            source: "conductor_wakeup",
+            payload: formatWakeupInput(markedMessage),
+            idempotencyKey: `wakeup:${wakeup.key}`,
+          })
+          : ptyManager.write(wakeup.conductorSessionId, formatWakeupInput(markedMessage));
     } catch {
       return false;
     }
@@ -520,18 +1005,57 @@ function createSessionWakeupMonitor({
       "Runtime delivered a semantic wakeup to Conductor.",
       { wakeupKey: wakeup.key, workerSessionId: wakeup.workerSessionId, dispatchId: wakeup.dispatchId },
     );
-    sessionStore.recordConductorWakeup({
-      taskId: wakeup.taskId,
-      sessionId: wakeup.conductorSessionId,
-      workerSessionId: wakeup.workerSessionId,
-      dispatchId: wakeup.dispatchId,
-      resultId: wakeup.resultId,
-      workerState: wakeup.workerState,
-      cursor: wakeup.cursor,
-      status: "sent",
-      summary: `Conductor wakeup sent for ${roleNameFromSessionId(wakeup.workerSessionId)} ${wakeup.kind === "attention" ? "attention" : wakeup.kind === "failure" ? "failure" : "result"}`,
-    });
+    persistWakeup(wakeup, "sent", wakeup.kind);
+    await acceptConductorWakeup(wakeup);
     return true;
+  }
+
+  async function reconcileConductorWakeupReceipts({ session, afterMessageCreatedAt }) {
+    if (typeof providerObserver?.observeConductorInput !== "function") return;
+    if (typeof sessionStore.listUnconfirmedConductorWakeups !== "function") return;
+    const wakeups = sessionStore.listUnconfirmedConductorWakeups({ taskId: session.taskId, sessionId: session.id });
+    for (const record of wakeups) {
+      const inputId = String(record.wakeupKey ?? "");
+      if (!inputId) continue;
+      let fact;
+      try {
+        fact = await providerObserver.observeConductorInput({ session, inputId, afterMessageCreatedAt });
+      } catch {
+        // An unavailable observer has no authority to decide whether a write
+        // reached OpenCode. Leave the durable command untouched for a later
+        // read-only observation.
+        continue;
+      }
+      if (fact?.receipt) {
+        const wakeup = wakeupFromRecord(record);
+        sessionStore.markConductorWakeupObserved?.({
+          ...wakeup,
+          taskId: session.taskId,
+          sessionId: session.id,
+          wakeupKey: inputId,
+          provider: fact.receipt.provider ?? fact.provider ?? "opencode",
+          providerSessionId: fact.receipt.providerSessionId,
+          providerMessageId: fact.receipt.providerMessageId,
+          dispatchMessageCreatedAt: fact.receipt.dispatchMessageCreatedAt,
+          databaseSourceId: fact.receipt.databaseSourceId,
+          summary: `OpenCode recorded Conductor wakeup ${inputId}.`,
+        });
+        // If Electron stopped between the Terminal Runtime accepting a wakeup
+        // and the Task lifecycle transition, the exact Provider receipt is the
+        // durable proof needed to replay that idempotent transition.  Do not
+        // resend bytes; reopen only the next Conductor decision epoch.
+        await acceptConductorWakeup(wakeup);
+        continue;
+      }
+      // We crashed after recording an intent but before the Terminal Runtime
+      // confirmed the write. A read-only proof of absence lets the Coordinator
+      // retry the same idempotent input; an observer outage never does.
+      if (fact?.kind === "not_observed" && record.status === "attempting") {
+        const wakeup = wakeupFromRecord(record);
+        persistWakeup(wakeup, "queued", wakeup.kind);
+        pendingWakeups.set(wakeup.key, wakeup);
+      }
+    }
   }
 
   function sampleSession(session, sampled) {
@@ -556,19 +1080,48 @@ function createSessionWakeupMonitor({
     return dispatchResultReader({ session, dispatch, status });
   }
 
-  async function readConductorMessage({ session, status, afterMessageCreatedAt }) {
+  async function readConductorMessage({ session, status, afterMessageCreatedAt, providerSessionId }) {
     if (typeof conductorMessageReader !== "function") return undefined;
-    return conductorMessageReader({ session, status, afterMessageCreatedAt });
+    return conductorMessageReader({ session, status, afterMessageCreatedAt, providerSessionId });
   }
 
-  async function readConductorQuestion({ session, status, afterMessageCreatedAt }) {
+  async function readConductorQuestion({ session, status, afterMessageCreatedAt, providerSessionId }) {
     if (typeof conductorQuestionReader !== "function") return undefined;
-    return conductorQuestionReader({ session, status, afterMessageCreatedAt });
+    return conductorQuestionReader({ session, status, afterMessageCreatedAt, providerSessionId });
   }
 
   async function readWorkerQuestion({ session, status, afterMessageCreatedAt }) {
     if (typeof workerQuestionReader !== "function") return undefined;
     return workerQuestionReader({ session, status, afterMessageCreatedAt });
+  }
+
+  async function acceptConductorWakeup(wakeup) {
+    if (typeof onConductorWakeupAccepted !== "function") return;
+    try {
+      await onConductorWakeupAccepted({
+        taskId: wakeup.taskId,
+        sessionId: wakeup.conductorSessionId,
+        wakeupKey: wakeup.key,
+        kind: wakeup.kind,
+        dispatchId: wakeup.dispatchId,
+        resultId: wakeup.resultId,
+      });
+    } catch (error) {
+      // Provider receipt is still true even if a user archived/achieved the
+      // Task before this recovery callback.  Retrying the same terminal input
+      // would duplicate a completed Conductor turn, so preserve an auditable
+      // Runtime fact rather than converting it into a retry instruction.
+      sessionStore.recordTaskEvent?.({
+        taskId: wakeup.taskId,
+        sessionId: wakeup.conductorSessionId,
+        type: "conductor.wakeup.lifecycle_unavailable",
+        summary: "Conductor wakeup was accepted, but the Task lifecycle could not open a new decision epoch.",
+        data: {
+          wakeupKey: wakeup.key,
+          reason: error instanceof Error ? error.message : String(error ?? "unknown"),
+        },
+      });
+    }
   }
 
   function canWakeConductor(conductor, status) {
@@ -585,7 +1138,74 @@ function createSessionWakeupMonitor({
     return sessions.find((session) => session.id === sessionId);
   }
 
-  return { start, stop, tick, handleProviderHookEvent };
+  return { start, stop, tick, handleProviderHookEvent, respondPermission };
+}
+
+function permissionReplyKey(taskId, sessionId, permissionId) {
+  return `${String(taskId)}\u0000${String(sessionId)}\u0000${String(permissionId)}`;
+}
+
+function providerPermissionRequestId(payload = {}) {
+  return String(payload.requestID ?? payload.permissionID ?? payload.id ?? "").trim().slice(0, 200);
+}
+
+function providerPermissionResponse(payload = {}) {
+  const value = String(payload.response ?? payload.reply ?? "").trim();
+  const normalized = {
+    once: "once",
+    allow_once: "once",
+    always: "always",
+    allow_always: "always",
+    reject: "reject",
+    denied: "reject",
+  }[value];
+  return normalized;
+}
+
+function normalizePermissionResponse(value) {
+  const response = String(value ?? "").trim();
+  return new Set(["once", "always", "reject"]).has(response) ? response : undefined;
+}
+
+function providerPermissionPatterns(payload = {}) {
+  const values = Array.isArray(payload.patterns) ? payload.patterns : [];
+  return values.map((value) => String(value ?? "").trim()).filter(Boolean).slice(0, 24);
+}
+
+function providerPermissionSummary(payload = {}) {
+  const permission = String(payload.permission ?? payload.action ?? "操作").trim();
+  const patterns = providerPermissionPatterns(payload);
+  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+  const detail = String(payload.message ?? metadata.description ?? metadata.command ?? "").trim();
+  return [
+    `OpenCode 请求授权：${permission || "操作"}${patterns.length ? ` (${patterns.join(", ")})` : ""}`,
+    detail,
+  ].filter(Boolean).join("\n");
+}
+
+async function postOpenCodePermissionReply({ endpoint, token, requestId, response }) {
+  const url = new URL(String(endpoint));
+  if (url.protocol !== "http:" || !["127.0.0.1", "::1", "[::1]"].includes(url.hostname)) {
+    throw new Error("permission_reply_endpoint_not_loopback");
+  }
+  const result = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-agent-workspace-permission-token": String(token),
+    },
+    body: JSON.stringify({ requestID: String(requestId), reply: String(response) }),
+  });
+  if (result.status >= 200 && result.status < 300) return { accepted: true };
+  let errorCode = `permission_reply_http_${result.status}`;
+  try {
+    const body = await result.json();
+    const providerCode = String(body?.error ?? "").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120);
+    if (providerCode) errorCode = `${errorCode}:${providerCode}`;
+  } catch {
+    // Permission endpoints are allowed to return an empty error body.
+  }
+  return { accepted: false, errorCode };
 }
 
 function hasCompletedProviderResult(providerResult) {
@@ -622,22 +1242,48 @@ function formatAttentionWakeupMessage(wakeup) {
     "Provider-native question or attention:",
     String(wakeup.answerText ?? ""),
     "",
-    "Conductor: inspect task state. Dispatch a correction if the worker can proceed autonomously; otherwise tell the user to answer in the selected native Session terminal.",
+    "Conductor: inspect task state. Dispatch a correction if the worker can proceed autonomously; otherwise the Runtime exposes a Task-page native-question card that writes the user's answer to this exact Session. Do not ask the user to retype it into a terminal.",
+  ].join("\n");
+}
+
+function formatCancellationWakeupMessage(wakeup) {
+  const agentLabel = agentLabelForWakeup(wakeup);
+  return [
+    `Runtime wakeup: ${agentLabel} cancellation confirmed`,
+    "",
+    `Task: ${wakeup.taskId}`,
+    `Agent card: ${agentLabel}`,
+    `Dispatch ID: ${wakeup.dispatchId}`,
+    `Reason: ${wakeup.reason ?? "conductor_cancelled"}`,
+    "",
+    "Terminal Runtime confirmed that this worker Session stopped after your cancellation request.",
+    "Conductor: read_task_state before deciding whether this card needs new work. Do not assume any partial terminal output is a usable result.",
+  ].join("\n");
+}
+
+function formatUserMessageWakeup(wakeup) {
+  return [
+    "User follow-up for the current Task:",
+    "",
+    String(wakeup.messageText ?? "").trim(),
+    "",
+    "Read the durable Task state and decide the next action. Do not treat this as a fixed route.",
   ].join("\n");
 }
 
 function formatFailureWakeupMessage(wakeup) {
   const agentLabel = agentLabelForWakeup(wakeup);
+  const isDeliveryFailure = wakeup.kind === "delivery_failure" || wakeup.reason === "terminal_exit_before_receipt";
   return [
-    `Runtime wakeup: ${agentLabel} Provider failure`,
+    `Runtime wakeup: ${agentLabel} ${isDeliveryFailure ? "delivery failure" : "Provider failure"}`,
     "",
     `Task: ${wakeup.taskId}`,
     `Agent card: ${agentLabel}`,
     `Dispatch ID: ${wakeup.dispatchId ?? "(unknown)"}`,
     `Failure fact: ${wakeup.reason ?? "provider_terminal_failure"}`,
     "",
-    "Provider-reported failure:",
-    String(wakeup.answerText ?? "OpenCode reported a terminal failure."),
+    isDeliveryFailure ? "Terminal Runtime fact:" : "Provider-reported failure:",
+    String(wakeup.answerText ?? (isDeliveryFailure ? "Terminal Runtime ended before OpenCode recorded the dispatch." : "OpenCode reported a terminal failure.")),
     "",
     "Conductor: decide whether to inspect this Session state, dispatch corrected bounded work to an approved Agent Card, or explain the blocker to the user. Runtime did not retry this work.",
   ].join("\n");
@@ -704,6 +1350,25 @@ function roleNameFromSessionId(sessionId) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
+function wakeupFromRecord(record = {}) {
+  return {
+    key: String(record.wakeupKey ?? record.key ?? ""),
+    kind: record.kind ?? "result",
+    taskId: record.taskId,
+    conductorSessionId: record.sessionId ?? record.conductorSessionId,
+    workerSessionId: record.workerSessionId,
+    agentId: record.agentId,
+    dispatchId: record.dispatchId,
+    resultId: record.resultId,
+    workerState: record.workerState,
+    cursor: record.cursor,
+    reason: record.reason,
+    answerText: record.answerText,
+    messageText: record.messageText,
+    userMessageId: record.userMessageId,
+  };
+}
+
 function emptyResult() {
   return {
     sampled: 0,
@@ -712,6 +1377,7 @@ function emptyResult() {
     wakeupsQueued: 0,
     conductorMessagesRecorded: 0,
     providerFailures: 0,
+    deliveryFailures: 0,
   };
 }
 
@@ -723,7 +1389,16 @@ function addStats(target, source) {
   target.wakeupsQueued += source.wakeupsQueued ?? 0;
   target.conductorMessagesRecorded += source.conductorMessagesRecorded ?? 0;
   target.providerFailures += source.providerFailures ?? 0;
+  target.deliveryFailures += source.deliveryFailures ?? 0;
   return target;
+}
+
+function terminalExited(status) {
+  // The in-process PTY manager calls its terminal lifecycle state `stopped`,
+  // while the daemon/provider adapters may report `exited`.  Both are the
+  // same Runtime fact for a scoped cancellation: the current dispatch has
+  // ended and the logical OpenCode Session is free for a later dispatch.
+  return ["stopped", "exited", "start_failed"].includes(String(status?.state ?? ""));
 }
 
 function providerHookErrorMessage(error) {
@@ -736,7 +1411,10 @@ function providerHookErrorMessage(error) {
 }
 
 function sessionStartedAtFromEvents(events = []) {
-  const started = events.find((event) => event.type === "session.started");
+  // A workspace Session id may be restarted with a new Orca generation.
+  // Provider queries must be fenced at the most recent native start, not at
+  // the first historical process that happened to use this logical id.
+  const started = events.findLast((event) => event.type === "session.started");
   return started?.createdAt;
 }
 
@@ -747,7 +1425,12 @@ function conductorMessageKey(session, providerMessage) {
 }
 
 function conductorSessionKey(session) {
-  return `${session.taskId}:${session.id}`;
+  // PTY byte cursors are local to a physical terminal incarnation. A
+  // recovered Conductor keeps the same logical Workspace Session id but starts
+  // a new counter at zero, so an earlier incarnation's larger cursor must not
+  // suppress the new Provider turn from the Timeline.
+  const incarnation = String(session.incarnationId ?? session.generation ?? "unbound");
+  return `${session.taskId}:${session.id}:${incarnation}`;
 }
 
 function conductorQuestionSummary(providerQuestion) {

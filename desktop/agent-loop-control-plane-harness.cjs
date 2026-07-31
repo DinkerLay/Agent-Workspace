@@ -16,7 +16,7 @@ const fakeOpenCode = path.join(root, "fake-opencode.sh");
 
 fs.writeFileSync(
   fakeOpenCode,
-  "#!/bin/sh\nprompt=''\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '--prompt' ]; then\n    shift\n    prompt=\"$1\"\n  fi\n  shift\ndone\nprintf 'OpenCode TUI ready\\n'\nif [ -n \"$prompt\" ]; then printf '%s\\n' \"$prompt\"; fi\nwhile IFS= read -r line; do printf '%s\\n' \"$line\"; done\n",
+  "#!/bin/sh\nprompt=''\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    run) ;;\n    --agent|--model|--session) shift ;;\n    *) prompt=\"$1\" ;;\n  esac\n  shift\ndone\nprintf 'OpenCode run ready\\n'\nif [ -n \"$prompt\" ]; then printf '%s\\n' \"$prompt\"; fi\nwhile IFS= read -r line; do printf '%s\\n' \"$line\"; done\n",
   { mode: 0o755 },
 );
 
@@ -210,7 +210,9 @@ async function main() {
       taskId: task.taskId,
       message: "不要停在已有证据上；请由 Conductor 自己决定是否继续核实。",
     });
-    assert.equal(followUp.wakeup.delivered, 1);
+    assert.equal(followUp.wakeup.delivered, 0);
+    assert.equal(followUp.wakeup.queued, 1);
+    assert.equal(followUp.wakeup.delivery, "conductor_wakeup_awaiting_provider_receipt");
     await waitFor(async () => (await snapshotText(terminalHost, conductorSessionId)).includes("不要停在已有证据上"), "user follow-up delivered to same Conductor terminal");
 
     resultRound = 1;
@@ -236,10 +238,30 @@ async function main() {
     const completion = await bridge.claimTaskCompletion({ taskId: task.taskId, message: "deliverable.md is ready for user inspection." });
     assert.equal(completion.ok, true);
     assert.equal(runtime.readTask({ taskId: task.taskId }).status, "delivery_ready");
-    // This reproduces the reported failure boundary: a Conductor may notice a
-    // need after making a delivery claim. The same explicit bridge dispatch
-    // must continue the existing Task instead of reporting that the loop is
-    // no longer running.
+    // A delivery claim ends the current Conductor decision epoch. A new user
+    // input becomes actionable only after its exact Provider receipt opens the
+    // next epoch; a direct bridge call cannot silently reopen the Task.
+    const reopen = await runtime.recordUserMessage({
+      taskId: task.taskId,
+      message: "请在交付前再核实一处引用。",
+    });
+    const reopenWakeup = sessionStore.readTaskState({ taskId: task.taskId }).wakeups
+      .find((item) => item.wakeupKey === `user:${task.taskId}:${reopen.messageId}`);
+    sessionStore.markConductorWakeupObserved({
+      ...reopenWakeup,
+      taskId: task.taskId,
+      sessionId: conductorSessionId,
+      wakeupKey: reopenWakeup.wakeupKey,
+      status: "observed",
+      provider: "fixture",
+      providerSessionId: "fixture-conductor",
+      providerMessageId: "fixture-provider-receipt",
+    });
+    runtime.resumeTaskForConductorInput({
+      taskId: task.taskId,
+      cause: "fixture_provider_receipt",
+      inputId: reopenWakeup.wakeupKey,
+    });
     const postClaimDispatch = await bridge.callSession({
       taskId: task.taskId,
       agentId: "researcher",
@@ -249,6 +271,16 @@ async function main() {
     assert.equal(postClaimDispatch.ok, true);
     assert.equal(runtime.readTask({ taskId: task.taskId }).status, "running");
     await waitFor(async () => (await snapshotText(terminalHost, workerSessionId)).includes("Re-check the cited source"), "post-claim continuation assignment");
+    const prematureCompletion = await bridge.claimTaskCompletion({ taskId: task.taskId, message: "The continuation is still pending." });
+    assert.equal(prematureCompletion.ok, false);
+    assert.equal(prematureCompletion.errorCode, "completion_claim_has_pending_dispatches");
+    resultRound = 2;
+    sessionStore.recordState({ taskId: task.taskId, sessionId: conductorSessionId }, "ready", "Provider adapter confirmed the continuation outcome.");
+    await monitor.tick();
+    await waitFor(
+      () => sessionStore.readTaskState({ taskId: task.taskId }).dispatches.some((dispatch) => dispatch.dispatchId === postClaimDispatch.dispatchId && dispatch.status === "result_available"),
+      "post-claim continuation Provider result",
+    );
     const secondCompletion = await bridge.claimTaskCompletion({ taskId: task.taskId, message: "The continuation was considered and the delivery is ready again." });
     assert.equal(secondCompletion.ok, true);
     assert.equal(runtime.markTaskAchieved({ taskId: task.taskId }).status, "achieved");

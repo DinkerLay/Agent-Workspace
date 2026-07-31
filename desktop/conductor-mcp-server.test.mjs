@@ -39,6 +39,7 @@ describe("Conductor MCP server", () => {
       "call_session",
       "call_sessions",
       "read_task_state",
+      "cancel_dispatch",
       "read_session",
       "claim_task_completion",
     ]);
@@ -81,6 +82,15 @@ describe("Conductor MCP server", () => {
 
     expect(result.result.isError).toBe(true);
     expect(result.result.content[0].text).toContain("dispatch_requires_taskId_agentId_assignment");
+  });
+
+  it("validates a cancellation request before forwarding it to the bridge", async () => {
+    const result = await handleMcpMessage(
+      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "cancel_dispatch", arguments: { taskId: "task-1", dispatchId: "dispatch-1", reason: "scope changed" } } },
+      { callTool: async (name, args) => ({ name, args, ok: true }) },
+    );
+
+    expect(result.result.content[0].text).toContain('"name":"cancel_dispatch"');
   });
 
   it("does not respond to MCP notifications without ids", async () => {

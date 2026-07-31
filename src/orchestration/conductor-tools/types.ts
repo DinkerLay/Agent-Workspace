@@ -13,6 +13,8 @@ export type AgentRuntimeState =
   | "blocked"
   | "timeout"
   | "delivery_failed"
+  | "cancellation_requested"
+  | "cancellation_failed"
   | "stopping"
   | "stopped"
   | "exited"
@@ -38,6 +40,8 @@ export type SessionEventType =
   | "session.blocked"
   | "session.timeout"
   | "session.delivery_failed"
+  | "session.cancellation_requested"
+  | "session.cancellation_failed"
   | "session.stopping"
   | "session.stopped"
   | "session.exited"
@@ -47,14 +51,24 @@ export type SessionEventType =
   | "dispatch.delivered"
   | "dispatch.provider.received"
   | "dispatch.provider.failed"
+  | "dispatch.cancellation_requested"
+  | "dispatch.cancelled"
+  | "dispatch.cancel_failed"
   | "dispatch.failed"
   | "dispatch.result_available"
   | "conductor.message"
   | "conductor.wakeup.sent"
   | "conductor.wakeup.queued"
+  | "conductor.wakeup.attempting"
+  | "conductor.wakeup.observed"
   | "task.completion_claim"
   | "permission.requested"
-  | "permission.resolved";
+  | "permission.response_submitted"
+  | "permission.response_recovery_queued"
+  | "permission.reissued"
+  | "permission.response_retry_required"
+  | "permission.resolved"
+  | "question.response_submitted";
 
 export type SessionStoreEvent = {
   id: string;
@@ -83,11 +97,14 @@ export type SessionDispatchRecord = {
   contextPackets?: SessionResultContextPacket[];
   expectedOutput: string;
   priority: "low" | "normal" | "high";
-  status: "queued" | "input_accepted" | "delivered" | "provider_failed" | "result_available" | "failed";
+  status: "queued" | "input_accepted" | "delivered" | "cancellation_requested" | "cancelled" | "cancel_failed" | "provider_failed" | "result_available" | "failed";
   createdAt: string;
   inputAcceptedAt?: string;
   providerReceivedAt?: string;
   providerFailedAt?: string;
+  cancellationRequestedAt?: string;
+  cancelledAt?: string;
+  cancellationFailedAt?: string;
   deliveredAt?: string;
   failedAt?: string;
   failureReason?: string;
@@ -341,6 +358,8 @@ export type ReadTaskStateResult = {
   results: ReadTaskStateResultSummary[];
   messages: SessionMessageRecord[];
   permissions?: unknown[];
+  /** Durable, one-shot answers to native Provider questions. */
+  questionResponses?: unknown[];
   artifacts?: unknown[];
   pendingDecisions: TaskStatePendingDecision[];
 };

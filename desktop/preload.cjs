@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld("agentWorkspace", {
     copyAgentLoopTemplate: (input) => ipcRenderer.invoke("native:copy-agent-loop-template", input),
     archiveAgentLoopTemplate: (input) => ipcRenderer.invoke("native:archive-agent-loop-template", input),
     deleteAgentLoopTemplate: (input) => ipcRenderer.invoke("native:delete-agent-loop-template", input),
+    chooseAgentLoopProjectDirectory: (input) => ipcRenderer.invoke("native:choose-agent-loop-project-directory", input),
     createAgentLoopTask: (input) => ipcRenderer.invoke("native:create-agent-loop-task", input),
     listAgentLoopTasks: () => ipcRenderer.invoke("native:list-agent-loop-tasks"),
     readAgentLoopTask: (input) => ipcRenderer.invoke("native:read-agent-loop-task", input),
@@ -38,6 +39,10 @@ contextBridge.exposeInMainWorld("agentWorkspace", {
     saveAgentLoopWorkbenchLayout: (input) => ipcRenderer.invoke("native:save-agent-loop-workbench-layout", input),
     readAgentLoopArtifact: (input) => ipcRenderer.invoke("native:read-agent-loop-artifact", input),
     markAgentLoopTaskAchieved: (input) => ipcRenderer.invoke("native:mark-agent-loop-task-achieved", input),
+    stopAgentLoopTask: (input) => ipcRenderer.invoke("native:stop-agent-loop-task", input),
+    respondAgentLoopPermission: (input) => ipcRenderer.invoke("native:respond-agent-loop-permission", input),
+    respondAgentLoopQuestion: (input) => ipcRenderer.invoke("native:respond-agent-loop-question", input),
+    deleteAgentLoopTask: (input) => ipcRenderer.invoke("native:delete-agent-loop-task", input),
     onAgentLoopRuntimeEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("native:agent-loop-runtime-event", listener);

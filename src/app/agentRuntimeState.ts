@@ -141,6 +141,8 @@ export function agentRuntimeStateLabel(
     blocked: "Blocked",
     timeout: "Timeout",
     delivery_failed: "Delivery failed",
+    cancellation_requested: "Cancelling",
+    cancellation_failed: "Cancellation failed",
     stopping: "Stopping",
     stopped: "Stopped",
     exited: "Exited",
@@ -179,7 +181,7 @@ function hasAgentResultContext(
 }
 
 export function agentRuntimeStateClass(state: AgentRuntimeState) {
-  if (state === "queued" || state === "delivered_pending" || state === "running" || state === "starting") {
+  if (state === "queued" || state === "delivered_pending" || state === "running" || state === "starting" || state === "cancellation_requested") {
     return "state-running";
   }
   if (
@@ -194,6 +196,7 @@ export function agentRuntimeStateClass(state: AgentRuntimeState) {
     state === "blocked" ||
     state === "timeout" ||
     state === "delivery_failed" ||
+    state === "cancellation_failed" ||
     state === "result_invalid" ||
     state === "exited" ||
     state === "start_failed"
@@ -204,7 +207,7 @@ export function agentRuntimeStateClass(state: AgentRuntimeState) {
 }
 
 export function agentRuntimeProgressBucket(state: AgentRuntimeState) {
-  if (state === "queued" || state === "delivered_pending" || state === "running" || state === "starting") {
+  if (state === "queued" || state === "delivered_pending" || state === "running" || state === "starting" || state === "cancellation_requested") {
     return "running";
   }
   if (state === "result_available" || state === "waiting_conductor") return "result";
@@ -213,6 +216,7 @@ export function agentRuntimeProgressBucket(state: AgentRuntimeState) {
     state === "blocked" ||
     state === "timeout" ||
     state === "delivery_failed" ||
+    state === "cancellation_failed" ||
     state === "result_invalid" ||
     state === "exited" ||
     state === "start_failed"
@@ -267,6 +271,8 @@ const AGENT_RUNTIME_STATES = new Set<AgentRuntimeState>([
   "blocked",
   "timeout",
   "delivery_failed",
+  "cancellation_requested",
+  "cancellation_failed",
   "stopping",
   "stopped",
   "exited",

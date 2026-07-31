@@ -52,13 +52,27 @@ const tools = [
     inputSchema: objectSchema(["taskId"]),
   },
   {
+    name: "cancel_dispatch",
+    description: "Cancel one still-pending worker dispatch when continuing it is no longer useful. This explicitly stops that worker terminal and records the reason; it does not stop the Task or choose a replacement.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        taskId: { type: "string", minLength: 1 },
+        dispatchId: { type: "string", minLength: 1 },
+        reason: { type: "string" },
+      },
+      required: ["taskId", "dispatchId"],
+    },
+  },
+  {
     name: "read_session",
     description: "Read Shell-owned provider-extracted results and state for one approved Agent Card.",
     inputSchema: objectSchema(["taskId", "agentId"]),
   },
   {
     name: "claim_task_completion",
-    description: "Record a structured delivery claim after declared artifact evidence exists. The user, not a fake review gate, marks the Task achieved after inspecting the artifact.",
+    description: "Record a user-visible delivery claim only after every explicit acceptance condition is satisfied by durable Provider results and declared artifact evidence. This is not a way to end, pause, or wait after a Conductor turn. The user, not a fake review gate, marks the Task achieved after inspecting the artifact.",
     inputSchema: objectSchema(["taskId", "message"]),
   },
 ];
@@ -143,6 +157,7 @@ function validateToolArguments(name, args) {
     return invalid ? { ok: false, error: "call_sessions_dispatch_invalid" } : { ok: true };
   }
   if (name === "read_task_state") return nonEmptyString(args.taskId) ? { ok: true } : { ok: false, error: "taskId_required" };
+  if (name === "cancel_dispatch") return nonEmptyString(args.taskId) && nonEmptyString(args.dispatchId) && (args.reason === undefined || typeof args.reason === "string") ? { ok: true } : { ok: false, error: "cancel_dispatch_requires_taskId_dispatchId_and_optional_reason" };
   if (name === "read_session") return nonEmptyString(args.taskId) && nonEmptyString(args.agentId) ? { ok: true } : { ok: false, error: "taskId_and_agentId_required" };
   if (name === "claim_task_completion") return nonEmptyString(args.taskId) && nonEmptyString(args.message) ? { ok: true } : { ok: false, error: "taskId_and_message_required" };
   return { ok: false, error: "tool_not_found" };

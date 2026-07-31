@@ -63,7 +63,7 @@ function createTerminalSession({
       await terminalModel.write(chunk);
       outputCursor += bytes;
       lastOutputAt = new Date(now()).toISOString();
-      delivery.enqueue({ chunk, startCursor, cursor: outputCursor });
+      delivery.enqueue({ chunk, startCursor, cursor: outputCursor, bufferMode: terminalModel.bufferMode });
       sessionStore?.recordOutput(
         { taskId, sessionId: id, cwd },
         chunk,

@@ -38,7 +38,7 @@ The editor shows only:
 - Conductor role, model, and editable Charter;
 - native Session Agent Cards: name, capability guidance, model, optional MCP,
   optional Skills, and default output guidance;
-- concurrency defaults and optional artifact preference.
+- concurrency defaults and optional per-card output guidance.
 
 It does not offer a Graph canvas, route edges, mandatory reviewer/publisher
 sequence, or automatic repair rule. A card being visible does not launch it.
@@ -61,10 +61,16 @@ user task / user follow-up
 Timeline cards are normal Markdown where the content is semantic text. They
 can link to a Session, an exact result, or a discovered artifact. Raw terminals do not appear as the primary task conversation.
 
-The task-level composer sends a new durable `task.user_message` to Conductor.
-For example, “compare this with ChatGPT Codex rather than GitHub Codex” becomes
-a new decision input; the user does not rewrite a worker's task or type a
-Workspace protocol into an OpenCode terminal.
+The task-level composer is the default Task-continuation surface. When the
+current Conductor terminal is live, it sends a new durable
+`task.user_message` to that exact current native Session. For example,
+“compare this with ChatGPT Codex rather than GitHub Codex” becomes a new
+decision input; the user does not rewrite a worker's task or type a Workspace
+protocol into an OpenCode terminal. When the exact terminal is unavailable,
+the composer presents explicit reconnect/recovery choices and preserves the
+message as pending; it cannot silently create a replacement Conductor. Stop,
+connection status, pending-state explanation, and Send live together in this
+composer. See `task-run-continuity-and-terminal-experience.md`.
 
 When a native worker asks a question or asks for permission, Tasks displays a
 clear attention card with “open its terminal”. It does not fake a modal answer
@@ -73,15 +79,17 @@ place where the user answers the provider.
 
 ## Artifact And Completion
 
-Provider answers may name artifacts. Runtime indexes declared and discovered
-workspace files under the Task so the user can open Markdown, HTML, and other
-safe text artifacts from the Timeline. Markdown is rendered with GFM, including
-tables; source is available as a secondary view.
+Provider answers may name artifacts. Runtime indexes only task-relative files
+it has verified to exist through a safe reference, so the user can open
+Markdown, HTML, and other safe text artifacts from the Timeline. It never
+renders a missing path as an expected artifact or Task state. Markdown is
+rendered with GFM, including tables; source is available as a secondary view.
 
-`delivery_ready` means Conductor made a delivery claim and there is recorded
-delivery evidence. `achieved` is an explicit user action after inspecting the
-actual artifact. Achieving a Task preserves its Run, event stream, and files.
-Archiving/deleting Task-associated data is a separate later confirmed action.
+`delivery_ready` means Conductor made a delivery claim. `achieved` is an
+explicit user action after accepting that current delivery; a file may be one
+form of evidence but is not a prerequisite. Achieving a Task preserves its Run,
+event stream, and files. Archiving/deleting Task-associated data is a separate
+later confirmed action.
 
 ## Workbench
 
@@ -93,17 +101,23 @@ Workbench is a dense, terminal-first **Task Run workspace**.
 - One Task Run starts with a Conductor terminal Group. A Session tab appears
   only after Conductor dispatches it and Runtime has durable Session evidence.
   All other Agent Cards remain Template metadata.
+- Newly materialized concurrent Sessions automatically receive separate usable
+  Groups until viewport capacity is reached (at most four default panes);
+  remaining Sessions enter tabs. This is a display allocator only: it neither
+  starts nor dispatches a Session and never steals terminal focus.
 - Each Group owns a tab strip and one selected native terminal. Users may move
-  started Sessions between Groups and split left/right or top/bottom. Splits
-  are UI-only and never dispatch or start an agent.
+  started Sessions between Groups and split left/right or top/bottom. Manual
+  layout persists for the Run and is an override of automatic placement;
+  splits are UI-only and never dispatch or start an agent.
 - A new pane is refused below the terminal minimum usable bounds. Narrow
   panes remain tabs rather than shrinking an OpenCode TUI into unreadable
   columns. A Group can be closed/merged, moving its visible Session tabs to a
   remaining Group.
 - Per-Group terminal zoom controls and shortcuts change the density and cause
   a new PTY resize. Normal buffer scrollback belongs to xterm; an OpenCode
-  alternate-screen TUI keeps its own native wheel behavior. Semantic history
-  remains in Tasks.
+  alternate-screen TUI keeps its own native wheel behavior. Both wheel/trackpad
+  interaction and text selection/copy must work in the terminal viewport;
+  semantic history remains in Tasks.
 - The selected Session can expose compact transport diagnostics, Timeline, and
   artifacts in drawers. These are not a second permanent activity panel.
 

@@ -99,6 +99,117 @@ describe("Shell Session Store", () => {
     expect(fs.existsSync(path.join(root, "task-1", "sessions", "task-1-researcher", "snapshots", "latest.txt"))).toBe(false);
   });
 
+  it("projects one durable permission request until OpenCode confirms the user's reply", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-permission-"));
+    const store = createSessionStore({ root });
+    const session = { taskId: "task-1", sessionId: "task-1-researcher", command: "opencode", cwd: root };
+    store.startSession(session);
+
+    store.recordPermissionRequested({
+      ...session,
+      permissionId: "opencode:req-1",
+      requestId: "req-1",
+      provider: "opencode",
+      permission: "bash",
+      patterns: ["npm test"],
+      summary: "OpenCode 请求运行 npm test。",
+    });
+    let state = store.readTaskState({ taskId: session.taskId });
+    expect(state.permissions).toEqual([expect.objectContaining({ permissionId: "opencode:req-1", status: "requested", patterns: ["npm test"] })]);
+    expect(state.pendingDecisions).toEqual([expect.objectContaining({ type: "permission_requested", permissionId: "opencode:req-1" })]);
+
+    store.recordPermissionSubmitted({ ...session, permissionId: "opencode:req-1", response: "once" });
+    state = store.readTaskState({ taskId: session.taskId });
+    expect(state.permissions[0]).toMatchObject({ status: "submitted", response: "once" });
+
+    store.recordPermissionResolved({ ...session, permissionId: "opencode:req-1", response: "once" });
+    state = store.readTaskState({ taskId: session.taskId });
+    expect(state.permissions[0]).toMatchObject({ status: "approved", response: "once" });
+    expect(state.pendingDecisions).toEqual([]);
+  });
+
+  it("records one durable native-question answer and does not resurrect it from a stale waiting_input state", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-question-"));
+    const store = createSessionStore({ root });
+    const session = { taskId: "task-question", sessionId: "task-question-publisher", command: "opencode", cwd: root };
+    store.startSession(session);
+    store.recordState(session, "waiting_input", "OpenCode asks for a destination.", {
+      provider: "opencode",
+      providerQuestionPartId: "question-1",
+      question: "Write the report to the selected folder?",
+    });
+
+    const first = store.recordQuestionResponseSubmitted({ ...session, questionId: "question-1", answer: "Yes, write it." });
+    const repeated = store.recordQuestionResponseSubmitted({ ...session, questionId: "question-1", answer: "A different retry must not replace it." });
+    const state = store.readTaskState({ taskId: session.taskId });
+
+    expect(first).toMatchObject({ questionId: "question-1", answer: "Yes, write it.", status: "submitted", changed: true });
+    expect(repeated).toMatchObject({ questionId: "question-1", answer: "Yes, write it.", status: "submitted", changed: false });
+    expect(state.questionResponses).toEqual([expect.objectContaining({ sessionId: session.sessionId, questionId: "question-1", answer: "Yes, write it.", status: "submitted" })]);
+    expect(store.readSession(session).events.filter((event) => event.type === "question.response_submitted")).toHaveLength(1);
+  });
+
+  it("moves a retained scoped permission decision onto OpenCode's reissued request without duplicating the Task action", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-permission-recovery-"));
+    const store = createSessionStore({ root });
+    const session = { taskId: "task-permission-recovery", sessionId: "task-permission-recovery-publisher", command: "opencode", cwd: root };
+    store.startSession(session);
+    store.recordPermissionRequested({
+      ...session,
+      permissionId: "opencode:req-recover",
+      requestId: "req-recover",
+      provider: "opencode",
+      permission: "external_directory",
+      patterns: ["/tmp/output"],
+      summary: "OpenCode 请求写入项目输出目录。",
+    });
+
+    const queued = store.recordPermissionRecoveryPending({ ...session, permissionId: "opencode:req-recover", response: "once" });
+    expect(queued).toMatchObject({ status: "recovery_pending", response: "once" });
+    const reissuedAsk = store.recordPermissionRequested({
+      ...session,
+      permissionId: "opencode:req-recover-new",
+      requestId: "req-recover-new",
+      provider: "opencode",
+      permission: "external_directory",
+      patterns: ["/tmp/output"],
+      summary: "OpenCode 请求写入项目输出目录。",
+    });
+    expect(reissuedAsk).toMatchObject({
+      permissionId: "opencode:req-recover-new",
+      status: "replaying",
+      response: "once",
+      replayedFromPermissionIds: ["opencode:req-recover"],
+    });
+    const state = store.readTaskState({ taskId: session.taskId });
+    expect(state.permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ permissionId: "opencode:req-recover", status: "reissued", reissuedByPermissionId: "opencode:req-recover-new" }),
+      expect.objectContaining({ permissionId: "opencode:req-recover-new", status: "replaying", response: "once" }),
+    ]));
+    expect(state.pendingDecisions).toEqual([]);
+    expect(state.events.some((event) => event.type === "permission.reissued")).toBe(true);
+    expect(JSON.stringify(state)).not.toContain("replyToken");
+
+    // Repeated Host/Provider restarts must move the same logical choice
+    // forward, not resurrect an older recovery_pending card beside it.
+    store.recordPermissionRecoveryPending({ ...session, permissionId: "opencode:req-recover-new", response: "once" });
+    const reissuedAgain = store.recordPermissionRequested({
+      ...session,
+      permissionId: "opencode:req-recover-latest",
+      requestId: "req-recover-latest",
+      provider: "opencode",
+      permission: "external_directory",
+      patterns: ["/tmp/output"],
+      summary: "OpenCode 再次请求写入输出目录。",
+    });
+    expect(reissuedAgain).toMatchObject({ status: "replaying", response: "once" });
+    const repeatedState = store.readTaskState({ taskId: session.taskId });
+    expect(repeatedState.permissions.filter((permission) => permission.status !== "reissued")).toEqual([
+      expect.objectContaining({ permissionId: "opencode:req-recover-latest", status: "replaying", response: "once" }),
+    ]);
+    expect(repeatedState.pendingDecisions).toEqual([]);
+  });
+
   it("does not pre-create unused session jsonl files", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-lazy-files-"));
     const store = createSessionStore({ root });
@@ -294,6 +405,80 @@ describe("Shell Session Store", () => {
     expect(view.events.map((event) => event.type)).toEqual(["dispatch.created", "dispatch.provider.received"]);
   });
 
+  it("keeps a cancellation pending until a terminal or Provider confirmation records it", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-dispatch-cancellation-"));
+    const store = createSessionStore({ root });
+    const dispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: "task-1-researcher",
+      assignment: "Research the claim.",
+    });
+    store.markDispatchInputAccepted({ taskId: "task-1", sessionId: "task-1-researcher", dispatchId: dispatch.dispatchId, transport: "terminal_runtime" });
+
+    const requested = store.markDispatchCancellationRequested({
+      taskId: "task-1",
+      sessionId: "task-1-researcher",
+      dispatchId: dispatch.dispatchId,
+      reason: "scope_changed",
+    });
+    expect(requested).toMatchObject({ status: "cancellation_requested", changed: true });
+    expect(store.readSession({ taskId: "task-1", sessionId: "task-1-researcher" }).dispatches[0]).toMatchObject({ status: "cancellation_requested" });
+    store.recordState(
+      { taskId: "task-1", sessionId: "task-1-researcher" },
+      "exited",
+      "PTY process exited while cancellation was pending.",
+      { reason: "pty_process_exited" },
+    );
+    expect(store.readTaskState({ taskId: "task-1" }).pendingDecisions).toContainEqual(expect.objectContaining({ actionHint: "restart_or_recover" }));
+
+    const confirmed = store.markDispatchCancelled({
+      taskId: "task-1",
+      sessionId: "task-1-researcher",
+      dispatchId: dispatch.dispatchId,
+      reason: "scope_changed",
+      confirmation: "terminal_exit",
+    });
+    const view = store.readSession({ taskId: "task-1", sessionId: "task-1-researcher" });
+
+    expect(confirmed).toMatchObject({ status: "cancelled", changed: true });
+    expect(view.dispatches[0]).toMatchObject({ status: "cancelled", cancellationConfirmation: "terminal_exit" });
+    expect(view.events.map((event) => event.type)).toContain("dispatch.cancellation_requested");
+    expect(view.events.map((event) => event.type)).toContain("dispatch.cancelled");
+    expect(view.state).toBe("ready");
+    expect(store.readTaskState({ taskId: "task-1" }).pendingDecisions.some((decision) => decision.actionHint === "restart_or_recover")).toBe(false);
+  });
+
+  it("keeps an OpenCode Session binding after later terminal state updates", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-provider-binding-"));
+    const store = createSessionStore({ root });
+    const dispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: "task-1-publisher",
+      assignment: "Create the requested artifact.",
+    });
+
+    store.markDispatchProviderReceived({
+      taskId: "task-1",
+      sessionId: "task-1-publisher",
+      dispatchId: dispatch.dispatchId,
+      provider: "opencode",
+      providerSessionId: "ses_publisher_original",
+      providerMessageId: "msg_original",
+    });
+    store.recordState(
+      { taskId: "task-1", sessionId: "task-1-publisher" },
+      "exited",
+      "PTY process exited.",
+      { reason: "pty_process_exited" },
+    );
+
+    const session = store.readTaskState({ taskId: "task-1" }).sessions.find((item) => item.sessionId === "task-1-publisher");
+    expect(session?.providerBinding).toMatchObject({
+      provider: "opencode",
+      providerSessionId: "ses_publisher_original",
+    });
+  });
+
   it("projects a single runtime state from session and dispatch lifecycle", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-runtime-state-"));
     const store = createSessionStore({ root });
@@ -386,18 +571,18 @@ describe("Shell Session Store", () => {
     const taskState = store.readTaskState({ taskId: "task-1" });
     const session = taskState.sessions.find((item) => item.sessionId === sessionId);
     const resultDecision = taskState.pendingDecisions.find((item) => item.type === "worker_result_available");
-    const failedDecision = taskState.pendingDecisions.find((item) => item.type === "session_delivery_failed");
+    const failedDecision = taskState.pendingDecisions.find((item) => item.type === "dispatch_failed");
 
     expect(session).toMatchObject({
       sessionId,
-      state: "delivery_failed",
+      state: "result_available",
       activeDispatchId: secondDispatch.dispatchId,
       lastResultId: firstResult.resultId,
       resultCount: 1,
       unresolvedFailureDispatchId: secondDispatch.dispatchId,
       assignmentReadinessHint: "ready",
     });
-    expect(session.attentionHints).toContain("delivery_failed");
+    expect(session.attentionHints).toContain("dispatch_failed");
     expect(session.attentionHints).toContain("result_available");
     expect(resultDecision).toMatchObject({
       type: "worker_result_available",
@@ -407,13 +592,162 @@ describe("Shell Session Store", () => {
       severity: "info",
     });
     expect(failedDecision).toMatchObject({
-      type: "session_delivery_failed",
+      type: "dispatch_failed",
       dispatchId: secondDispatch.dispatchId,
       sessionId,
       severity: "blocking",
-      actionHint: "recover_delivery",
-      relatedDispatchIds: [firstDispatch.dispatchId, secondDispatch.dispatchId],
+      actionHint: "inspect_dispatch_failure",
     });
+  });
+
+  it("clears a result inbox item only after its exact Conductor wakeup is observed", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-result-inbox-observed-"));
+    const store = createSessionStore({ root });
+    const sessionId = "task-1-researcher";
+    const dispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: sessionId,
+      assignment: "Return the source evidence.",
+    });
+    store.markDispatchDelivered({ taskId: "task-1", sessionId, dispatchId: dispatch.dispatchId });
+    const result = store.recordDispatchResult({
+      taskId: "task-1",
+      sessionId,
+      dispatchId: dispatch.dispatchId,
+      provider: "opencode",
+      providerSessionId: "ses-researcher",
+      providerMessageId: "msg-result",
+      answerText: "The complete native worker result.",
+      source: "opencode-message-parts",
+    });
+    const wakeup = {
+      taskId: "task-1",
+      sessionId: "task-1-conductor",
+      wakeupKey: `result:${dispatch.dispatchId}`,
+      kind: "result",
+      workerSessionId: sessionId,
+      dispatchId: dispatch.dispatchId,
+      resultId: result.resultId,
+      status: "sent",
+    };
+    store.recordConductorWakeup(wakeup);
+
+    expect(store.readTaskState({ taskId: "task-1" }).pendingDecisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "worker_result_available",
+          dispatchId: dispatch.dispatchId,
+          resultId: result.resultId,
+        }),
+      ]),
+    );
+
+    store.markConductorWakeupObserved({ ...wakeup, provider: "opencode", providerMessageId: "msg-conductor-input" });
+    const stateAfterObservation = store.readTaskState({ taskId: "task-1" });
+
+    expect(stateAfterObservation.pendingDecisions.some((item) => item.type === "worker_result_available")).toBe(false);
+    expect(stateAfterObservation.results).toEqual(
+      expect.arrayContaining([expect.objectContaining({ resultId: result.resultId, answerText: "The complete native worker result." })]),
+    );
+  });
+
+  it("requeues only a legacy user wakeup that was marked sent without a Provider receipt", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-legacy-user-wakeup-"));
+    const store = createSessionStore({ root });
+    const wakeup = {
+      taskId: "task-1",
+      sessionId: "task-1-conductor",
+      wakeupKey: "user:task-1:message-1",
+      kind: "user_message",
+      userMessageId: "message-1",
+      messageText: "Continue the current task.",
+      status: "sent",
+    };
+
+    store.recordConductorWakeup(wakeup);
+    const retried = store.recordConductorWakeup({
+      ...wakeup,
+      status: "queued",
+      retryLegacyUnconfirmed: true,
+    });
+    expect(retried.status).toBe("queued");
+    expect(retried.sentAt).toBe(undefined);
+    expect(store.listPendingConductorWakeups({ taskId: "task-1" })).toEqual(
+      [expect.objectContaining({ wakeupKey: wakeup.wakeupKey, status: "queued" })],
+    );
+
+    store.markConductorWakeupObserved({
+      ...wakeup,
+      provider: "opencode",
+      providerMessageId: "msg-user-input",
+    });
+    const protectedReceipt = store.recordConductorWakeup({
+      ...wakeup,
+      status: "queued",
+      retryLegacyUnconfirmed: true,
+    });
+    expect(protectedReceipt.status).toBe("observed");
+    expect(protectedReceipt.providerMessageId).toBe("msg-user-input");
+  });
+
+  it("does not hide an earlier failed dispatch when a later dispatch returns a result", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-runtime-failure-then-result-"));
+    const store = createSessionStore({ root });
+    const sessionId = "task-1-researcher";
+    const failedDispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: sessionId,
+      assignment: "Research an unavailable source.",
+    });
+    store.markDispatchFailed({
+      taskId: "task-1",
+      sessionId,
+      dispatchId: failedDispatch.dispatchId,
+      reason: "target_session_start_failed",
+      message: "The first assignment was not started.",
+    });
+    const succeedingDispatch = store.recordDispatch({
+      taskId: "task-1",
+      toSessionId: sessionId,
+      assignment: "Research a different source.",
+    });
+    store.markDispatchDelivered({
+      taskId: "task-1",
+      sessionId,
+      dispatchId: succeedingDispatch.dispatchId,
+    });
+    const result = store.recordDispatchResult({
+      taskId: "task-1",
+      sessionId,
+      dispatchId: succeedingDispatch.dispatchId,
+      reason: "provider-answer-available",
+      answerText: "The second assignment completed.",
+      source: "opencode-message-parts",
+    });
+
+    const taskState = store.readTaskState({ taskId: "task-1" });
+    const session = taskState.sessions.find((item) => item.sessionId === sessionId);
+
+    expect(session).toMatchObject({
+      state: "result_available",
+      lastResultId: result.resultId,
+      unresolvedFailureDispatchId: failedDispatch.dispatchId,
+    });
+    expect(session.attentionHints).toContain("dispatch_failed");
+    expect(taskState.pendingDecisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "dispatch_failed",
+          dispatchId: failedDispatch.dispatchId,
+          actionHint: "inspect_dispatch_failure",
+        }),
+        expect.objectContaining({
+          type: "worker_result_available",
+          dispatchId: succeedingDispatch.dispatchId,
+          resultId: result.resultId,
+        }),
+      ]),
+    );
   });
 
   it("keeps pure delivery failures non-deliverable when no prior result exists", () => {

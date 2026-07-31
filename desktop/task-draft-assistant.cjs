@@ -286,16 +286,9 @@ function slugify(value) {
 }
 
 function parseTaskDraftAssistantOutput(stdout) {
-  const candidates = extractJsonCandidates(stdout);
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      const result = normalizeAssistantResult(parsed);
-      if (result.ok) return result;
-    } catch {
-      // Try the next candidate.
-    }
+  for (const parsed of parseOpencodeJsonValues(stdout)) {
+    const result = normalizeAssistantResult(parsed);
+    if (result.ok) return result;
   }
 
   return {
@@ -305,6 +298,23 @@ function parseTaskDraftAssistantOutput(stdout) {
     assumptions: [],
     error: "Unable to parse task draft assistant output.",
   };
+}
+
+/**
+ * OpenCode's `run --format json` stream is transport output, not a single
+ * JSON document. Return every balanced JSON value found in its text payloads
+ * so individual callers can validate their own semantic schema.
+ */
+function parseOpencodeJsonValues(stdout) {
+  const values = [];
+  for (const candidate of extractJsonCandidates(stdout)) {
+    try {
+      values.push(JSON.parse(candidate));
+    } catch {
+      // A provider may emit prose, diagnostics, or incomplete stream chunks.
+    }
+  }
+  return values;
 }
 
 function normalizeAssistantResult(value) {
@@ -452,8 +462,7 @@ function extractJsonCandidates(text) {
       if (line.startsWith("{") && line.endsWith("}")) candidates.push(line);
     }
 
-    const objectCandidate = extractFirstJsonObject(source);
-    if (objectCandidate) candidates.push(objectCandidate);
+    candidates.push(...extractBalancedJsonObjects(source));
   }
 
   return [...new Set(candidates)];
@@ -475,9 +484,16 @@ function extractOpencodeTextParts(text) {
   return parts.join("");
 }
 
-function extractFirstJsonObject(text) {
-  const start = text.indexOf("{");
-  if (start === -1) return undefined;
+function extractBalancedJsonObjects(text) {
+  const objects = [];
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    const object = extractBalancedJsonObject(text, start);
+    if (object) objects.push(object);
+  }
+  return objects;
+}
+
+function extractBalancedJsonObject(text, start) {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -527,5 +543,6 @@ function basename(value) {
 module.exports = {
   buildTaskDraftPrompt,
   generateTaskDraft,
+  parseOpencodeJsonValues,
   parseTaskDraftAssistantOutput,
 };

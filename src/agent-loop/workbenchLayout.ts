@@ -9,13 +9,29 @@ export const MIN_TERMINAL_PANE_HEIGHT = 250;
 type PaneBounds = { width: number; height: number };
 
 export function defaultWorkbenchLayout(sessionIds: string[]): NativeAgentLoopWorkbenchLayout {
+  return automaticWorkbenchLayout(uniqueSessionIds(sessionIds));
+}
+
+/** Deterministic first-use layout: at most four visible native terminal panes;
+ * further Sessions become tabs.  Any explicit move/split freezes this policy. */
+export function automaticWorkbenchLayout(sessionIds: string[], sourceGroups: Record<string, Group> = {}): NativeAgentLoopWorkbenchLayout {
   const unique = uniqueSessionIds(sessionIds);
+  const groupIds = unique.length <= 1 ? ["primary"] : unique.length === 2 ? ["primary", "group-1"] : unique.length === 3 ? ["primary", "group-1", "group-2"] : ["primary", "group-1", "group-2", "group-3"];
+  const root: NativeAgentLoopWorkbenchLayoutNode = groupIds.length === 1
+    ? { type: "leaf", groupId: "primary" }
+    : groupIds.length === 2
+      ? { type: "split", direction: "horizontal", ratio: .5, first: { type: "leaf", groupId: "primary" }, second: { type: "leaf", groupId: "group-1" } }
+      : groupIds.length === 3
+        ? { type: "split", direction: "horizontal", ratio: .5, first: { type: "leaf", groupId: "primary" }, second: { type: "split", direction: "vertical", ratio: .5, first: { type: "leaf", groupId: "group-1" }, second: { type: "leaf", groupId: "group-2" } } }
+        : { type: "split", direction: "horizontal", ratio: .5, first: { type: "split", direction: "vertical", ratio: .5, first: { type: "leaf", groupId: "primary" }, second: { type: "leaf", groupId: "group-1" } }, second: { type: "split", direction: "vertical", ratio: .5, first: { type: "leaf", groupId: "group-2" }, second: { type: "leaf", groupId: "group-3" } } };
+  const groups = Object.fromEntries(groupIds.map((id) => [id, { id, sessionIds: [] as string[], fontSize: clampFontSize(sourceGroups[id]?.fontSize) }])) as Record<string, Group>;
+  unique.forEach((sessionId, index) => groups[groupIds[index % groupIds.length]].sessionIds.push(sessionId));
+  for (const group of Object.values(groups)) group.activeSessionId = group.sessionIds.includes(sourceGroups[group.id]?.activeSessionId ?? "") ? sourceGroups[group.id]?.activeSessionId : group.sessionIds[0];
   return {
     version: 1,
-    root: { type: "leaf", groupId: "primary" },
-    groups: {
-      primary: { id: "primary", sessionIds: unique, activeSessionId: unique[0] },
-    },
+    placementMode: "auto",
+    root,
+    groups,
     focusedGroupId: "primary",
   };
 }
@@ -28,6 +44,7 @@ export function reconcileWorkbenchLayout(
 ): NativeAgentLoopWorkbenchLayout {
   const known = uniqueSessionIds(knownSessionIds);
   if (!source || source.version !== 1) return defaultWorkbenchLayout(known);
+  if (source.placementMode === "auto") return automaticWorkbenchLayout(known, source.groups);
   const groupIds = leafGroupIds(source.root);
   if (!groupIds.length) return defaultWorkbenchLayout(known);
   const assigned = new Set<string>();
@@ -48,6 +65,7 @@ export function reconcileWorkbenchLayout(
   if (!groups[primaryId].activeSessionId) groups[primaryId].activeSessionId = groups[primaryId].sessionIds[0];
   return {
     version: 1,
+    placementMode: "manual",
     root: source.root,
     groups,
     focusedGroupId: groupIds.includes(source.focusedGroupId) ? source.focusedGroupId : primaryId,
@@ -94,7 +112,7 @@ export function moveSessionToGroup(
     sessionIds: [...target.sessionIds, sessionId],
     activeSessionId: sessionId,
   };
-  return { ...layout, groups, focusedGroupId: targetGroupId };
+  return { ...layout, placementMode: "manual", groups, focusedGroupId: targetGroupId };
 }
 
 export function splitGroup(
@@ -120,7 +138,7 @@ export function splitGroup(
     first: { type: "leaf", groupId },
     second: { type: "leaf", groupId: newGroupId },
   });
-  return { ...layout, root, groups: nextGroups, focusedGroupId: groupId };
+  return { ...layout, placementMode: "manual", root, groups: nextGroups, focusedGroupId: groupId };
 }
 
 export function updateSplitRatio(
@@ -128,7 +146,7 @@ export function updateSplitRatio(
   path: string,
   ratio: number,
 ): NativeAgentLoopWorkbenchLayout {
-  return { ...layout, root: updateNodeAtPath(layout.root, path, Math.min(.85, Math.max(.15, ratio))) };
+  return { ...layout, placementMode: "manual", root: updateNodeAtPath(layout.root, path, Math.min(.85, Math.max(.15, ratio)))};
 }
 
 export function canSplitTerminalPane(bounds: PaneBounds | undefined, direction: "horizontal" | "vertical") {

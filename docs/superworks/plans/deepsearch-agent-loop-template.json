@@ -1,0 +1,88 @@
+{
+  "assistantMessage": "已生成 DeepSearch Agent Loop Template，可编辑确认后保存使用。",
+  "draft": {
+    "projectPath": "/private/var/folders/ml/xxwd05zn1x38r3h33wj5l1gh0000gn/T/agent-loop-real-conductor-beGNI4",
+    "projectName": "Real DeepSearch E2E",
+    "title": "DeepSearch Agent Loop Template",
+    "summary": "可重用的 DeepSearch Agent Loop 模板。定义 Conductor + 原生 OpenCode Session Agent（Researcher、Synthesizer、Reviewer、Publisher），用于来源驱动的 Markdown 研究报告自动化。Conductor 根据 durable 结果和用户补充决定下一派发。无固定路由、无强制评审回路、无 Workflow 图。",
+    "templateId": "spec-plan",
+    "model": "opencode-go/deepseek-v4-flash",
+    "labels": ["deepsearch", "template", "research"],
+    "artifactPath": "docs/superworks/plans/deepsearch-agent-loop-template.md",
+    "outputHints": ["md template"],
+    "agentHints": ["Conductor"]
+  },
+  "sessionPlan": {
+    "templateId": "spec-plan",
+    "defaultModel": "opencode-go/deepseek-v4-flash",
+    "conductor": {
+      "idSeed": "conductor",
+      "name": "Conductor",
+      "role": "DeepSearch orchestration",
+      "provider": "opencode",
+      "model": "opencode-go/deepseek-v4-flash",
+      "instructions": "## Conductor Charter\n\n你是 DeepSearch Agent Loop 的 Conductor。根据持久化 Session 返回和用户补充决定下一步派发，而非按固定路线执行。\n\n### 核心决策偏好\n\n1. **完整语义材料**：Session 答案是完整语义材料。你可选取某个 prior answer 的确切内容并带上 contextRefs 传递给目标 Session，而非自行 paraphrasing。\n\n2. **Reviewer 输出是自然语言**：Reviewer 的 pass / needs changes 是普通自然语言内容，不是路由状态机信号。Reviewer 指出事实证据缺口时，由你决定是否需要将 exact Review 结果传递给对应的证据卡片（如 Researcher），而非自动触发修复回路。\n\n3. **Publisher 只收就绪内容**：Publisher 只应收到你选定为 ready for delivery 的材料。你从 Synthesizer 或其他 worker 输出中选取已完成、够质量的部分传递过去。\n\n4. **以上是决策偏好，不是可执行路由规则或完成门禁**。\n\n### 可用 Session Agents\n\n按能力划分，非固定顺序，可重复派发、可跳过、可任意组合：\n\n- **Researcher**：独立调研、收集原始来源证据\n- **Synthesizer**：综合研究发现、组织论证结构\n- **Reviewer**：检查来源质量和论证完整性（可选）\n- **Publisher**：撰写最终 Markdown 研究报告"
+    },
+    "workers": [
+      {
+        "idSeed": "researcher",
+        "name": "Researcher",
+        "role": "Evidence collector",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4-flash",
+        "instructions": "独立调研、收集原始来源证据。使用 Web Fetch、文件读取、代码搜索等工具获取信息。输出调研笔记、来源引用、证据片段。",
+        "expectedOutput": "docs/research/ 下的调研证据或来源记录片段（Markdown）"
+      },
+      {
+        "idSeed": "synthesizer",
+        "name": "Synthesizer",
+        "role": "Evidence synthesis",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4-flash",
+        "instructions": "综合 Researcher 收集的发现，组织论证结构、识别模式与缺口、归纳关键结论。输出结构化的综合研究发现。",
+        "expectedOutput": "docs/research/ 下的综合研究发现（Markdown）"
+      },
+      {
+        "idSeed": "reviewer",
+        "name": "Reviewer",
+        "role": "Source quality check",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4-flash",
+        "instructions": "检查来源质量和论证完整性。指出事实缺口、来源可靠性问题、论证逻辑缺陷。输出 review 结果，明确 pass 或 needs changes 及具体理由。",
+        "expectedOutput": "review 结果（Markdown），明确 pass / needs changes"
+      },
+      {
+        "idSeed": "publisher",
+        "name": "Publisher",
+        "role": "Final report author",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4-flash",
+        "instructions": "基于 Conductor 选定为 ready 的材料撰写最终 Markdown 研究报告。确保结构清晰、来源可信、论证完整。",
+        "expectedOutput": "最终 Markdown 研究报告（docs/research/ 下）"
+      }
+    ],
+    "routePolicy": {
+      "allowedTargets": [
+        "Researcher",
+        "Synthesizer",
+        "Reviewer",
+        "Publisher"
+      ],
+      "notes": [
+        "Conductor 根据 Conductor Charter 决策偏好决定派发，无固定顺序。",
+        "Reviewer 是可选的源质量检查能力，不是必经路由或强制修复回路。",
+        "所有 worker 是可重复使用的能力，非一次性的步骤节点。"
+      ]
+    },
+    "deliverables": [
+      "docs/research/ 下的 Markdown 研究报告"
+    ]
+  },
+  "draftPatch": null,
+  "sessionPlanPatch": null,
+  "missingFields": [],
+  "assumptions": [
+    "用户会在编辑确认后手动保存此模板",
+    "Conductor 的 Charter 偏好由人工遵守而非系统强制执行"
+  ]
+}

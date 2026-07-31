@@ -37,7 +37,8 @@ research -> publish -> review -> repair -> re-review
 
 That is a Workflow. A Template may recommend a research, publishing, or review
 style, but the Conductor decides the order, number of turns, target cards,
-retries, and closeout in the context of each Task.
+retries, and closeout in the context of each Task. No Template field creates a
+Publisher, Reviewer, or other card prerequisite at Runtime.
 
 ## Ownership Boundary
 
@@ -63,16 +64,20 @@ Loop Template vN
   -> Conductor Charter
   -> native Session Agent Cards
   -> provider defaults (model, MCP, Skills)
+  -> optional review handoff policy
   -> optional delivery preferences
 ```
 
 It must not persist graph nodes, edges, phase counters, required counts,
-role-ordering rules, remediation routing rules, or completion gates.
+role-ordering rules, remediation routing rules, dispatch prerequisites, or
+completion gates.
 
 ### Conductor Charter
 
-The Charter is generated from the user's Template description and remains
-editable before the Template version is saved. It gives the Conductor an
+The Charter is generated from the user's natural-language collaboration brief
+and remains editable before the Template version is saved. It is the sole
+Template-level human-readable orchestration field: it is snapshotted into a
+Task and injected into every Conductor incarnation. It gives the Conductor an
 operating method, not an executable path. It can describe:
 
 - the kind of task and expected quality;
@@ -217,9 +222,9 @@ that every dispatch must carry.
 
 Runtime may validate transport identity and ownership—for example, a dispatch
 is scoped to the Task and creates the selected card's physical Session. It
-must not reject a dispatch because a Researcher has not returned, because a
-Reviewer is pending, or because the result looks insufficient. Those are
-Conductor decisions.
+must not reject a dispatch because a Researcher or Reviewer has not returned,
+because a result looks insufficient, or because a Publisher lacks a particular
+handoff. Those are Conductor decisions.
 
 ## User Conversation And Continuations
 
@@ -234,24 +239,44 @@ user message
      request clarification, or continue delivery work
 ```
 
+Task lifecycle remains a Runtime/UI action. A Conductor cannot stop a Task,
+create a new Run, or resume a prior native provider Session. A user message
+mentioning “restart” is Task feedback, not a lifecycle command; Conductor may
+continue the current Run or direct the user to the explicit Stop and Restart
+controls when a fresh Run is intended.
+
+Conductor may request `cancel_dispatch(dispatchId, reason)` for one of its
+outstanding assignments when it is redundant, superseded, misdirected, or no
+longer worth continuing. This is a request for a Coordinator-managed graceful
+interrupt, not a direct terminal write, `Ctrl+C`, PTY kill, Session deletion,
+Task stop, retry, or completion decision. Conductor waits for the durable
+`cancelled` or `cancel_failed` terminal/provider fact before treating that
+Session as available for more work.
+
 If a user challenges a completed search or a delivered result, the product
-creates a recorded continuation of the same Task. Previous delivery and
-achieved history remain intact; the Conductor is given the follow-up as new
-context and may open new native Session Agent work. The user does not need to
+creates a recorded continuation of the same Task. While its Conductor terminal
+is live this is a new input to the current Run; after `achieved` it is an
+explicit new Run whose recovery envelope retains prior Task history as context.
+The Conductor may open new native Session Agent work. The user does not need to
 find, or directly operate, an old Searcher terminal.
 
 `achieved` remains a user action after inspecting the concrete delivered files.
-It is not a Runtime verdict and does not prevent a later user continuation.
+It is not a Runtime verdict and does not prevent a later user continuation, but
+that continuation never silently resurrects the accepted Run's provider
+Session. See `task-run-continuity-and-terminal-experience.md`.
 
 ## Explicit Prohibitions
 
 The next implementation must not add any of the following to the Agent Loop
 runtime:
 
-- automatic role sequencing or prerequisite counts;
+- automatic role sequencing or prerequisite counts (apart from checking the
+  explicit Reviewer-result handoff of an opted-in Publisher dispatch);
 - “Reviewer needs changes” routing directly to Publisher, Researcher, or any
   other card;
 - automatic re-review, repair, or task completion;
+- direct Conductor control of terminal signals, Session process termination, or
+  a cancellation that is assumed complete before a terminal/provider receipt;
 - artifact existence, quality, or evidence checks that decide the next
   Conductor action;
 - a worker-result classifier that turns semantics into a route;

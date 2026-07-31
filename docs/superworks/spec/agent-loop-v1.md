@@ -13,11 +13,12 @@ There is one Execution Runtime. It owns Session identity, launch profiles, PTY
 authority, native-provider state inspection, event persistence, and wakeup
 delivery. It never decides the next task action.
 
-> **Conductor-autonomy clarification (2026-07-26):**
+> **Conductor-autonomy clarification (2026-07-26, amended 2026-07-29):**
 > [`agent-loop-conductor-guidance.md`](agent-loop-conductor-guidance.md)
 > supersedes former language that made reviewer, publisher, artifact, or
 > evidence state into Runtime routing gates. Agent Loop Templates guide the
-> Conductor through prompts; they do not compile a hidden Workflow.
+> Conductor through prompts; they do not compile a hidden Workflow or add a
+> card-specific Runtime prerequisite.
 
 ## Control Contract
 
@@ -82,12 +83,19 @@ state-transition signal. This preserves an inspectable transport record for a
 full-screen native TUI without pretending alternate-screen output is shell
 scrollback.
 
-For a newly created Worker, its first bounded contract is supplied through
-OpenCode's normal launch `--prompt`, so a blank interactive TUI cannot lose a
-paste during boot. For a live Worker, later contracts enter the same native
-Session through the Terminal Host's serialized input authority. In both paths,
-the Provider Adapter—not the fact that bytes were written—confirms delivery
-and derives the next semantic state.
+For a newly created or recovered Session, its bounded contract is supplied as
+the positional message to `opencode run` (with `--session` when an existing
+Provider conversation is being continued). The interactive TUI `--prompt`
+option only pre-fills a composer; it is never a delivery primitive because a
+pre-filled paste is not a submitted Provider message. For a genuinely live
+interactive Session, later contracts may enter through the Terminal Host's
+serialized input authority. In every path, the Provider Adapter—not process
+start or bytes written—confirms delivery and derives the next semantic state.
+
+Provider-message deduplication uses the Provider message identity. A terminal
+screen cursor belongs to one physical PTY incarnation and can reset when a
+logical Conductor Session is recovered; an earlier incarnation's cursor must
+never suppress a new Provider response from the Task Timeline.
 
 When a native worker exposes a provider question or permission/attention
 state, Runtime records `waiting_input`, wakes Conductor once with the semantic
@@ -103,27 +111,28 @@ A saved Loop Template is versioned and has no graph, nodes, or edges.
 
 | Field | Meaning |
 | --- | --- |
-| Conductor | role, OpenCode model, and editable task-owner Charter injected into every Conductor incarnation |
+| Conductor | role, OpenCode model, and one editable task-owner Charter injected into every Conductor incarnation. The Charter contains the Template's applicable task context, collaboration intent, and dispatch preferences. |
 | Agent cards | reusable native-worker profile: identity, model, MCP, Skills, capability description, and default assignment/output guidance |
 | Card responsibility | an optional `researcher`, `publisher`, `reviewer`, or `general` label for Conductor context and UI readability; it is not a routing or completion rule |
 | Defaults | `opencode-go/deepseek-v4-flash`; empty MCP/Skill allowlists mean all provider-native capabilities are permitted |
 | Return policy | semantic worker results, failure, attention, and user intervention wake Conductor |
-| Delivery preferences | expected artifact and verification context for Conductor reasoning; never Runtime dispatch prerequisites |
+| Artifact index | optional passive index of already existing project files; never an expected output, dispatch prerequisite, or delivery gate |
 
 Template generation may suggest a Publisher or Reviewer card when that suits
-the described work, but cannot make either card an owner, prerequisite, or
-next-step target. A Reviewer `needs_changes` result is a durable fact that
+the described work, but cannot make either card a next-step target. A Reviewer
+`needs_changes` result is a durable fact that
 wakes Conductor; Runtime neither selects a repair target nor requires a
 re-check. Conductor decides whether to dispatch a Searcher, Publisher,
 Reviewer, another card, or ask the user.
 
 Template CRUD is explicit:
 
-- create from a description or a manual Loop Template editor;
+- create from a natural-language Charter brief or a manual Loop Template editor;
 - edit creates a new immutable version;
 - historical templates remain readable and Task-eligible after their Charter
-  and cards are normalized; a delivery path is only a Conductor preference,
-  never an owner, route, or eligibility gate;
+  and cards are normalized; any legacy delivery path is only a passive lookup
+  candidate for an already existing file, never an owner, route, prompt input,
+  or eligibility gate;
 - copy creates a new template identity;
 - archive hides it from normal Task Assembly but preserves Task provenance;
 - permanent delete is allowed only when no Task Architecture references it.
@@ -136,14 +145,18 @@ available to the project is allowed.
 
 ## Task and Completion
 
-A Task stores an immutable snapshot of the selected Loop Template and its Agent
-cards. It may be `queued`, `running`, `delivery_ready`, `achieved`, `blocked`,
-or `archived`.
+A Task stores an immutable snapshot of the selected Loop Template, including
+its Charter and Agent cards. During Task
+creation the user selects a writable project root; that Task-owned `cwd` is the
+only root for native Sessions, relative artifacts, and `.agent-workspace`
+Runtime metadata. It may be `queued`, `running`, `delivery_ready`, `achieved`,
+`blocked`, or `archived`.
 
-`achieved` is a user action after Runtime-observed delivery evidence is
-available. It preserves the Task Run, Sessions, timeline, and artifacts. It
-does not archive or delete any files. Archive/delete are separate confirmed
-operations.
+`achieved` is a user action after accepting Conductor's current delivery claim.
+An artifact can be useful delivery evidence, but no particular file is
+required. Achieving preserves the Task Run, Sessions, timeline, and indexed
+artifacts; it does not archive or delete any files. Archive/delete are separate
+confirmed operations.
 
 A Conductor delivery claim changes the Task to `delivery_ready`, but does not
 close the logical Run, detach/kill a PTY, suppress Provider events, or prevent
@@ -155,8 +168,19 @@ was needed.
 
 - Templates shows Loop Templates and their Session Agent cards; it has no
   Graph editor.
-- Tasks shows a causal conversation: user task, Conductor decision, dispatch,
-  worker return, Runtime wakeup, final artifact and achieved action.
+- Tasks shows a timestamp-ordered causal conversation: user task, Conductor
+  decision, dispatch, worker return, Runtime wakeup, final artifact and
+  achieved action. Long native results can be expanded; their card-level
+  dispatch state is also visible, including an explicit unstarted state.
+- The Task composer is the default continuation surface: it sends to the
+  current live Conductor terminal, shows its connection/pending state, and
+  contains the Stop control beside Send. A missing terminal is recovered as
+  part of that same Send: Runtime preserves the input, reuses the provable
+  Provider conversation when possible, and records the replacement-terminal
+  fact in Timeline. There is no separate reconnect or recovery control.
+- The right Task metadata sidebar is collapsible. It may show only
+  Runtime-observed, existing project files; it never displays a missing file as
+  a Task state.
 - Workbench is a **Task Run terminal workspace**, not a permanent list of
   Template Agent cards. It has Task Run tabs across the top; switching a tab
   changes only the active Run workspace.
@@ -170,6 +194,10 @@ was needed.
   card becomes visible as a Session tab only after the Conductor has actually
   dispatched it and Runtime has durable Session, dispatch, result, or PTY
   evidence. Unstarted cards remain on the Template/Task Architecture surfaces.
+- Newly materialized concurrent Sessions are automatically distributed into
+  usable Groups up to viewport capacity (four default panes); manual
+  moving/splitting remains a persisted user override and never starts or
+  dispatches a Session.
 - Native terminal views are stably mounted by Session and positioned over their
   current Group body, so a tab move or Group split does not recreate the
   OpenCode TUI. The app viewport is fixed; terminal scrollback belongs to the
@@ -182,8 +210,10 @@ was needed.
 - Normal terminal buffer scrollback belongs to the host/renderer xterm buffer
   (5,000 rows in both places). An OpenCode full-screen alternate buffer is not
   faked as scrollback: its wheel input stays native to the TUI, while semantic
-  history belongs in Timeline. The host keeps a bounded 8MiB raw terminal log
-  per Session for recovery/diagnostic use, separately from semantic events.
+  history belongs in Timeline. Wheel/trackpad scrolling and text selection/copy
+  must work inside the terminal viewport. The host keeps a bounded 8MiB raw
+  terminal log per Session for recovery/diagnostic use, separately from
+  semantic events.
 - Timeline and artifacts are temporary Workbench drawers, not a permanent
   inspector. Provider-native questions and permission prompts remain inside
   the owning OpenCode terminal; its Session tab receives attention state.

@@ -17,7 +17,7 @@ describe("terminal delivery window", () => {
 
     const delivery = window.take({ clientId: "renderer-1", generation: "generation-1" });
     expect(calls).toEqual(["pause"]);
-    expect(delivery.deltas).toEqual([{ chunk: "abcd", startCursor: 0, cursor: 4, bytes: 4 }]);
+    expect(delivery.deltas).toEqual([{ chunk: "abcd", startCursor: 0, cursor: 4, bytes: 4, bufferMode: "normal" }]);
     expect(window.acknowledge({ clientId: "renderer-1", generation: "generation-1", cursor: 4 })).toMatchObject({ accepted: true });
     expect(calls).toEqual(["pause", "resume"]);
   });
@@ -63,5 +63,18 @@ describe("terminal delivery window", () => {
       accepted: true,
       restoreRequired: true,
     });
+  });
+
+  it("preserves the alternate-buffer transition for the Terminal Runtime observer", () => {
+    const window = createTerminalDeliveryWindow();
+    window.attach({ clientId: "runtime-observer", generation: "generation-1" });
+    window.beginSnapshot({ clientId: "runtime-observer", generation: "generation-1", cursor: 0 });
+    window.acknowledge({ clientId: "runtime-observer", generation: "generation-1", cursor: 0 });
+    const alternateBufferEnter = `${String.fromCharCode(27)}[?1049h`;
+    window.enqueue({ chunk: alternateBufferEnter, startCursor: 0, cursor: 8, bufferMode: "alternate" });
+
+    expect(window.take({ clientId: "runtime-observer", generation: "generation-1" }).deltas).toEqual([
+      { chunk: alternateBufferEnter, startCursor: 0, cursor: 8, bytes: 8, bufferMode: "alternate" },
+    ]);
   });
 });

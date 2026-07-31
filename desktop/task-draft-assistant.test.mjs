@@ -246,6 +246,30 @@ describe("desktop task draft assistant", () => {
     });
   });
 
+  it("finds the later assistant JSON when transport events contain earlier balanced objects", () => {
+    const result = parseTaskDraftAssistantOutput(
+      [
+        JSON.stringify({ type: "step_start", part: { type: "step-start" } }),
+        JSON.stringify({ type: "tool", part: { type: "tool", state: { input: { unrelated: true } } } }),
+        JSON.stringify({
+          type: "text",
+          part: {
+            type: "text",
+            text: "Generated:\n{\"assistantMessage\":\"已生成配置。\",\"sessionPlan\":{\"conductor\":{\"name\":\"Conductor\",\"role\":\"Coordinator\"},\"workers\":[{\"name\":\"Researcher\",\"role\":\"Evidence\"}]}}",
+          },
+        }),
+      ].join("\n"),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      sessionPlan: {
+        conductor: { name: "Conductor" },
+        workers: [{ name: "Researcher" }],
+      },
+    });
+  });
+
   it("calls opencode run through the existing one-shot runner and returns parsed draft JSON", async () => {
     const calls = [];
 

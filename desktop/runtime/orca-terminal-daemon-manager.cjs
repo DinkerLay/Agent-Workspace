@@ -27,6 +27,10 @@ function createOrcaTerminalDaemonManager({
   let closed = false;
 
   async function start(input) {
+    return (await createOrAttach(input)).session;
+  }
+
+  async function createOrAttach(input) {
     const sessionId = requiredId(input?.id, "id");
     const generation = requiredId(input?.generation, "generation");
     const created = await controlRequest("terminal.createOrAttach", {
@@ -51,7 +55,26 @@ function createOrcaTerminalDaemonManager({
       },
       incarnationId: input?.incarnationId,
     });
-    const session = rememberSession(created.session);
+    // A `created` disposition is a new physical PTY generation, even when it
+    // reuses the same logical workspace Session ID. Do not inherit transport
+    // facts from the previous generation: in particular an old
+    // alternate-buffer flag would falsely tell Session Authority that a newly
+    // spawned OpenCode TUI is already ready to receive input.
+    const session = rememberSession(
+      created.disposition === "created"
+        ? {
+            ...created.session,
+            status: "running",
+            cursor: 0,
+            bufferMode: "normal",
+            lastOutputAt: undefined,
+            exitCode: undefined,
+            signal: undefined,
+            stoppedAtMs: undefined,
+          }
+        : created.session,
+      { replace: created.disposition === "created" },
+    );
     if (created.disposition === "created") {
       sessionStore?.startSession?.({
         taskId: session.taskId,
@@ -65,12 +88,11 @@ function createOrcaTerminalDaemonManager({
       });
     }
     await ensureObserver(session);
-    return session;
-  }
-
-  async function createOrAttach(input) {
-    const session = await start(input);
-    return { disposition: session.generation === String(input?.generation ?? "") ? "created" : "adopted", session };
+    // The daemon is authoritative about whether the Host created a PTY or
+    // adopted an already-owned one.  Comparing generation strings locally
+    // misclassified a real adoption as `created`, which weakens the claim
+    // boundary copied from Orca.
+    return { disposition: created.disposition, session };
   }
 
   function get(id) {
@@ -292,6 +314,7 @@ function createOrcaTerminalDaemonManager({
           cols: event.snapshot.cols,
           rows: event.snapshot.rows,
           cursor: event.snapshot.cursor,
+          bufferMode: event.snapshot.bufferMode,
         });
       }
       await observer.stream.acknowledge({
@@ -306,6 +329,7 @@ function createOrcaTerminalDaemonManager({
       const session = rememberSession({
         ...(get(observer.sessionId) ?? { id: observer.sessionId, generation: observer.generation }),
         cursor: event.cursor,
+        bufferMode: event.bufferMode,
         lastOutputAt: new Date(now()).toISOString(),
       });
       sessionStore?.recordOutput?.({ taskId: session.taskId, sessionId: session.id, cwd: session.cwd }, event.chunk);
@@ -434,8 +458,8 @@ function createOrcaTerminalDaemonManager({
     return session;
   }
 
-  function rememberSession(value) {
-    const prior = sessions.get(String(value?.id ?? ""));
+  function rememberSession(value, { replace = false } = {}) {
+    const prior = replace ? undefined : sessions.get(String(value?.id ?? ""));
     const merged = {
       ...(prior ?? {}),
       ...value,

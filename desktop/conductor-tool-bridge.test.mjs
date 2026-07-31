@@ -391,6 +391,39 @@ describe("Conductor tool bridge", () => {
     ]);
   });
 
+  it("rejects a delivery claim while a dispatched native Session still lacks a Provider outcome", async () => {
+    const recordedClaims = [];
+    const store = {
+      readTaskState() {
+        return {
+          dispatches: [
+            { dispatchId: "PENDING01", agentId: "researcher", status: "delivered" },
+            { dispatchId: "DONE02", agentId: "publisher", status: "result_available" },
+          ],
+        };
+      },
+      recordTaskCompletionClaim(input) {
+        recordedClaims.push(input);
+      },
+    };
+    const bridge = createConductorToolBridge({ sessionStore: store, ptyManager: { get: () => undefined } });
+
+    const result = await bridge.claimTaskCompletion({
+      taskId: "task-1",
+      sessionId: "task-1-conductor",
+      message: "Attempt an early claim.",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "pending",
+      errorCode: "completion_claim_has_pending_dispatches",
+      turnPolicy: "continue_loop",
+      pendingDispatches: [{ dispatchId: "PENDING01", agentId: "researcher", status: "delivered" }],
+    });
+    assert.deepStrictEqual(recordedClaims, []);
+  });
+
   it("starts a provider-native worker before writing when the target PTY is not running", async () => {
     const writes = [];
     const starts = [];
@@ -1325,6 +1358,77 @@ describe("Conductor tool bridge", () => {
     expect(result).toMatchObject({ ok: true, agentId: "researcher" });
     expect(result).not.toHaveProperty("toSessionId");
     expect(dispatches[0]).toMatchObject({ agentId: "researcher", toSessionId: "internal:worker:researcher" });
+  });
+
+  it("lets Conductor cancel a pending dispatch without treating it as a provider failure", async () => {
+    const dispatches = [{
+      dispatchId: "dispatch-7",
+      taskId: "task-1",
+      agentId: "researcher",
+      toSessionId: "internal:worker:researcher",
+      status: "delivered",
+      terminalIncarnationId: "worker-inc",
+      terminalGeneration: "worker-gen",
+    }];
+    const interrupts = [];
+    const cancellationRequests = [];
+    const bridge = createConductorToolBridge({
+      sessionStore: {
+        readTaskState: () => ({ dispatches }),
+        markDispatchCancellationRequested(input) {
+          cancellationRequests.push(input);
+          dispatches[0].status = "cancellation_requested";
+          return { dispatchId: input.dispatchId, status: "cancellation_requested", changed: true };
+        },
+      },
+      ptyManager: { get: () => ({ id: "internal:worker:researcher", status: "running", incarnationId: "worker-inc", generation: "worker-gen" }) },
+      enqueueWorkerInput: async (input) => { interrupts.push(input); return { result: { accepted: true } }; },
+    });
+
+    const result = await bridge.cancelDispatch({ taskId: "task-1", dispatchId: "dispatch-7", reason: "scope changed" });
+
+    expect(result).toMatchObject({ ok: true, dispatchId: "dispatch-7", agentId: "researcher", status: "cancellation_requested", terminalStatus: "interrupting" });
+    expect(interrupts).toEqual([{ taskId: "task-1", sessionId: "internal:worker:researcher", expectedIncarnationId: "worker-inc", source: "interrupt", payload: "\u0003", idempotencyKey: "cancel:dispatch-7" }]);
+    expect(cancellationRequests[0]).toMatchObject({
+      dispatchId: "dispatch-7",
+      reason: "scope changed",
+      terminalIncarnationId: "worker-inc",
+      terminalGeneration: "worker-gen",
+    });
+  });
+
+  it("records a cancellation transport failure without freeing the worker card", async () => {
+    const dispatches = [{
+      dispatchId: "dispatch-8",
+      taskId: "task-1",
+      agentId: "researcher",
+      toSessionId: "internal:worker:researcher",
+      status: "delivered",
+      terminalIncarnationId: "worker-inc",
+      terminalGeneration: "worker-gen",
+    }];
+    const failures = [];
+    const bridge = createConductorToolBridge({
+      sessionStore: {
+        readTaskState: () => ({ dispatches }),
+        markDispatchCancellationRequested(input) {
+          dispatches[0].status = "cancellation_requested";
+          return { dispatchId: input.dispatchId, status: "cancellation_requested", changed: true };
+        },
+        markDispatchCancellationFailed(input) {
+          failures.push(input);
+          dispatches[0].status = "cancel_failed";
+          return { dispatchId: input.dispatchId, status: "cancel_failed", changed: true };
+        },
+      },
+      ptyManager: { get: () => ({ id: "internal:worker:researcher", status: "running", incarnationId: "worker-inc", generation: "worker-gen" }) },
+      enqueueWorkerInput: async () => { throw new Error("terminal host unavailable"); },
+    });
+
+    const result = await bridge.cancelDispatch({ taskId: "task-1", dispatchId: "dispatch-8" });
+
+    expect(result).toMatchObject({ ok: false, status: "cancel_failed", errorCode: "worker_session_interrupt_failed" });
+    expect(failures[0]).toMatchObject({ dispatchId: "dispatch-8", reason: "worker_session_interrupt_failed" });
   });
 
   it("exposes tool calls through the local authenticated HTTP bridge", async () => {

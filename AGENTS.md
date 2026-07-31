@@ -4,7 +4,7 @@ Shared instructions for Codex and other coding agents.
 
 ## Scope And Priority
 
-- These instructions apply to work in `/Users/dinker/CODES/Agent-Workspace`.
+- These instructions apply to work in `/Users/dingyujie/CODES/Agent-WorkSpace`.
 - Direct user instructions override this file.
 - More specific nested instruction files override broader guidance for their subtree.
 - Keep durable guidance concise and concrete. If a workflow becomes long or task-specific, move it to a skill, plan, or path-scoped rule instead of bloating this file.
@@ -16,6 +16,15 @@ Shared instructions for Codex and other coding agents.
 - Before changing product direction, inspect the current `docs/research/`, `docs/superworks/spec/`, and `docs/superworks/plans/` files.
 - Treat those files as durable product intent: research facts, accepted specs, and executable plans.
 - Keep runtime orchestration state out of product-intent files; use the storage location defined by the current spec or plan.
+- Before adding, moving, or coupling implementation code, read
+  `docs/superworks/spec/code-ownership-and-layer-map.md`. It is the source of
+  truth for module ownership, dependency direction, and state writers.
+- Before changing Task continuation, recovery, stopping, terminal layout, or
+  Timeline behavior, read
+  `docs/superworks/spec/task-run-continuity-and-terminal-experience.md`.
+- Before changing the Electron shell, browser renderer, local companion, or
+  remote deployment boundary, read
+  `docs/superworks/spec/browser-terminal-host-architecture.md`.
 
 ## Product Guardrails
 
@@ -24,6 +33,34 @@ Shared instructions for Codex and other coding agents.
 - Keep scheduler responsibilities separate from agent reasoning responsibilities.
 - Treat `done` as a claim that still needs review, verification, and recorded context.
 - Do not promote advanced surfaces such as browser automation, teams, or mobile sync into current scope unless a spec or user instruction selects them.
+- Electron is the current shell, not the product's architectural boundary. A
+  renderer may later run in a browser only through a typed Runtime bridge to an
+  authenticated Terminal Host; browser code must never gain direct local PTY,
+  unrestricted filesystem, or Provider-database access.
+
+## Code Ownership And Dependency Rules
+
+The dependency direction is:
+
+```text
+Renderer -> nativeBridge -> Electron IPC -> Task/Run service
+Conductor MCP -> Dispatch Coordinator -> Terminal Runtime / Provider Adapter
+```
+
+- Renderer components render typed read models and submit user intent. They do
+  not inspect PTY state to make lifecycle decisions.
+- `desktop/main.cjs` and `desktop/preload.cjs` compose processes and expose
+  typed IPC only. They do not own Task routing, recovery policy, achievement,
+  or Workbench placement.
+- Task/Run service owns Template/Task/Run persistence and user-facing lifecycle
+  commands. Dispatch Coordinator owns dispatch, wakeup, input receipts, and
+  cancellation state. Terminal Runtime owns PTY identity and transport facts.
+  Provider Adapter owns read-only Provider facts.
+- A Conductor may request a scoped dispatch cancellation through the Coordinator;
+  it may not write raw terminal signals, kill a Session, stop a Task, or infer
+  that an interrupt completed without a Runtime/Provider fact.
+- New code goes beside its owner and its focused test. Do not add another
+  generic helper or extend a page component to cross an ownership boundary.
 
 ## Operating Rules
 
@@ -66,10 +103,14 @@ Turn work into verifiable goals.
 - For features, define the observable behavior and verification command.
 - For refactors, verify behavior before and after when feasible.
 - For multi-step tasks, use a short plan where each step has a check.
+- For behavior that crosses renderer, IPC, Runtime, terminal, and Provider
+  layers, record the user action, single durable writer, idempotency key, and
+  verification path before coding.
 
 ## Workspace Workflow
 
-- Start by reading relevant files. Use `rg` and `rg --files` before slower search tools.
+- In an indexed checkout, use CodeGraph before `rg`/`rg --files` to locate or
+  understand code; use `rg` for exact follow-up checks and non-code assets.
 - For AgentsRoom-like product work, read the research file before creating specs, plans, or implementation.
 - Keep user-readable intent in files, not only in chat.
 - Do not mix runtime machine state with product intent.
@@ -77,6 +118,9 @@ Turn work into verifiable goals.
 - Use `apply_patch` for manual file edits.
 - Do not use destructive git commands unless the user explicitly asks.
 - Assume unrelated working-tree changes belong to the user. Do not revert them.
+- Prefer an incremental extraction when touching a crowded module. Do not do a
+  directory-only mass move; move a coherent owner together with its imports and
+  tests.
 
 ## Loop Discipline
 
@@ -103,6 +147,14 @@ For document-only work, use a review loop with these dimensions:
 - ambiguity and contradiction scan,
 - instruction loading and activation semantics.
 
+For implementation work, additionally review:
+
+- ownership and dependency-direction compliance,
+- canonical state writer and read-model projection,
+- exact continuation/recovery/cancellation semantics when a native Session is
+  involved,
+- focused unit tests plus the narrowest relevant Electron/terminal harness.
+
 ## Three-Loop Architecture
 
 Use these loops as the organizing model:
@@ -123,6 +175,10 @@ Plan steps should include:
 ## Review, Verification, And Commit
 
 - Run the most relevant available checks before claiming work is complete.
+- A browser preview, CSS assertion, or Timeline entry does not prove native PTY
+  continuation, terminal scrolling, selection, interruption, or Provider
+  receipt. Use the corresponding live terminal harness when that behavior
+  changes.
 - If verification cannot run, say why and identify the residual risk.
 - Summaries should include changed files, verification results, and open risks.
 - Do not auto-commit or open a PR unless the user asks or an existing plan explicitly authorizes it.

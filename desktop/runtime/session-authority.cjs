@@ -5,6 +5,13 @@ const { DatabaseSync } = require("node:sqlite");
 const { createTerminalInputArbiter } = require("./terminal-input-arbiter.cjs");
 
 const ACTIVE_STATES = new Set(["running", "stopping"]);
+const DEFAULT_INTERACTIVE_TUI_READY_TIMEOUT_MS = 20_000;
+const DEFAULT_TERMINAL_EXIT_TIMEOUT_MS = 15_000;
+const DEFAULT_INTERACTIVE_INPUT_SETTLE_TIMEOUT_MS = 350;
+// The alternate-buffer transition means OpenCode owns the screen, but its
+// resumed Session route needs one render turn before its composer accepts
+// input. This is a terminal startup fence, not Task-routing policy.
+const DEFAULT_INTERACTIVE_TUI_STABILIZE_MS = 1_200;
 
 /**
  * Orca-inspired ownership boundary for Agent Workspace Sessions.
@@ -18,6 +25,7 @@ function createSessionAuthority({
   databasePath = ":memory:",
   now = () => new Date().toISOString(),
   randomUUID = crypto.randomUUID,
+  interactiveTuiStabilizeMs = DEFAULT_INTERACTIVE_TUI_STABILIZE_MS,
 } = {}) {
   if (!ptyManager?.start || !ptyManager?.get || !ptyManager?.write || !ptyManager?.stop) {
     throw new Error("Session Authority requires a PTY manager.");
@@ -28,6 +36,11 @@ function createSessionAuthority({
 
   const activationByOperation = new Map();
   const activationBySession = new Map();
+  const interactiveReadyWaiters = new Map();
+  const interactiveReadyAt = new Map();
+  const interactiveOutputAt = new Map();
+  const terminalExitWaiters = new Map();
+  const inputRenderWaiters = new Map();
   const inputArbiter = createTerminalInputArbiter({
     resolveOwner: resolveLiveOwner,
     write: ({ workspaceSessionId, expectedIncarnationId, payload }) => {
@@ -42,7 +55,16 @@ function createSessionAuthority({
     const fingerprint = fingerprintForProfile(profile);
     const currentOwner = ownerFor(profile.workspaceSessionId);
     if (currentOwner?.state === "active" && currentOwner.fingerprint !== fingerprint) {
-      throw new Error("session_launch_profile_active_conflict");
+      const liveOwner = resolveLiveOwner(profile.workspaceSessionId);
+      if (liveOwner) throw new Error("session_launch_profile_active_conflict");
+      // A terminal owned by this Electron Main process cannot survive after
+      // Main restarts. Its durable owner record can, and a fresh bridge token
+      // changes the launch fingerprint. Reconcile only this proven-dead owner
+      // before replacing the profile; never replace a live physical terminal.
+      updateOwnerState(profile.workspaceSessionId, "stopped", {
+        stoppedAt: now(),
+        reason: "stale_owner_reconciled_before_profile_replacement",
+      });
     }
 
     db.prepare(
@@ -98,7 +120,14 @@ function createSessionAuthority({
     }
 
     persistOperation({ callerId, operationId, workspaceSessionId, fingerprint, status: "pending" });
-    const activation = activateProfile({ profile, fingerprint, callerId, operationId, reason: input?.reason });
+    const activation = activateProfile({
+      profile,
+      fingerprint,
+      callerId,
+      operationId,
+      reason: input?.reason,
+      interactiveTui: input?.interactiveTui === true,
+    });
     activationByOperation.set(operationKey, activation);
     activationBySession.set(workspaceSessionId, activation);
     try {
@@ -116,7 +145,7 @@ function createSessionAuthority({
     }
   }
 
-  async function activateProfile({ profile, fingerprint, callerId, operationId, reason }) {
+  async function activateProfile({ profile, fingerprint, callerId, operationId, reason, interactiveTui = false }) {
     const existing = resolveLiveOwner(profile.workspaceSessionId);
     if (existing) {
       return Promise.resolve({
@@ -147,6 +176,10 @@ function createSessionAuthority({
       createdAt: now(),
     };
     persistOwner(owner);
+    // A new terminal generation must prove its own TUI readiness. Never let a
+    // previous PTY's transition timestamp satisfy a recovered OpenCode route.
+    interactiveReadyAt.delete(profile.workspaceSessionId);
+    interactiveOutputAt.delete(profile.workspaceSessionId);
 
     try {
       const session = await ptyManager.start({
@@ -171,6 +204,19 @@ function createSessionAuthority({
       }
       const activeOwner = { ...owner, state: "active", activatedAt: now() };
       persistOwner(activeOwner);
+      if (interactiveTui) {
+        await waitForInteractiveTui({
+          workspaceSessionId: profile.workspaceSessionId,
+          expectedIncarnationId: incarnationId,
+          expectedGeneration: generation,
+        });
+        await waitForInteractiveTuiStabilization({
+          workspaceSessionId: profile.workspaceSessionId,
+          expectedIncarnationId: incarnationId,
+          expectedGeneration: generation,
+          profile,
+        });
+      }
       return {
         disposition: "created",
         workspaceSessionId: profile.workspaceSessionId,
@@ -194,6 +240,64 @@ function createSessionAuthority({
     });
   }
 
+  /**
+   * OpenCode's TUI handles a bracketed paste asynchronously.  A Return written
+   * in the same PTY frame can therefore arrive before the pasted text exists in
+   * the composer, which leaves a visible "[Pasted]" marker but submits nothing.
+   * Keep the two terminal writes owned and ordered here: wait for the TUI's
+   * post-paste render fact, then submit. Some OpenCode Session routes do not
+   * emit a terminal delta for an unchanged off-screen composer, so the same
+   * fence falls back to a short TUI-event-loop settle window. This is enough
+   * for OpenCode's asynchronous paste handler to finish while avoiding the
+   * invalid same-frame paste-and-Return sequence.
+   */
+  async function enqueueInteractiveSubmission(input) {
+    const workspaceSessionId = requiredString(input?.workspaceSessionId, "workspaceSessionId");
+    const expectedIncarnationId = requiredString(input?.expectedIncarnationId, "expectedIncarnationId");
+    const source = input?.source;
+    const body = String(input?.text ?? "").trimEnd();
+    if (!body) throw new Error("terminal_interactive_submission_empty");
+    const owner = resolveLiveOwner(workspaceSessionId);
+    if (!owner) throw new Error("terminal_session_not_active");
+    if (owner.incarnationId !== expectedIncarnationId) throw new Error("terminal_incarnation_stale");
+    await waitForInteractiveTui({
+      workspaceSessionId,
+      expectedIncarnationId: owner.incarnationId,
+      expectedGeneration: owner.generation,
+    });
+    await waitForInteractiveTuiStabilization({
+      workspaceSessionId,
+      expectedIncarnationId: owner.incarnationId,
+      expectedGeneration: owner.generation,
+      profile: profileFor(workspaceSessionId)?.profile,
+    });
+    const beforeCursor = Number(ptyManager.get(owner.ptyId)?.cursor ?? 0);
+    const rendered = waitForTerminalRender({
+      workspaceSessionId,
+      expectedIncarnationId: owner.incarnationId,
+      expectedGeneration: owner.generation,
+      afterCursor: beforeCursor,
+      settleTimeoutMs: input?.settleTimeoutMs,
+    });
+    const idempotencyKey = String(input?.idempotencyKey ?? "").trim();
+    const paste = await enqueueInput({
+      workspaceSessionId,
+      expectedIncarnationId: owner.incarnationId,
+      source,
+      payload: `\x1b[200~${body}\x1b[201~`,
+      idempotencyKey: idempotencyKey ? `${idempotencyKey}:paste` : undefined,
+    });
+    await rendered;
+    const submit = await enqueueInput({
+      workspaceSessionId,
+      expectedIncarnationId: owner.incarnationId,
+      source,
+      payload: "\r",
+      idempotencyKey: idempotencyKey ? `${idempotencyKey}:submit` : undefined,
+    });
+    return { disposition: "submitted", workspaceSessionId, incarnationId: owner.incarnationId, paste, result: submit.result };
+  }
+
   function stopSession(input) {
     const workspaceSessionId = requiredString(input?.workspaceSessionId, "workspaceSessionId");
     const owner = resolveLiveOwner(workspaceSessionId);
@@ -203,6 +307,21 @@ function createSessionAuthority({
     }
     updateOwnerState(workspaceSessionId, "stopping", { stoppingAt: now() });
     return ptyManager.stop(owner.ptyId, { expectedIncarnationId: owner.incarnationId });
+  }
+
+  /**
+   * Release authority metadata only after the caller has observed this Task's
+   * PTYs stop. The renderer never receives these records or process handles.
+   */
+  function releaseTask(input) {
+    const taskId = requiredString(input?.taskId, "taskId");
+    const rows = db.prepare("SELECT workspace_session_id FROM session_launch_profiles WHERE task_id = ?").all(taskId);
+    const releasedSessionIds = rows.map((row) => String(row.workspace_session_id));
+    db.prepare("DELETE FROM session_activation_operations WHERE workspace_session_id IN (SELECT workspace_session_id FROM session_launch_profiles WHERE task_id = ?)").run(taskId);
+    db.prepare("DELETE FROM terminal_session_incarnations WHERE task_id = ?").run(taskId);
+    db.prepare("DELETE FROM terminal_session_owners WHERE task_id = ?").run(taskId);
+    db.prepare("DELETE FROM session_launch_profiles WHERE task_id = ?").run(taskId);
+    return { taskId, releasedSessionIds };
   }
 
   function resizeSession(input) {
@@ -222,19 +341,285 @@ function createSessionAuthority({
     return ptyManager.read(workspaceSessionId, Number(input?.cursor ?? 0));
   }
 
+  // This is a durable Terminal Runtime fact, not a renderer-facing PTY
+  // handle.  The Dispatch Coordinator uses it after an Electron restart to
+  // settle a cancellation only when the same terminal incarnation is known to
+  // have exited.  An absent in-memory PTY is deliberately not enough.
+  function readSessionOwner(input) {
+    const workspaceSessionId = requiredString(input?.workspaceSessionId, "workspaceSessionId");
+    const incarnationId = optionalString(input?.incarnationId);
+    const generation = optionalString(input?.generation);
+    if (Boolean(incarnationId) !== Boolean(generation)) {
+      throw new Error("Session Authority exact terminal facts require both incarnationId and generation.");
+    }
+    const owner = incarnationId
+      ? ownerForIncarnation({ workspaceSessionId, incarnationId, generation })
+      : ownerFor(workspaceSessionId);
+    return owner ? publicOwner(owner) : undefined;
+  }
+
   function handlePtyEvent(event) {
     const owner = ownerFor(String(event?.id ?? ""));
     if (!owner || owner.incarnationId !== event?.incarnationId || owner.generation !== event?.generation) {
       return { accepted: false, reason: "stale_or_unknown_incarnation" };
     }
+    if (event.type === "data" && event.bufferMode === "alternate") {
+      markInteractiveTuiReady(owner);
+      markInteractiveOutput(owner);
+      settleInteractiveTuiWaiters(owner.workspaceSessionId, {
+        session: ptyManager.get(owner.ptyId),
+        incarnationId: owner.incarnationId,
+        generation: owner.generation,
+      });
+    }
+    if (event.type === "data" && event.bufferMode === "normal") {
+      interactiveReadyAt.delete(owner.workspaceSessionId);
+      interactiveOutputAt.delete(owner.workspaceSessionId);
+    }
+    if (event.type === "data") {
+      settleInputRenderWaiters(owner.workspaceSessionId, {
+        cursor: Number(event.cursor ?? 0),
+        incarnationId: owner.incarnationId,
+        generation: owner.generation,
+      });
+    }
     if (event.type === "exit") {
-      updateOwnerState(owner.workspaceSessionId, "stopped", {
+      interactiveReadyAt.delete(owner.workspaceSessionId);
+      interactiveOutputAt.delete(owner.workspaceSessionId);
+      rejectInteractiveTuiWaiters(owner.workspaceSessionId, new Error("terminal_exited_before_interactive_tui_ready"));
+      rejectInputRenderWaiters(owner.workspaceSessionId, new Error("terminal_exited_before_interactive_submission"));
+      const stoppedOwner = updateOwnerState(owner.workspaceSessionId, "stopped", {
         stoppedAt: now(),
         exitCode: event.exitCode ?? null,
         signal: event.signal ?? null,
       });
+      settleTerminalExitWaiters(owner.workspaceSessionId, stoppedOwner);
     }
     return { accepted: true, owner: publicOwner(owner) };
+  }
+
+  // A physical PTY becoming `running` only means it was spawned. OpenCode
+  // first configures its terminal and then enters the alternate buffer that
+  // hosts its interactive TUI. Sending before that transition loses bytes to
+  // shell startup. This is a terminal transport fact, never a Provider or
+  // Task-routing inference.
+  function waitForInteractiveTui({ workspaceSessionId, expectedIncarnationId, expectedGeneration, timeoutMs = DEFAULT_INTERACTIVE_TUI_READY_TIMEOUT_MS } = {}) {
+    const owner = resolveLiveOwner(requiredString(workspaceSessionId, "workspaceSessionId"));
+    if (!owner) return Promise.reject(new Error("terminal_session_not_active"));
+    if (expectedIncarnationId && owner.incarnationId !== expectedIncarnationId) {
+      return Promise.reject(new Error("terminal_incarnation_stale"));
+    }
+    if (expectedGeneration && owner.generation !== expectedGeneration) {
+      return Promise.reject(new Error("terminal_generation_stale"));
+    }
+    const session = ptyManager.get(owner.ptyId);
+    if (session?.bufferMode === "alternate") {
+      markInteractiveTuiReady(owner);
+      return Promise.resolve(session);
+    }
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        expectedIncarnationId: owner.incarnationId,
+        expectedGeneration: owner.generation,
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      };
+      const timer = setTimeout(() => {
+        removeInteractiveTuiWaiter(owner.workspaceSessionId, waiter);
+        reject(new Error("terminal_interactive_tui_not_ready"));
+      }, Math.max(1, Number(timeoutMs) || DEFAULT_INTERACTIVE_TUI_READY_TIMEOUT_MS));
+      timer.unref?.();
+      const waiters = interactiveReadyWaiters.get(owner.workspaceSessionId) ?? [];
+      waiters.push(waiter);
+      interactiveReadyWaiters.set(owner.workspaceSessionId, waiters);
+    });
+  }
+
+  async function waitForInteractiveTuiStabilization({ workspaceSessionId, expectedIncarnationId, expectedGeneration, profile } = {}) {
+    const owner = resolveLiveOwner(requiredString(workspaceSessionId, "workspaceSessionId"));
+    if (!owner) return Promise.reject(new Error("terminal_session_not_active"));
+    if (expectedIncarnationId && owner.incarnationId !== expectedIncarnationId) {
+      return Promise.reject(new Error("terminal_incarnation_stale"));
+    }
+    if (expectedGeneration && owner.generation !== expectedGeneration) {
+      return Promise.reject(new Error("terminal_generation_stale"));
+    }
+    // Session-route OpenCode restores history asynchronously. It has no stable
+    // visible prompt label after a completed turn (the composer can be blank),
+    // so a text matcher is not a valid readiness fact. For a recovered profile
+    // we instead wait until its own alternate-buffer output has been quiet for
+    // one bounded window. Fresh Home-route launches use --prompt and retain the
+    // existing short startup fence.
+    const quietMs = Number(profile?.interactiveReadyQuietMs) || Number(interactiveTuiStabilizeMs);
+    while (true) {
+      const current = resolveLiveOwner(workspaceSessionId);
+      if (!current) throw new Error("terminal_session_not_active");
+      if (expectedIncarnationId && current.incarnationId !== expectedIncarnationId) {
+        throw new Error("terminal_incarnation_stale");
+      }
+      if (expectedGeneration && current.generation !== expectedGeneration) {
+        throw new Error("terminal_generation_stale");
+      }
+      const ready = markInteractiveTuiReady(current);
+      const output = interactiveOutputAt.get(workspaceSessionId);
+      const atMs = output?.incarnationId === current.incarnationId && output?.generation === current.generation
+        ? output.atMs
+        : ready.atMs;
+      const remaining = Math.max(0, quietMs - Math.max(0, Date.now() - atMs));
+      if (!remaining) return;
+      await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+  }
+
+  function markInteractiveTuiReady(owner) {
+    const previous = interactiveReadyAt.get(owner.workspaceSessionId);
+    if (previous && previous.incarnationId === owner.incarnationId && previous.generation === owner.generation) {
+      return previous;
+    }
+    const ready = { incarnationId: owner.incarnationId, generation: owner.generation, atMs: Date.now() };
+    interactiveReadyAt.set(owner.workspaceSessionId, ready);
+    return ready;
+  }
+
+  function markInteractiveOutput(owner) {
+    const output = { incarnationId: owner.incarnationId, generation: owner.generation, atMs: Date.now() };
+    interactiveOutputAt.set(owner.workspaceSessionId, output);
+    return output;
+  }
+
+  // Recovery may race an existing process that has received a stop signal but
+  // has not emitted its authoritative PTY exit yet.  Replacing its launch
+  // profile before that fact would either conflict or create a second process.
+  function waitForTerminalExit({ workspaceSessionId, expectedIncarnationId, expectedGeneration, timeoutMs = DEFAULT_TERMINAL_EXIT_TIMEOUT_MS } = {}) {
+    const id = requiredString(workspaceSessionId, "workspaceSessionId");
+    const owner = ownerFor(id);
+    if (!owner) return Promise.resolve(undefined);
+    if (expectedIncarnationId && owner.incarnationId !== expectedIncarnationId) return Promise.reject(new Error("terminal_incarnation_stale"));
+    if (expectedGeneration && owner.generation !== expectedGeneration) return Promise.reject(new Error("terminal_generation_stale"));
+    if (["stopped", "failed"].includes(owner.state)) return Promise.resolve(publicOwner(owner));
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        expectedIncarnationId: owner.incarnationId,
+        expectedGeneration: owner.generation,
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      };
+      const timer = setTimeout(() => {
+        removeTerminalExitWaiter(id, waiter);
+        reject(new Error("terminal_exit_not_confirmed"));
+      }, Math.max(1, Number(timeoutMs) || DEFAULT_TERMINAL_EXIT_TIMEOUT_MS));
+      timer.unref?.();
+      const waiters = terminalExitWaiters.get(id) ?? [];
+      waiters.push(waiter);
+      terminalExitWaiters.set(id, waiters);
+    });
+  }
+
+  function waitForTerminalRender({ workspaceSessionId, expectedIncarnationId, expectedGeneration, afterCursor, settleTimeoutMs = DEFAULT_INTERACTIVE_INPUT_SETTLE_TIMEOUT_MS } = {}) {
+    const owner = resolveLiveOwner(requiredString(workspaceSessionId, "workspaceSessionId"));
+    if (!owner) return Promise.reject(new Error("terminal_session_not_active"));
+    if (expectedIncarnationId && owner.incarnationId !== expectedIncarnationId) return Promise.reject(new Error("terminal_incarnation_stale"));
+    if (expectedGeneration && owner.generation !== expectedGeneration) return Promise.reject(new Error("terminal_generation_stale"));
+    const cursor = Number(ptyManager.get(owner.ptyId)?.cursor ?? 0);
+    const threshold = Math.max(0, Number(afterCursor) || 0);
+    if (cursor > threshold) return Promise.resolve({ cursor, session: ptyManager.get(owner.ptyId) });
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        expectedIncarnationId: owner.incarnationId,
+        expectedGeneration: owner.generation,
+        afterCursor: threshold,
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      };
+      const timer = setTimeout(() => {
+        removeInputRenderWaiter(owner.workspaceSessionId, waiter);
+        // A lack of visible output is not evidence that the paste was rejected:
+        // the resumed OpenCode session view can keep its composer off-screen.
+        // This bounded delay is solely a transport fence for the TUI's async
+        // paste event; exit and incarnation mismatches still reject.
+        resolve({ cursor: threshold, rendered: false });
+      }, Math.max(1, Number(settleTimeoutMs) || DEFAULT_INTERACTIVE_INPUT_SETTLE_TIMEOUT_MS));
+      timer.unref?.();
+      const waiters = inputRenderWaiters.get(owner.workspaceSessionId) ?? [];
+      waiters.push(waiter);
+      inputRenderWaiters.set(owner.workspaceSessionId, waiters);
+    });
+  }
+
+  function settleInteractiveTuiWaiters(workspaceSessionId, value) {
+    const waiters = interactiveReadyWaiters.get(workspaceSessionId) ?? [];
+    interactiveReadyWaiters.delete(workspaceSessionId);
+    for (const waiter of waiters) {
+      if (waiter.expectedIncarnationId === value.incarnationId && waiter.expectedGeneration === value.generation) {
+        waiter.resolve(value.session);
+      } else {
+        waiter.reject(new Error("terminal_incarnation_stale"));
+      }
+    }
+  }
+
+  function rejectInteractiveTuiWaiters(workspaceSessionId, error) {
+    const waiters = interactiveReadyWaiters.get(workspaceSessionId) ?? [];
+    interactiveReadyWaiters.delete(workspaceSessionId);
+    for (const waiter of waiters) waiter.reject(error);
+  }
+
+  function settleTerminalExitWaiters(workspaceSessionId, owner) {
+    const waiters = terminalExitWaiters.get(workspaceSessionId) ?? [];
+    terminalExitWaiters.delete(workspaceSessionId);
+    for (const waiter of waiters) {
+      if (waiter.expectedIncarnationId === owner?.incarnationId && waiter.expectedGeneration === owner?.generation) waiter.resolve(publicOwner(owner));
+      else waiter.reject(new Error("terminal_incarnation_stale"));
+    }
+  }
+
+  function removeTerminalExitWaiter(workspaceSessionId, waiter) {
+    const waiters = terminalExitWaiters.get(workspaceSessionId) ?? [];
+    const remaining = waiters.filter((candidate) => candidate !== waiter);
+    if (remaining.length) terminalExitWaiters.set(workspaceSessionId, remaining);
+    else terminalExitWaiters.delete(workspaceSessionId);
+  }
+
+  function settleInputRenderWaiters(workspaceSessionId, value) {
+    const waiters = inputRenderWaiters.get(workspaceSessionId) ?? [];
+    const remaining = [];
+    for (const waiter of waiters) {
+      if (waiter.expectedIncarnationId !== value.incarnationId || waiter.expectedGeneration !== value.generation) {
+        waiter.reject(new Error("terminal_incarnation_stale"));
+      } else if (value.cursor > waiter.afterCursor) {
+        waiter.resolve({ cursor: value.cursor, session: ptyManager.get(workspaceSessionId) });
+      } else {
+        remaining.push(waiter);
+      }
+    }
+    if (remaining.length) inputRenderWaiters.set(workspaceSessionId, remaining);
+    else inputRenderWaiters.delete(workspaceSessionId);
+  }
+
+  function rejectInputRenderWaiters(workspaceSessionId, error) {
+    const waiters = inputRenderWaiters.get(workspaceSessionId) ?? [];
+    inputRenderWaiters.delete(workspaceSessionId);
+    for (const waiter of waiters) waiter.reject(error);
+  }
+
+  function removeInputRenderWaiter(workspaceSessionId, waiter) {
+    const waiters = inputRenderWaiters.get(workspaceSessionId) ?? [];
+    const remaining = waiters.filter((candidate) => candidate !== waiter);
+    if (remaining.length) inputRenderWaiters.set(workspaceSessionId, remaining);
+    else inputRenderWaiters.delete(workspaceSessionId);
+  }
+
+  function removeInteractiveTuiWaiter(workspaceSessionId, waiter) {
+    const waiters = interactiveReadyWaiters.get(workspaceSessionId) ?? [];
+    const remaining = waiters.filter((candidate) => candidate !== waiter);
+    if (remaining.length) interactiveReadyWaiters.set(workspaceSessionId, remaining);
+    else interactiveReadyWaiters.delete(workspaceSessionId);
   }
 
   function resolveLiveOwner(workspaceSessionId) {
@@ -259,6 +644,18 @@ function createSessionAuthority({
     return row ? deserializeOwner(row) : undefined;
   }
 
+  // A logical Session can outlive many local PTYs.  Dispatch cancellation is
+  // scoped to the PTY incarnation that accepted its input, so keeping only
+  // the current owner would let a later permission-recovery terminal erase the
+  // exit fact required to settle an older Dispatch safely.
+  function ownerForIncarnation({ workspaceSessionId, incarnationId, generation }) {
+    const row = db.prepare(
+      `SELECT * FROM terminal_session_incarnations
+       WHERE workspace_session_id = ? AND incarnation_id = ? AND generation = ?`,
+    ).get(workspaceSessionId, incarnationId, generation);
+    return row ? deserializeOwner(row) : undefined;
+  }
+
   function persistOwner(owner) {
     db.prepare(
       `INSERT INTO terminal_session_owners
@@ -279,6 +676,28 @@ function createSessionAuthority({
       owner.ptyId,
       owner.incarnationId,
       owner.generation,
+      owner.fingerprint,
+      owner.state,
+      JSON.stringify(owner),
+      now(),
+    );
+    db.prepare(
+      `INSERT INTO terminal_session_incarnations
+        (workspace_session_id, incarnation_id, generation, task_id, pty_id, fingerprint, state, details_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(workspace_session_id, incarnation_id, generation) DO UPDATE SET
+         task_id = excluded.task_id,
+         pty_id = excluded.pty_id,
+         fingerprint = excluded.fingerprint,
+         state = excluded.state,
+         details_json = excluded.details_json,
+         updated_at = excluded.updated_at`,
+    ).run(
+      owner.workspaceSessionId,
+      owner.incarnationId,
+      owner.generation,
+      owner.taskId,
+      owner.ptyId,
       owner.fingerprint,
       owner.state,
       JSON.stringify(owner),
@@ -337,6 +756,13 @@ function createSessionAuthority({
   }
 
   function close() {
+    const closed = new Error("session_authority_closed");
+    for (const [workspaceSessionId] of terminalExitWaiters) {
+      const waiters = terminalExitWaiters.get(workspaceSessionId) ?? [];
+      for (const waiter of waiters) waiter.reject(closed);
+    }
+    terminalExitWaiters.clear();
+    for (const [workspaceSessionId] of inputRenderWaiters) rejectInputRenderWaiters(workspaceSessionId, closed);
     db.close();
   }
 
@@ -344,10 +770,15 @@ function createSessionAuthority({
     registerLaunchProfile,
     activateSession,
     enqueueInput,
+    enqueueInteractiveSubmission,
     stopSession,
+    releaseTask,
     resizeSession,
     readSession,
+    readSessionOwner,
     resolveLiveOwner,
+    waitForInteractiveTui,
+    waitForTerminalExit,
     handlePtyEvent,
     close,
   };
@@ -370,6 +801,9 @@ function normalizeLaunchProfile(input) {
     rows: Number.isFinite(Number(input?.rows)) ? Number(input.rows) : 30,
     stdin: input?.stdin === "ignore" ? "ignore" : "pipe",
     requirePty: input?.requirePty !== false,
+    interactiveReadyQuietMs: Number.isFinite(Number(input?.interactiveReadyQuietMs))
+      ? Number(input.interactiveReadyQuietMs)
+      : undefined,
     env: normalizeStringRecord(input?.env),
     runtimeFiles: normalizeRuntimeFiles(input?.runtimeFiles),
   };
@@ -411,6 +845,7 @@ function publicOwner(owner) {
     incarnationId: owner.incarnationId,
     generation: owner.generation,
     state: owner.state,
+    stoppedAt: owner.stoppedAt,
   };
 }
 
@@ -422,6 +857,10 @@ function requiredString(value, field) {
   const result = String(value ?? "").trim();
   if (!result) throw new Error(`Session Authority ${field} is required.`);
   return result;
+}
+
+function optionalString(value) {
+  return String(value ?? "").trim();
 }
 
 function ensureDatabaseDirectory(databasePath) {
@@ -449,6 +888,19 @@ function migrate(db) {
       state TEXT NOT NULL,
       details_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS terminal_session_incarnations (
+      workspace_session_id TEXT NOT NULL,
+      incarnation_id TEXT NOT NULL,
+      generation TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      pty_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL,
+      details_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (workspace_session_id, incarnation_id, generation)
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS session_activation_operations (

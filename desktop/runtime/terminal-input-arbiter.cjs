@@ -1,6 +1,10 @@
 const INPUT_PRIORITIES = {
+  interrupt: 110,
   permission_reply: 100,
   user: 90,
+  // A Task-page answer is still user input, but carries an exact native
+  // OpenCode question id in the Task/Run layer for durable one-shot receipt.
+  task_question_answer: 90,
   user_message: 80,
   dispatch: 60,
   conductor_wakeup: 50,
