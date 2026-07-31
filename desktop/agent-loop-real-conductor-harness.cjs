@@ -827,7 +827,7 @@ async function main() {
       assert.match(conductorSnapshot.ansi, /needs input|selected Publisher terminal|native Session terminal/i);
       assert.match(publisherSnapshot.ansi, new RegExp(escapeRegExp(scenario.question), "i"));
     } else if (scenario.requiresConductorClaim !== false) {
-      const achieved = runtime.markTaskAchieved({ taskId });
+      const achieved = await runtime.markTaskAchieved({ taskId });
       assert.equal(achieved.status, "achieved");
       // The Orca-style terminal host owns screen transport only. A current TUI
       // snapshot is allowed to scroll or redraw and therefore is not semantic

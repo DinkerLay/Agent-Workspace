@@ -59,6 +59,12 @@ function createAgentLoopV1Runtime({
   // state. Serialize a native-question answer by its Provider question id so
   // a logical Session gets exactly one interactive PTY submission.
   const questionSubmissionPromises = new Map();
+  // Task lifecycle commands may await PTY facts. Keep those commands ordered
+  // per Task so a second Start, Stop, achievement claim, deletion, or terminal
+  // recovery cannot make a final durable update for an operation it no longer
+  // owns. This is deliberately owned by the Task/Run service rather than IPC
+  // or the renderer.
+  const taskLifecycleQueues = new Map();
   migrate(db);
   ensureSeedTemplate();
 
@@ -191,8 +197,14 @@ function createAgentLoopV1Runtime({
   }
 
   async function startRun({ taskId }) {
-    const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
+    const normalizedTaskId = required(taskId, "taskId");
+    return serializeTaskLifecycle(normalizedTaskId, () => startRunOnce({ taskId: normalizedTaskId }));
+  }
+
+  async function startRunOnce({ taskId }) {
+    const task = required(taskById(taskId), "loop_task_not_found");
     if (task.status === "archived") throw new Error("loop_task_is_archived");
+    if (["stopping", "deleting"].includes(task.status)) throw new Error("loop_task_lifecycle_operation_in_progress");
     const previousRun = latestRun(task.taskId);
     if (task.status !== "achieved" && ["running", "recovery_required"].includes(String(previousRun?.status))) {
       throw new Error(previousRun?.status === "recovery_required" ? "loop_run_requires_recovery" : "loop_run_already_running");
@@ -553,7 +565,7 @@ function createAgentLoopV1Runtime({
 
   function resumeTaskForDispatch({ taskId }) {
     const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
-    if (["achieved", "archived", "stopped"].includes(task.status)) throw new Error("loop_task_is_closed");
+    if (isTaskUnavailableForContinuation(task.status)) throw new Error("loop_task_is_closed");
     const run = required(latestRun(task.taskId), "loop_run_not_found");
     if (task.status === "delivery_ready") throw new Error("loop_task_requires_new_conductor_input");
     return readRun({ runId: run.runId });
@@ -561,7 +573,7 @@ function createAgentLoopV1Runtime({
 
   function resumeTaskForConductorInput({ taskId, cause, inputId } = {}) {
     const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
-    if (["achieved", "archived", "stopped"].includes(task.status)) throw new Error("loop_task_is_closed");
+    if (isTaskUnavailableForContinuation(task.status)) throw new Error("loop_task_is_closed");
     const run = required(latestRun(task.taskId), "loop_run_not_found");
     if (task.status !== "delivery_ready") return readRun({ runId: run.runId });
     const timestamp = now();
@@ -618,6 +630,11 @@ function createAgentLoopV1Runtime({
     if (!task) return undefined;
     const run = latestRun(task.taskId);
     if (!run) throw new Error("loop_run_not_found");
+    // A late Provider/Conductor claim must not reopen a Task after a user has
+    // claimed Stop, completion, or deletion. The Task/Run service remains the
+    // only lifecycle writer; this is a read-only acknowledgement of stale
+    // semantic input.
+    if (!["running", "delivery_ready"].includes(task.status)) return readRun({ runId: run.runId });
     const timestamp = now();
     // A delivery claim belongs to the Task's user-facing lifecycle.  The
     // logical Run stays live: native PTYs may remain attached and the
@@ -633,7 +650,7 @@ function createAgentLoopV1Runtime({
 
   async function recordUserMessage({ taskId, message, data = {} }) {
     const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
-    if (["achieved", "archived", "stopped"].includes(task.status)) throw new Error("loop_task_is_closed");
+    if (isTaskUnavailableForContinuation(task.status)) throw new Error("loop_task_is_closed");
     const text = required(message, "user_message");
     const run = latestRun(task.taskId);
     const conductorSessionId = run ? workspaceSessionId(task, "conductor", run) : "";
@@ -688,7 +705,7 @@ function createAgentLoopV1Runtime({
 
   async function respondPermission({ taskId, sessionId, permissionId, response } = {}) {
     const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
-    if (["achieved", "archived", "stopped"].includes(task.status)) throw new Error("loop_task_is_closed");
+    if (isTaskUnavailableForContinuation(task.status)) throw new Error("loop_task_is_closed");
     const run = required(latestRun(task.taskId), "loop_run_not_found");
     const allowedSessions = new Set([
       workspaceSessionId(task, "conductor", run),
@@ -732,7 +749,7 @@ function createAgentLoopV1Runtime({
 
   async function respondSessionQuestion({ taskId, sessionId, questionId, answer } = {}) {
     const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
-    if (["achieved", "archived", "stopped"].includes(task.status)) throw new Error("loop_task_is_closed");
+    if (isTaskUnavailableForContinuation(task.status)) throw new Error("loop_task_is_closed");
     const run = required(latestRun(task.taskId), "loop_run_not_found");
     const targetSessionId = required(sessionId, "sessionId");
     const targetQuestionId = required(questionId, "questionId");
@@ -866,7 +883,10 @@ function createAgentLoopV1Runtime({
     const recoveryKey = `${task.taskId}:${sessionId}`;
     const existing = permissionRecoveryPromises.get(recoveryKey);
     if (existing) return existing;
-    const recovery = recoverPermissionSessionOnce({ task, run, sessionId, permissionId })
+    const recovery = serializeTaskLifecycle(
+      task.taskId,
+      () => recoverPermissionSessionOnce({ task, run, sessionId, permissionId }),
+    )
       .finally(() => permissionRecoveryPromises.delete(recoveryKey));
     permissionRecoveryPromises.set(recoveryKey, recovery);
     return recovery;
@@ -875,7 +895,7 @@ function createAgentLoopV1Runtime({
   async function recoverPermissionSessionOnce({ task, run, sessionId, permissionId }) {
     const conductorSessionId = workspaceSessionId(task, "conductor", run);
     if (sessionId === conductorSessionId) {
-      await recoverRun({ taskId: task.taskId, cause: "permission_response" });
+      await recoverRunOnce({ taskId: task.taskId, cause: "permission_response" });
       return { sessionId, role: "conductor" };
     }
     const card = task.architecture.agentCards.find((candidate) => workspaceSessionId(task, candidate.id, run) === sessionId);
@@ -934,7 +954,7 @@ function createAgentLoopV1Runtime({
     return { sessionId, role: card.id, providerSessionId };
   }
 
-  async function flushPendingUserMessages({ taskId }) {
+  async function flushPendingUserMessages({ taskId, withinTaskLifecycle = false }) {
     const task = taskById(String(taskId));
     if (!task) return { delivered: 0, queued: 0, reason: "loop_task_not_found" };
     const pending = db.prepare("SELECT * FROM agent_loop_user_messages WHERE task_id = ? AND status = 'pending' ORDER BY created_at ASC").all(task.taskId);
@@ -974,7 +994,8 @@ function createAgentLoopV1Runtime({
       // that single action. The renderer must never ask the user to perform a
       // second, implementation-specific "recover this Run" interaction.
       try {
-        await recoverRun({ taskId: task.taskId, cause: "user_message" });
+        const recover = withinTaskLifecycle ? recoverRunOnce : recoverRun;
+        await recover({ taskId: task.taskId, cause: "user_message" });
         return {
           delivered: observed.length,
           queued: awaitingProviderReceipt.length,
@@ -1023,7 +1044,7 @@ function createAgentLoopV1Runtime({
 
   async function ensureConductorWakeupTarget({ taskId, sessionId } = {}) {
     const task = taskById(String(taskId));
-    if (!task || ["achieved", "archived", "stopped"].includes(task.status)) return undefined;
+    if (!task || isTaskUnavailableForContinuation(task.status)) return undefined;
     const run = latestRun(task.taskId);
     if (!run || run.status !== "running") return undefined;
     const conductorSessionId = workspaceSessionId(task, "conductor", run);
@@ -1069,12 +1090,17 @@ function createAgentLoopV1Runtime({
   }
 
   async function recoverRun({ taskId, cause = "runtime" }) {
-    const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
-    if (["achieved", "archived", "stopped"].includes(task.status)) throw new Error("loop_task_is_closed");
+    const normalizedTaskId = required(taskId, "taskId");
+    return serializeTaskLifecycle(normalizedTaskId, () => recoverRunOnce({ taskId: normalizedTaskId, cause }));
+  }
+
+  async function recoverRunOnce({ taskId, cause = "runtime" }) {
+    const task = required(taskById(taskId), "loop_task_not_found");
+    if (isTaskUnavailableForContinuation(task.status)) throw new Error("loop_task_is_closed");
     const run = required(latestRun(task.taskId), "loop_run_not_found");
     const conductorSessionId = workspaceSessionId(task, "conductor", run);
     if (isLiveConductorTerminal(ptyManager.get?.(conductorSessionId))) {
-      await flushPendingUserMessages({ taskId: task.taskId });
+      await flushPendingUserMessages({ taskId: task.taskId, withinTaskLifecycle: true });
       return readRun({ runId: run.runId });
     }
 
@@ -1221,8 +1247,13 @@ function createAgentLoopV1Runtime({
     return candidate;
   }
 
-  function markTaskAchieved({ taskId }) {
-    const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
+  async function markTaskAchieved({ taskId }) {
+    const normalizedTaskId = required(taskId, "taskId");
+    return serializeTaskLifecycle(normalizedTaskId, () => markTaskAchievedOnce({ taskId: normalizedTaskId }));
+  }
+
+  function markTaskAchievedOnce({ taskId }) {
+    const task = required(taskById(taskId), "loop_task_not_found");
     if (task.status === "achieved") return task;
     if (!["running", "delivery_ready"].includes(task.status)) throw new Error("loop_task_not_achievable");
     const timestamp = now();
@@ -1237,22 +1268,41 @@ function createAgentLoopV1Runtime({
   }
 
   async function stopTask({ taskId }) {
-    const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
+    const normalizedTaskId = required(taskId, "taskId");
+    return serializeTaskLifecycle(normalizedTaskId, () => stopTaskOnce({ taskId: normalizedTaskId }));
+  }
+
+  async function stopTaskOnce({ taskId }) {
+    const task = required(taskById(taskId), "loop_task_not_found");
     if (task.status === "stopped") return task;
-    if (!["running", "delivery_ready"].includes(task.status)) throw new Error("loop_task_not_stoppable");
+    if (!["running", "delivery_ready", "stopping"].includes(task.status)) throw new Error("loop_task_not_stoppable");
     const run = latestRun(task.taskId);
     if (!run) throw new Error("loop_run_not_found");
+    if (task.status !== "stopping") {
+      db.prepare("UPDATE agent_loop_tasks SET status = 'stopping', updated_at = ? WHERE task_id = ?").run(now(), task.taskId);
+    }
     await stopRunSessions({ task, run });
     const timestamp = now();
+    const currentTask = taskById(task.taskId);
+    if (!currentTask || currentTask.status !== "stopping") return currentTask;
     db.prepare("UPDATE agent_loop_runs SET status = 'stopped', updated_at = ? WHERE run_id = ?").run(timestamp, run.runId);
-    db.prepare("UPDATE agent_loop_tasks SET status = 'stopped', updated_at = ? WHERE task_id = ?").run(timestamp, task.taskId);
+    const completed = db.prepare("UPDATE agent_loop_tasks SET status = 'stopped', updated_at = ? WHERE task_id = ? AND status = 'stopping'").run(timestamp, task.taskId);
+    if (!completed.changes) return taskById(task.taskId);
     recordRunEvent({ runId: run.runId, type: "task.stopped", summary: "用户已停止当前 Task Run；原生 Session 已停止并保留历史。", data: {} });
     recordTaskEvent({ taskId: task.taskId, cwd: task.cwd, type: "task.stopped", summary: "用户已停止当前 Task；可稍后启动新的 Run。", data: { runId: run.runId } });
     return taskById(task.taskId);
   }
 
   async function deleteTask({ taskId }) {
-    const task = required(taskById(required(taskId, "taskId")), "loop_task_not_found");
+    const normalizedTaskId = required(taskId, "taskId");
+    return serializeTaskLifecycle(normalizedTaskId, () => deleteTaskOnce({ taskId: normalizedTaskId }));
+  }
+
+  async function deleteTaskOnce({ taskId }) {
+    const task = required(taskById(taskId), "loop_task_not_found");
+    if (task.status !== "deleting") {
+      db.prepare("UPDATE agent_loop_tasks SET status = 'deleting', updated_at = ? WHERE task_id = ?").run(now(), task.taskId);
+    }
     const runs = db.prepare("SELECT * FROM agent_loop_runs WHERE task_id = ? ORDER BY created_at ASC").all(task.taskId).map(deserializeRun);
     for (const run of runs) await stopRunSessions({ task, run });
     // Terminal ownership is private to the authority. It is released only
@@ -1503,6 +1553,22 @@ function createAgentLoopV1Runtime({
         resolve();
       }
     });
+  }
+
+  function serializeTaskLifecycle(taskId, operation) {
+    const previous = taskLifecycleQueues.get(taskId) ?? Promise.resolve();
+    const work = previous.then(operation);
+    // Keep the queued barrier fulfilled so a failed command does not prevent a
+    // later explicit retry. The caller still receives the original rejection.
+    const barrier = work.then(
+      () => undefined,
+      () => undefined,
+    );
+    taskLifecycleQueues.set(taskId, barrier);
+    void barrier.then(() => {
+      if (taskLifecycleQueues.get(taskId) === barrier) taskLifecycleQueues.delete(taskId);
+    });
+    return work;
   }
 
   function close() { db.close(); }
@@ -1898,6 +1964,9 @@ function normalizeWorkbenchLayout(input, knownSessionIds = []) {
 }
 
 function uniqueStrings(value) { return [...new Set((Array.isArray(value) ? value : []).map((item) => String(item || "").trim()).filter(Boolean))]; }
+function isTaskUnavailableForContinuation(status) {
+  return ["achieved", "archived", "stopped", "stopping", "deleting"].includes(String(status));
+}
 function isWorkbenchGroupId(value) { return /^[A-Za-z0-9_-]{1,80}$/.test(value); }
 function normalizeTerminalFontSize(value) { const size = Number(value); return Number.isFinite(size) ? Math.min(18, Math.max(8, Math.round(size))) : 11; }
 

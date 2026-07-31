@@ -1,5 +1,6 @@
+const fs = require("node:fs");
 const path = require("node:path");
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const {
   createConductorToolBridge,
   startConductorToolBridgeHttpServer,
@@ -13,6 +14,7 @@ const { createOrcaTerminalDaemonManager } = require("./runtime/orca-terminal-dae
 const { createOrcaTerminalDaemonSupervisor } = require("./runtime/orca-terminal-daemon-supervisor.cjs");
 const { createOpenCodeHookService } = require("./runtime/opencode-hook-service.cjs");
 const { createAgentLoopV1Runtime } = require("./runtime/agent-loop-v1-runtime.cjs");
+const { createBrowserRuntimeBridge } = require("./runtime/browser-runtime-bridge.cjs");
 const { createOrchestrationHarness } = require("./runtime/orchestration-harness.cjs");
 const { createSessionAuthority } = require("./runtime/session-authority.cjs");
 const { createSessionWakeupMonitor } = require("./session-wakeup-monitor.cjs");
@@ -35,6 +37,7 @@ let agentLoopRuntime;
 let orchestrationHarness;
 let openCodeHookService;
 let openCodeProviderObserver;
+let webRuntimeBridge;
 let realPtyAvailable = false;
 let ptyBackend = "process-fallback";
 const terminalClientAttachments = new Map();
@@ -80,15 +83,21 @@ ptyManager.onEvent((event) => {
 });
 ptyManager.onClientEvent((event, attachment) => {
   const target = terminalClientAttachments.get(String(attachment?.clientId ?? ""));
-  if (!target || !isLiveWebContents(target.webContents)) {
-    if (target) {
-      terminalClientAttachments.delete(target.hostClientId);
-      void ptyManager.detachClient({
-        id: target.sessionId,
-        clientId: target.hostClientId,
-        generation: target.generation,
-      });
-    }
+  if (
+    !target
+    || target.sessionId !== attachment?.sessionId
+    || target.generation !== attachment?.clientGeneration
+  ) {
+    return;
+  }
+  if (webRuntimeBridge?.handleTerminalClientEvent(event, attachment)) return;
+  if (!isLiveWebContents(target.webContents)) {
+    terminalClientAttachments.delete(target.hostClientId);
+    void ptyManager.detachClient({
+      id: target.sessionId,
+      clientId: target.hostClientId,
+      generation: target.generation,
+    });
     return;
   }
   sendTerminalClientEvent(target.webContents, event);
@@ -242,11 +251,14 @@ function createWindow() {
   void mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"), { query: projectContext });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Startup is eager so the UI can accurately report a daemon failure before
   // a Task tries to create a Session. Session activation still awaits the
   // same endpoint provider, so this does not introduce a second owner.
   void terminalDaemonSupervisor.start().catch(() => undefined);
+  await startWebRuntimeBridge().catch((error) => {
+    console.error(`Local browser Runtime Host failed to start: ${error instanceof Error ? error.message : "unknown error"}`);
+  });
   registerIpc();
   createWindow();
 
@@ -267,30 +279,13 @@ app.on("before-quit", () => {
   void openCodeHookService?.close?.();
   void ptyManager?.close?.();
   void terminalDaemonSupervisor?.stop?.();
+  void webRuntimeBridge?.close?.();
   sessionAuthority?.close?.();
   void conductorToolBridgeHttpServer?.close?.();
 });
 
 function registerIpc() {
-  ipcMain.handle("native:get-runtime-status", async () => {
-    await conductorToolBridgeHttpServerPromise;
-    const status = getRuntimeStatus({
-      ptyAvailable: realPtyAvailable,
-      ptyBackend,
-      ...conductorToolBridgeRuntimeConfig,
-    });
-    if (conductorToolBridgeStartError) {
-      return {
-        ...status,
-        message: `${status.message} Conductor tool bridge failed: ${
-          conductorToolBridgeStartError instanceof Error
-            ? conductorToolBridgeStartError.message
-            : "unknown error"
-        }`,
-      };
-    }
-    return status;
-  });
+  ipcMain.handle("native:get-runtime-status", () => readRuntimeStatus());
 
   ipcMain.handle("native:run-opencode", (_event, input) =>
     runOpencode({
@@ -362,24 +357,7 @@ function registerIpc() {
   // Conductor-input channel. Scope it to the Task's registered Session map
   // and pass the durable Task cwd so a restarted desktop process can resolve
   // the project-local Session Store root without guessing.
-  ipcMain.handle("native:read-workspace-terminal-log", (_event, input) => {
-    const taskId = String(input?.taskId ?? "");
-    const sessionId = String(input?.workspaceSessionId ?? "");
-    if (!taskId || !sessionId) throw new Error("Terminal diagnostic log requires taskId and workspaceSessionId.");
-    const runtime = ensureAgentLoopRuntime();
-    const task = runtime.readTask({ taskId });
-    if (!task) throw new Error("Terminal diagnostic log Task was not found.");
-    const sessionMap = runtime.taskAgentMap({ taskId });
-    if (!Object.prototype.hasOwnProperty.call(sessionMap, sessionId)) {
-      throw new Error("Terminal diagnostic log Session does not belong to this Task.");
-    }
-    return runtimeSessionStore.readTerminalLog({
-      taskId,
-      sessionId,
-      cwd: task.cwd,
-      maxBytes: Number(input?.maxBytes ?? 512 * 1024),
-    });
-  });
+  ipcMain.handle("native:read-workspace-terminal-log", (_event, input) => readWorkspaceTerminalLog(input));
 
   ipcMain.handle("native:attach-terminal-client", async (event, input) => {
     const sessionId = String(input?.sessionId ?? "");
@@ -482,28 +460,25 @@ function registerIpc() {
     ensureAgentLoopRuntime().deleteTemplate({ templateId: String(input?.templateId ?? "") }),
   );
 
-  ipcMain.handle("native:choose-agent-loop-project-directory", async (event, input) => {
-    const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
-      title: "选择 Task 项目文件夹",
-      defaultPath: input?.defaultPath ? String(input.defaultPath) : process.cwd(),
-      properties: ["openDirectory", "createDirectory"],
-    });
-    if (result.canceled || !result.filePaths[0]) return undefined;
-    const cwd = path.resolve(result.filePaths[0]);
-    return { path: cwd, name: path.basename(cwd) || cwd };
-  });
+  ipcMain.handle("native:validate-agent-loop-project-directory", (_event, input) =>
+    validateAgentLoopProjectDirectory({ path: input?.path }),
+  );
+  ipcMain.handle("native:suggest-agent-loop-project-directories", (_event, input) =>
+    suggestAgentLoopProjectDirectories({ prefix: input?.prefix }),
+  );
 
-  ipcMain.handle("native:create-agent-loop-task", (_event, input) =>
-    ensureAgentLoopRuntime().createTask({
+  ipcMain.handle("native:create-agent-loop-task", async (_event, input) => {
+    const project = await validateAgentLoopProjectDirectory({ path: input?.cwd });
+    return ensureAgentLoopRuntime().createTask({
       taskId: input?.taskId ? String(input.taskId) : undefined,
       projectId: input?.projectId ? String(input.projectId) : undefined,
-      cwd: String(input?.cwd ?? ""),
+      cwd: project.path,
       title: String(input?.title ?? ""),
       goal: String(input?.goal ?? ""),
       templateId: input?.templateId ? String(input.templateId) : undefined,
       templateVersion: input?.templateVersion ? Number(input.templateVersion) : undefined,
-    }),
-  );
+    });
+  });
 
   ipcMain.handle("native:list-agent-loop-tasks", () => ensureAgentLoopRuntime().listTasks());
 
@@ -560,36 +535,7 @@ function registerIpc() {
     ensureAgentLoopRuntime().deleteTask({ taskId: String(input?.taskId ?? "") }),
   );
 
-  ipcMain.handle("native:append-task-event", async (_event, input) => {
-    const taskId = String(input?.taskId ?? "");
-    const type = String(input?.type ?? "");
-    if (!taskId) throw new Error("Task event requires taskId.");
-    if (!["task.user_message", "user.intervention"].includes(type)) {
-      throw new Error(`Unsupported task event type: ${type}`);
-    }
-
-    if (type === "task.user_message" && ensureAgentLoopRuntime().hasTask(taskId)) {
-      return ensureAgentLoopRuntime().recordUserMessage({
-        taskId,
-        message: String(input?.data?.message ?? input?.summary ?? ""),
-        data: sanitizeJsonObject(input?.data),
-      });
-    }
-
-    const event = runtimeSessionStore.recordTaskEvent({
-      taskId,
-      sessionId: input?.sessionId ? String(input.sessionId) : "",
-      cwd: String(input?.cwd ?? ""),
-      type,
-      summary: String(input?.summary ?? ""),
-      data: sanitizeJsonObject(input?.data),
-    });
-    return {
-      ok: true,
-      event,
-      taskState: runtimeSessionStore.readTaskState({ taskId }),
-    };
-  });
+  ipcMain.handle("native:append-task-event", (_event, input) => appendTaskEvent(input));
 
   ipcMain.handle("native:list-orchestration-templates", () => ensureOrchestrationHarness().listTemplates());
 
@@ -715,6 +661,149 @@ function publishAgentLoopRuntimeChange(change) {
   for (const window of BrowserWindow.getAllWindows()) {
     if (isLiveWebContents(window.webContents)) window.webContents.send("native:agent-loop-runtime-event", payload);
   }
+  webRuntimeBridge?.publishAgentLoopRuntimeEvent(payload);
+}
+
+async function startWebRuntimeBridge() {
+  const token = String(process.env.AGENT_WORKSPACE_WEB_BRIDGE_TOKEN ?? "");
+  const port = Number(process.env.AGENT_WORKSPACE_WEB_HOST_PORT);
+  if (!token || !Number.isSafeInteger(port) || port < 1 || port > 65_535) return undefined;
+  const bridge = createBrowserRuntimeBridge({
+    token,
+    port,
+    projectRoot: () => process.env.AGENT_WORKSPACE_PROJECT_PATH || process.cwd(),
+    readRuntimeStatus,
+    runOpencode,
+    sessionAuthority,
+    ptyManager,
+    getAgentLoopRuntime: ensureAgentLoopRuntime,
+    readWorkspaceTerminalLog,
+    appendTaskEvent,
+    sanitizeAgentLoopTemplate,
+    validateAgentLoopProjectDirectory,
+    suggestAgentLoopProjectDirectories,
+    terminalClientAttachments,
+    terminalHostClientId,
+  });
+  const address = await bridge.start();
+  webRuntimeBridge = bridge;
+  console.log(`Local browser Runtime Host listening at ${address.url}`);
+  return bridge;
+}
+
+async function validateAgentLoopProjectDirectory({ path: inputPath } = {}) {
+  const value = String(inputPath ?? "").trim();
+  if (!value) throw new Error("请输入项目文件夹路径。");
+  const expanded = expandAgentLoopProjectPath(value);
+  const cwd = path.resolve(expanded);
+  let stat;
+  try {
+    stat = await fs.promises.stat(cwd);
+  } catch {
+    throw new Error("项目文件夹不存在或无法访问。");
+  }
+  if (!stat.isDirectory()) throw new Error("项目路径不是文件夹。");
+  return { path: cwd, name: path.basename(cwd) || cwd };
+}
+
+async function suggestAgentLoopProjectDirectories({ prefix } = {}) {
+  const value = String(prefix ?? "").trim();
+  if (!value) return [];
+  const expanded = expandAgentLoopProjectPath(value);
+  const resolved = path.resolve(expanded);
+  const hasTrailingSeparator = /[\\/]$/.test(value);
+  const openedDirectory = hasTrailingSeparator && await isDirectory(resolved);
+  const partialPath = hasTrailingSeparator && !openedDirectory
+    ? (expanded.replace(/[\\/]+$/, "") || path.parse(resolved).root)
+    : resolved;
+  const parent = openedDirectory ? resolved : path.dirname(partialPath);
+  const entryPrefix = openedDirectory ? "" : path.basename(partialPath).toLocaleLowerCase();
+  try {
+    const entries = await fs.promises.readdir(parent, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory() && entry.name.toLocaleLowerCase().startsWith(entryPrefix))
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, 40)
+      .map((entry) => `${path.join(parent, entry.name)}${path.sep}`);
+  } catch {
+    return [];
+  }
+}
+
+function expandAgentLoopProjectPath(value) {
+  return value === "~"
+    ? app.getPath("home")
+    : value.startsWith("~/") || value.startsWith("~\\")
+      ? path.join(app.getPath("home"), value.slice(2))
+      : value;
+}
+
+async function isDirectory(candidate) {
+  try {
+    return (await fs.promises.stat(candidate)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function readRuntimeStatus() {
+  await conductorToolBridgeHttpServerPromise;
+  const status = getRuntimeStatus({
+    ptyAvailable: realPtyAvailable,
+    ptyBackend,
+    ...conductorToolBridgeRuntimeConfig,
+  });
+  if (!conductorToolBridgeStartError) return status;
+  return {
+    ...status,
+    message: `${status.message} Conductor tool bridge failed: ${
+      conductorToolBridgeStartError instanceof Error ? conductorToolBridgeStartError.message : "unknown error"
+    }`,
+  };
+}
+
+function readWorkspaceTerminalLog(input) {
+  const taskId = String(input?.taskId ?? "");
+  const sessionId = String(input?.workspaceSessionId ?? "");
+  if (!taskId || !sessionId) throw new Error("Terminal diagnostic log requires taskId and workspaceSessionId.");
+  const runtime = ensureAgentLoopRuntime();
+  const task = runtime.readTask({ taskId });
+  if (!task) throw new Error("Terminal diagnostic log Task was not found.");
+  const sessionMap = runtime.taskAgentMap({ taskId });
+  if (!Object.prototype.hasOwnProperty.call(sessionMap, sessionId)) {
+    throw new Error("Terminal diagnostic log Session does not belong to this Task.");
+  }
+  return runtimeSessionStore.readTerminalLog({
+    taskId,
+    sessionId,
+    cwd: task.cwd,
+    maxBytes: Number(input?.maxBytes ?? 512 * 1024),
+  });
+}
+
+async function appendTaskEvent(input) {
+  const taskId = String(input?.taskId ?? "");
+  const type = String(input?.type ?? "");
+  if (!taskId) throw new Error("Task event requires taskId.");
+  if (!["task.user_message", "user.intervention"].includes(type)) {
+    throw new Error(`Unsupported task event type: ${type}`);
+  }
+  if (type === "task.user_message" && ensureAgentLoopRuntime().hasTask(taskId)) {
+    return ensureAgentLoopRuntime().recordUserMessage({
+      taskId,
+      message: String(input?.data?.message ?? input?.summary ?? ""),
+      data: sanitizeJsonObject(input?.data),
+    });
+  }
+  const event = runtimeSessionStore.recordTaskEvent({
+    taskId,
+    sessionId: input?.sessionId ? String(input.sessionId) : "",
+    cwd: String(input?.cwd ?? ""),
+    type,
+    summary: String(input?.summary ?? ""),
+    data: sanitizeJsonObject(input?.data),
+  });
+  return { ok: true, event, taskState: runtimeSessionStore.readTaskState({ taskId }) };
 }
 
 function ensureAgentLoopRuntime() {

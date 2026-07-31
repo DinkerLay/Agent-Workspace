@@ -41,6 +41,7 @@ function createSessionWakeupMonitor({
   if (!sessionStore) throw new Error("Session wakeup monitor requires sessionStore.");
 
   const pendingWakeups = new Map();
+  const inFlightWakeups = new Map();
   const scheduledInspections = new Map();
   const recordedConductorMessageKeys = new Set();
   const recordedWorkerAttentionKeys = new Set();
@@ -932,6 +933,17 @@ function createSessionWakeupMonitor({
   }
 
   async function trySendWakeup(wakeup, sessions, sampled) {
+    const existing = inFlightWakeups.get(wakeup.key);
+    if (existing) return existing;
+    const operation = trySendWakeupOnce(wakeup, sessions, sampled);
+    const settled = operation.finally(() => {
+      if (inFlightWakeups.get(wakeup.key) === settled) inFlightWakeups.delete(wakeup.key);
+    });
+    inFlightWakeups.set(wakeup.key, settled);
+    return settled;
+  }
+
+  async function trySendWakeupOnce(wakeup, sessions, sampled) {
     let conductor = sessions.find((session) => session.id === wakeup.conductorSessionId) ?? ptyManager.get?.(wakeup.conductorSessionId);
     if ((!conductor || conductor.status !== "running") && typeof ensureConductorWakeupTarget === "function") {
       try {

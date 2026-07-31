@@ -699,7 +699,8 @@ export type NativeRuntimeBridge = {
   copyAgentLoopTemplate?(input: { templateId: string; name?: string }): Promise<NativeAgentLoopTemplate>;
   archiveAgentLoopTemplate?(input: { templateId: string }): Promise<NativeAgentLoopTemplate>;
   deleteAgentLoopTemplate?(input: { templateId: string }): Promise<{ deleted: boolean; templateId: string }>;
-  chooseAgentLoopProjectDirectory?(input?: { defaultPath?: string }): Promise<{ path: string; name: string } | undefined>;
+  validateAgentLoopProjectDirectory?(input: { path: string }): Promise<{ path: string; name: string } | undefined>;
+  suggestAgentLoopProjectDirectories?(input: { prefix: string }): Promise<string[]>;
   createAgentLoopTask?(input: { taskId?: string; projectId?: string; cwd: string; title: string; goal: string; templateId?: string; templateVersion?: number }): Promise<NativeAgentLoopTask>;
   listAgentLoopTasks?(): Promise<NativeAgentLoopTask[]>;
   readAgentLoopTask?(input: { taskId: string }): Promise<NativeAgentLoopTask | undefined>;
@@ -1130,8 +1131,12 @@ export async function deleteNativeAgentLoopTemplate(templateId: string): Promise
   return window.agentWorkspace?.native.deleteAgentLoopTemplate?.({ templateId });
 }
 
-export async function chooseNativeAgentLoopProjectDirectory(defaultPath?: string): Promise<{ path: string; name: string } | undefined> {
-  return window.agentWorkspace?.native.chooseAgentLoopProjectDirectory?.({ defaultPath });
+export async function validateNativeAgentLoopProjectDirectory(path: string): Promise<{ path: string; name: string } | undefined> {
+  return window.agentWorkspace?.native.validateAgentLoopProjectDirectory?.({ path });
+}
+
+export async function suggestNativeAgentLoopProjectDirectories(prefix: string): Promise<string[]> {
+  return (await window.agentWorkspace?.native.suggestAgentLoopProjectDirectories?.({ prefix })) ?? [];
 }
 
 export async function createNativeAgentLoopTask(input: {

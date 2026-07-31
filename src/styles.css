@@ -699,7 +699,13 @@ img {
 .agent-loop-settings-copy strong { color: var(--h-text); font-size: 11px; }
 .agent-loop-settings-copy p { margin: 4px 0 0; color: var(--h-muted); font-size: 11px; line-height: 1.45; }
 .agent-loop-project-path { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.agent-loop-project-path code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 7px 8px; border: 1px solid var(--h-line); border-radius: 4px; background: var(--h-panel-2); color: var(--h-muted); font-size: 10px; }
+.agent-loop-project-path input { flex: 1; min-width: 0; }
+.agent-loop-project-picker { position: relative; }
+.agent-loop-project-suggestions { position: absolute; z-index: 4; top: calc(100% + 4px); right: 0; left: 0; display: grid; max-height: 176px; overflow: auto; padding: 5px; border: 1px solid var(--h-line); border-radius: 5px; background: var(--h-panel); box-shadow: 0 12px 28px rgb(0 0 0 / 28%); }
+.agent-loop-project-suggestions > span { padding: 4px 6px; color: var(--h-faint); font-size: 9px; }
+.agent-loop-project-suggestions > button { overflow: hidden; padding: 6px; border: 0; border-radius: 3px; background: transparent; color: var(--h-text); font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 10px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.agent-loop-project-suggestions > button:hover,
+.agent-loop-project-suggestions > button.active { background: var(--h-panel-2); color: var(--h-blue); }
 .agent-loop-agent-status > div { display: grid; gap: 6px; margin-top: 9px; }
 .agent-loop-agent-status > div > span { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 6px; color: var(--h-text); font-size: 10px; }
 .agent-loop-agent-status small { color: var(--h-muted); font-size: 9px; }

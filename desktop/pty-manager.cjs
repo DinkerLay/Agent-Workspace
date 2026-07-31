@@ -134,7 +134,11 @@ function createPtyManager({
     const session = sessions.get(id);
     if (!session || (session.status !== "running" && session.status !== "stopping")) return undefined;
     if (options.expectedIncarnationId && options.expectedIncarnationId !== session.incarnationId) return undefined;
-    const signal = session.status === "stopping" ? "SIGKILL" : "SIGTERM";
+    // Repeated cancellation is an idempotent transport request. Escalation to
+    // SIGKILL belongs to an explicit, recorded timeout policy, never to a
+    // second caller racing the first SIGTERM.
+    if (session.status === "stopping") return publicSession(session, [], session.cursor);
+    const signal = "SIGTERM";
     session.status = "stopping";
     session.signal = signal;
     session.process.kill(signal);

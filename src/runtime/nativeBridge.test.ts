@@ -26,7 +26,8 @@ import {
   subscribeNativeAgentLoopRuntimeEvents,
   stopNativePtySession,
   stopNativeAgentLoopTask,
-  chooseNativeAgentLoopProjectDirectory,
+  suggestNativeAgentLoopProjectDirectories,
+  validateNativeAgentLoopProjectDirectory,
   type NativePtyEvent,
 } from "./nativeBridge";
 
@@ -43,21 +44,33 @@ describe("native runtime bridge", () => {
     });
   });
 
-  it("delegates Task project-folder selection to the desktop preload bridge", async () => {
+  it("delegates Task project-folder validation to the desktop preload bridge", async () => {
     const paths: Array<string | undefined> = [];
     window.agentWorkspace = {
       native: {
         getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
         runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
-        chooseAgentLoopProjectDirectory: async (input) => {
-          paths.push(input?.defaultPath);
+        validateAgentLoopProjectDirectory: async (input) => {
+          paths.push(input.path);
           return { path: "/tmp/selected-project", name: "selected-project" };
         },
       },
     };
 
-    await expect(chooseNativeAgentLoopProjectDirectory("/tmp/current-project")).resolves.toEqual({ path: "/tmp/selected-project", name: "selected-project" });
+    await expect(validateNativeAgentLoopProjectDirectory("/tmp/current-project")).resolves.toEqual({ path: "/tmp/selected-project", name: "selected-project" });
     expect(paths).toEqual(["/tmp/current-project"]);
+  });
+
+  it("requests Task project-folder prefix matches through the desktop preload bridge", async () => {
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
+        suggestAgentLoopProjectDirectories: async (input) => input.prefix === "/tmp/pro" ? ["/tmp/project/"] : [],
+      },
+    };
+
+    await expect(suggestNativeAgentLoopProjectDirectories("/tmp/pro")).resolves.toEqual(["/tmp/project/"]);
   });
 
   it("reads raw terminal diagnostics only through the desktop bridge", async () => {

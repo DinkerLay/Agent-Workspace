@@ -75,6 +75,85 @@ describe("Orca terminal daemon manager", () => {
     );
     await manager.close();
   });
+
+  it("serializes replacement attachments for one renderer client", async () => {
+    const streams = [];
+    let releaseFirstAttachmentStream;
+    let releaseSecondAttachmentStream;
+    const firstAttachmentStream = new Promise((resolve) => { releaseFirstAttachmentStream = resolve; });
+    const secondAttachmentStream = new Promise((resolve) => { releaseSecondAttachmentStream = resolve; });
+    const manager = createOrcaTerminalDaemonManager({
+      endpointProvider: async () => ({ host: "127.0.0.1", port: 1, token: "test" }),
+      connectControl: async () => ({
+        async request(method) {
+          if (method !== "terminal.createOrAttach") throw new Error(`unexpected_method:${method}`);
+          return { disposition: "created", session: session("generation-1", "incarnation-1") };
+        },
+        close() {},
+      }),
+      connectStream: async (_endpoint, { onEvent }) => {
+        const stream = {
+          onEvent,
+          unsubscribed: 0,
+          async subscribe() { return { accepted: true }; },
+          async acknowledge() { return { accepted: true }; },
+          async unsubscribe() { this.unsubscribed += 1; return { accepted: true }; },
+          close() {},
+        };
+        streams.push(stream);
+        if (streams.length === 2) releaseFirstAttachmentStream();
+        if (streams.length === 3) releaseSecondAttachmentStream();
+        return stream;
+      },
+    });
+    const clientEvents = [];
+    manager.onClientEvent((event) => clientEvents.push(event));
+    await manager.createOrAttach(input("generation-1"));
+
+    const first = manager.attachClient({ id: "opencode:task-1:conductor", clientId: "renderer-1", generation: "attach-1" });
+    await firstAttachmentStream;
+    const second = manager.attachClient({ id: "opencode:task-1:conductor", clientId: "renderer-1", generation: "attach-2" });
+    await secondAttachmentStream;
+    await assert.rejects(first, /terminal_attachment_closed/);
+    streams[2].onEvent({
+      type: "terminal.snapshot",
+      sessionId: "opencode:task-1:conductor",
+      generation: "generation-1",
+      snapshot: { cols: 120, rows: 32, cursor: 8, bufferMode: "alternate", ansi: "new" },
+    });
+    await second;
+
+    streams[1].onEvent({
+      type: "terminal.delta",
+      sessionId: "opencode:task-1:conductor",
+      generation: "generation-1",
+      startCursor: 4,
+      cursor: 5,
+      chunk: "stale",
+      bufferMode: "normal",
+    });
+    streams[2].onEvent({
+      type: "terminal.delta",
+      sessionId: "opencode:task-1:conductor",
+      generation: "generation-1",
+      startCursor: 8,
+      cursor: 9,
+      chunk: "current",
+      bufferMode: "alternate",
+    });
+
+    assert.equal(streams[1].unsubscribed, 1);
+    assert.deepEqual(clientEvents, [{
+      type: "data",
+      id: "opencode:task-1:conductor",
+      chunk: "current",
+      startCursor: 8,
+      cursor: 9,
+      generation: "attach-2",
+      bufferMode: "alternate",
+    }]);
+    await manager.close();
+  });
 });
 
 function input(generation) {
