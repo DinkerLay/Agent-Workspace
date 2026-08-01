@@ -16,6 +16,8 @@ import {
   Layers2,
   LayoutPanelTop,
   Pencil,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
   Plus,
   RefreshCw,
@@ -142,6 +144,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   // intentionally unmounted when the user opens Templates or Workbench.
   const [taskMessageDrafts, setTaskMessageDrafts] = useState<Record<string, string>>({});
   const [questionAnswerDrafts, setQuestionAnswerDrafts] = useState<Record<string, string>>({});
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const [permissionBusyId, setPermissionBusyId] = useState<string>();
   const [questionBusyId, setQuestionBusyId] = useState<string>();
   const [error, setError] = useState<string>();
@@ -579,9 +582,12 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   const timeline = useMemo(() => buildTimeline(selectedTask, run), [selectedTask, run]);
 
   return (
-    <div className={`harness-app agent-loop-app ${view === "workbench" ? "agent-loop-workbench-active" : ""} theme-${theme}`}>
+    <div className={`harness-app agent-loop-app ${view === "workbench" ? "agent-loop-workbench-active" : ""} ${railCollapsed ? "rail-collapsed" : ""} theme-${theme}`}>
       <aside className="harness-rail">
-        <div className="harness-brand"><Boxes size={21} /> <span>Agent Workspace</span></div>
+        <div className="harness-brand">
+          <div className="harness-brand-copy"><Boxes size={21} /> <span>Agent Workspace</span></div>
+          <button className="harness-icon-button harness-rail-toggle" aria-label={railCollapsed ? "展开导航栏" : "收起导航栏"} title={railCollapsed ? "展开导航栏" : "收起导航栏"} onClick={() => setRailCollapsed((current) => !current)}>{railCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
+        </div>
         <nav aria-label="Agent Loop pages">
           <RailButton active={view === "tasks"} onClick={() => setView("tasks")} icon={<ClipboardCheck size={18} />} label="任务" />
           <RailButton active={view === "templates"} onClick={() => setView("templates")} icon={<Layers2 size={18} />} label="模板" />
@@ -635,7 +641,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
 }
 
 function RailButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: import("react").ReactNode; label: string }) {
-  return <button className={`harness-rail-button ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span></button>;
+  return <button className={`harness-rail-button ${active ? "active" : ""}`} aria-label={label} title={label} onClick={onClick}>{icon}<span>{label}</span></button>;
 }
 
 type TaskQuestion = {
@@ -1245,7 +1251,48 @@ function TaskDialog({ templates, title, goal, templateId, projectPath, projectVe
     <section className="agent-loop-drawer agent-loop-task-drawer">
       <header className="agent-loop-drawer-header"><div><h2>创建 Task</h2><p>选择已保存的 Agent Loop Template。创建后会固化快照；之后修改模板不会影响这个 Task。</p></div><button className="agent-loop-drawer-close" onClick={onClose} aria-label="关闭">×</button></header>
       <div className="agent-loop-drawer-scroll">
-        <section className="agent-loop-drawer-basics"><label>任务标题<input autoFocus value={title} onChange={(event) => onTitle(event.target.value)} placeholder="例如：整理产品竞品调研" /></label><label>任务目标<textarea rows={5} value={goal} onChange={(event) => onGoal(event.target.value)} placeholder="写清交付物、范围和验收标准。Conductor 会据此形成每次派发的工作契约。" /></label><label>项目文件夹<div className="agent-loop-project-picker"><div className="agent-loop-project-path"><input value={projectPath} role="combobox" aria-expanded={projectPathFocused && projectSuggestions.length > 0} aria-controls="agent-loop-project-suggestions" aria-activedescendant={activeProjectSuggestionIndex >= 0 ? `agent-loop-project-suggestion-${activeProjectSuggestionIndex}` : undefined} onFocus={() => setProjectPathFocused(true)} onBlur={() => setProjectPathFocused(false)} onChange={(event) => onProjectPath(event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); moveProjectSuggestion(1); } else if (event.key === "ArrowUp") { event.preventDefault(); moveProjectSuggestion(-1); } else if (event.key === "Enter") { const suggestion = projectSuggestions[activeProjectSuggestionIndex]; event.preventDefault(); if (suggestion) selectProjectSuggestion(suggestion); else onValidateProject(); } else if (event.key === "Escape") { setProjectPathFocused(false); setActiveProjectSuggestionIndex(-1); } }} placeholder="例如：/Users/name/project" spellCheck={false} autoComplete="off" /><button className="harness-secondary-button compact" type="button" disabled={busy || !enabled || !projectPath.trim()} onClick={() => onValidateProject()}>确定</button></div>{projectPathFocused && projectSuggestions.length > 0 ? <div className="agent-loop-project-suggestions" id="agent-loop-project-suggestions" role="listbox" aria-label="项目文件夹匹配"><span>匹配的本地文件夹</span>{projectSuggestions.map((suggestion, index) => <button key={suggestion} id={`agent-loop-project-suggestion-${index}`} className={index === activeProjectSuggestionIndex ? "active" : ""} type="button" role="option" aria-selected={index === activeProjectSuggestionIndex} onMouseDown={(event) => event.preventDefault()} onClick={() => selectProjectSuggestion(suggestion)}>{suggestion}</button>)}</div> : null}</div><small>{projectVerified ? "目录已由本地 Host 验证。原生 Session、相对产物路径及 `.agent-workspace/runtime` 都以此为准。" : "输入路径时会匹配本地文件夹；点击匹配项后自动验证；也可用 ↑/↓ 和 Enter 选择。"}</small></label></section>
+        <section className="agent-loop-drawer-basics">
+          <label>任务标题<input autoFocus value={title} onChange={(event) => onTitle(event.target.value)} placeholder="例如：整理产品竞品调研" /></label>
+          <label>任务目标<textarea rows={5} value={goal} onChange={(event) => onGoal(event.target.value)} placeholder="写清交付物、范围和验收标准。Conductor 会据此形成每次派发的工作契约。" /></label>
+          <label>项目文件夹
+            <div className="agent-loop-project-picker">
+              <div className="agent-loop-project-path">
+                <input
+                  value={projectPath}
+                  role="combobox"
+                  aria-expanded={projectPathFocused && projectSuggestions.length > 0}
+                  aria-controls="agent-loop-project-suggestions"
+                  aria-activedescendant={activeProjectSuggestionIndex >= 0 ? `agent-loop-project-suggestion-${activeProjectSuggestionIndex}` : undefined}
+                  onFocus={() => setProjectPathFocused(true)}
+                  onBlur={() => setProjectPathFocused(false)}
+                  onChange={(event) => { setProjectPathFocused(true); onProjectPath(event.target.value); }}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown") { event.preventDefault(); moveProjectSuggestion(1); }
+                    else if (event.key === "ArrowUp") { event.preventDefault(); moveProjectSuggestion(-1); }
+                    else if (event.key === "Enter") {
+                      const suggestion = projectSuggestions[activeProjectSuggestionIndex];
+                      event.preventDefault();
+                      if (suggestion) selectProjectSuggestion(suggestion);
+                      else onValidateProject();
+                    } else if (event.key === "Escape") {
+                      setProjectPathFocused(false);
+                      setActiveProjectSuggestionIndex(-1);
+                    }
+                  }}
+                  placeholder="例如：/Users/name/project"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <button className="harness-secondary-button compact" type="button" disabled={busy || !enabled || !projectPath.trim()} onClick={() => onValidateProject()}>确定</button>
+              </div>
+              {projectPathFocused && projectSuggestions.length > 0 ? <div className="agent-loop-project-suggestions" id="agent-loop-project-suggestions" role="listbox" aria-label="项目文件夹匹配">
+                <span>匹配的本地文件夹</span>
+                {projectSuggestions.map((suggestion, index) => <button key={suggestion} id={`agent-loop-project-suggestion-${index}`} className={index === activeProjectSuggestionIndex ? "active" : ""} type="button" role="option" aria-selected={index === activeProjectSuggestionIndex} onMouseDown={(event) => event.preventDefault()} onClick={() => selectProjectSuggestion(suggestion)}>{suggestion}</button>)}
+              </div> : null}
+            </div>
+            <small>{projectVerified ? "目录已由本地 Host 验证。原生 Session、相对产物路径及 `.agent-workspace/runtime` 都以此为准。" : "输入路径时会匹配本地文件夹；点击匹配项后自动验证；也可用 ↑/↓ 和 Enter 选择。"}</small>
+          </label>
+        </section>
         <section className="agent-loop-task-template-choice"><div><strong>选择协作模板</strong><p>模板保存 Conductor Charter 与 Session Agent 的稳定能力，不包含本次任务的固定路线。</p></div><label>Agent Loop Template<select value={templateId} onChange={(event) => onTemplate(event.target.value)}>{templates.map((template) => <option value={template.id} key={template.id}>{template.name} · v{template.version}</option>)}</select></label><div className="agent-loop-task-template-alternative"><span>没有合适的模板？</span><button className="harness-secondary-button compact" disabled={busy || !goal.trim()} onClick={onCreateTemplate}><Plus size={14} /> 根据任务目标生成新 Template</button><small>会先进入 Template 草案编辑器；保存后再回到这里创建 Task。</small></div></section>
         <section className="agent-loop-task-snapshot-note"><strong>创建后会发生什么</strong><p>Task 会保存当前 Template 的版本快照。启动后，只有 Conductor 可以异步派发原生 OpenCode Session Agent；每个 Session 的结果、失败或需要输入才会唤醒 Conductor。</p></section>
       </div>
