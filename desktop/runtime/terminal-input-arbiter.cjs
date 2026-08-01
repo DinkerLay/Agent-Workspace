@@ -52,6 +52,8 @@ function createTerminalInputArbiter({ resolveOwner, write, maxRetainedOperations
       expectedIncarnationId,
       payload,
       source,
+      idempotencyKey,
+      promise,
       priority: INPUT_PRIORITIES[source],
       order: nextOperationOrder++,
       resolve,
@@ -106,6 +108,11 @@ function createTerminalInputArbiter({ resolveOwner, write, maxRetainedOperations
             result,
           });
         } catch (error) {
+          // A rejected local terminal write is not an acceptance receipt.
+          // Keep the in-flight promise only while it is executing; otherwise
+          // a later, observer-approved retry of the same durable input would
+          // be permanently pinned to this stale rejection.
+          forgetRejectedOperation(operation);
           operation.reject(error);
         }
       }
@@ -113,6 +120,14 @@ function createTerminalInputArbiter({ resolveOwner, write, maxRetainedOperations
       queues.delete(workspaceSessionId);
       scheduled.delete(workspaceSessionId);
     }
+  }
+
+  function forgetRejectedOperation(operation) {
+    if (!operation.idempotencyKey) return;
+    const retained = retainedBySession.get(operation.workspaceSessionId);
+    if (!retained || retained.get(operation.idempotencyKey) !== operation.promise) return;
+    retained.delete(operation.idempotencyKey);
+    if (!retained.size) retainedBySession.delete(operation.workspaceSessionId);
   }
 
   return { enqueue, evidence: () => ({ queuedSessions: queues.size, retainedSessions: retainedBySession.size }) };

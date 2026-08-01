@@ -23,6 +23,7 @@ function createOrcaTerminalDaemonManager({
   const clientEvents = new Set();
   const observers = new Map();
   const attachments = new Map();
+  const attachmentQueues = new Map();
   let controlPromise;
   let closed = false;
 
@@ -161,10 +162,40 @@ function createOrcaTerminalDaemonManager({
   }
 
   async function attachClient({ id, clientId, generation }) {
+    const attachmentId = requiredId(clientId, "clientId");
+    const attachment = await serializeAttachment(attachmentId, () => openAttachment({ id, clientId: attachmentId, generation }));
+    try {
+      const snapshot = await attachment.snapshotReady;
+      if (attachment.closed) throw new Error("terminal_attachment_closed");
+      return {
+        snapshot,
+        attachment: {
+          clientId: attachment.clientId,
+          generation: attachment.clientGeneration,
+          ready: false,
+          restoreRequired: false,
+          snapshotPending: true,
+          ...(attachment.subscribed?.attachment ?? {}),
+        },
+        session: get(attachment.sessionId),
+      };
+    } catch (error) {
+      await closeAttachment(attachment);
+      throw error;
+    }
+  }
+
+  async function openAttachment({ id, clientId, generation }) {
     const session = requireLiveSession(id);
     const attachmentId = requiredId(clientId, "clientId");
     const clientGeneration = requiredId(generation, "attachmentGeneration");
-    await detachClient({ id: session.id, clientId: attachmentId, generation: clientGeneration, allowDifferentGeneration: true });
+    // A renderer client may replace an attachment while a prior snapshot is
+    // still in flight, or move to another Session. Close every old stream for
+    // that client before opening the replacement so a delayed close cannot
+    // remove the new attachment or forward stale terminal bytes.
+    for (const prior of [...attachments.values()]) {
+      if (prior.clientId === attachmentId) await closeAttachment(prior);
+    }
     let resolveSnapshot;
     let rejectSnapshot;
     const snapshotReady = new Promise((resolve, reject) => {
@@ -189,24 +220,12 @@ function createOrcaTerminalDaemonManager({
     attachment.stream = stream;
     attachments.set(attachmentKey(session.id, attachmentId), attachment);
     try {
-      const subscribed = await stream.subscribe({
+      attachment.subscribed = await stream.subscribe({
         sessionId: session.id,
         attachmentId,
         generation: session.generation,
       });
-      const snapshot = await snapshotReady;
-      return {
-        snapshot,
-        attachment: {
-          clientId: attachmentId,
-          generation: clientGeneration,
-          ready: false,
-          restoreRequired: false,
-          snapshotPending: true,
-          ...(subscribed.attachment ?? {}),
-        },
-        session: get(session.id),
-      };
+      return attachment;
     } catch (error) {
       await closeAttachment(attachment);
       throw error;
@@ -228,6 +247,11 @@ function createOrcaTerminalDaemonManager({
   }
 
   async function detachClient({ id, clientId, generation, allowDifferentGeneration = false } = {}) {
+    const attachmentId = requiredId(clientId, "clientId");
+    return serializeAttachment(attachmentId, () => detachClientOnce({ id, clientId: attachmentId, generation, allowDifferentGeneration }));
+  }
+
+  async function detachClientOnce({ id, clientId, generation, allowDifferentGeneration = false }) {
     const attachment = attachments.get(attachmentKey(String(id ?? ""), String(clientId ?? "")));
     if (!attachment || (!allowDifferentGeneration && attachment.clientGeneration !== String(generation ?? ""))) return false;
     await closeAttachment(attachment);
@@ -419,7 +443,8 @@ function createOrcaTerminalDaemonManager({
   async function closeAttachment(attachment) {
     if (!attachment || attachment.closed) return;
     attachment.closed = true;
-    attachments.delete(attachmentKey(attachment.sessionId, attachment.clientId));
+    const key = attachmentKey(attachment.sessionId, attachment.clientId);
+    if (attachments.get(key) === attachment) attachments.delete(key);
     attachment.rejectSnapshot?.(new Error("terminal_attachment_closed"));
     try {
       await attachment.stream?.unsubscribe?.(attachment.sessionId);
@@ -427,6 +452,20 @@ function createOrcaTerminalDaemonManager({
       // A dead daemon/stream has already released this attachment.
     }
     attachment.stream?.close?.();
+  }
+
+  function serializeAttachment(clientId, operation) {
+    const previous = attachmentQueues.get(clientId) ?? Promise.resolve();
+    const work = previous.then(operation);
+    const barrier = work.then(
+      () => undefined,
+      () => undefined,
+    );
+    attachmentQueues.set(clientId, barrier);
+    void barrier.then(() => {
+      if (attachmentQueues.get(clientId) === barrier) attachmentQueues.delete(clientId);
+    });
+    return work;
   }
 
   async function closeObserver(observer) {

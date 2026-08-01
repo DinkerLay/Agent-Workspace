@@ -1,4 +1,5 @@
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -63,23 +64,29 @@ async function findAvailablePort(startPort, attempts = 25) {
 
 async function main() {
   const port = await findAvailablePort(preferredPort);
+  const runtimeHostPort = await findAvailablePort(preferredPort + 100);
   const devServerUrl = `http://${host}:${port}/`;
   const viteEntry = resolveViteEntry();
+  const projectPath = process.cwd();
+  const projectName = path.basename(projectPath);
+  const runtimeBridgeEnv = {
+    ...process.env,
+    AGENT_WORKSPACE_WEB_HOST_PORT: String(runtimeHostPort),
+    AGENT_WORKSPACE_WEB_BRIDGE_TOKEN: crypto.randomBytes(32).toString("base64url"),
+    AGENT_WORKSPACE_PROJECT_PATH: projectPath,
+    AGENT_WORKSPACE_PROJECT_NAME: projectName,
+  };
 
   console.log(`Starting Vite dev server at ${devServerUrl}`);
-  spawnChild(process.execPath, [viteEntry, "--host", host, "--port", String(port), "--strictPort"]);
+  spawnChild(process.execPath, [viteEntry, "--host", host, "--port", String(port), "--strictPort"], { env: runtimeBridgeEnv });
   await waitForServer(devServerUrl);
 
   const electronBinary = resolveElectronBinary();
   console.log(`Starting Electron with ${devServerUrl}`);
   spawnChild(electronBinary, ["desktop/main.cjs"], {
-    env: {
-      ...process.env,
-      AGENT_WORKSPACE_DEV_SERVER_URL: devServerUrl,
-      AGENT_WORKSPACE_PROJECT_PATH: process.cwd(),
-      AGENT_WORKSPACE_PROJECT_NAME: path.basename(process.cwd()),
-    },
+    env: { ...runtimeBridgeEnv, AGENT_WORKSPACE_DEV_SERVER_URL: devServerUrl },
   });
+  console.log(`Browser Runtime development URL: ${devServerUrl}?projectPath=${encodeURIComponent(projectPath)}&projectName=${encodeURIComponent(projectName)}`);
 }
 
 function resolveViteEntry() {

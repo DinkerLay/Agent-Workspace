@@ -16,6 +16,8 @@ import {
   Layers2,
   LayoutPanelTop,
   Pencil,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
   Plus,
   RefreshCw,
@@ -32,7 +34,7 @@ import { PtyTerminal } from "../components/PtyTerminal";
 import {
   archiveNativeAgentLoopTemplate,
   appendNativeTaskEvent,
-  chooseNativeAgentLoopProjectDirectory,
+  validateNativeAgentLoopProjectDirectory,
   copyNativeAgentLoopTemplate,
   createNativeAgentLoopTask,
   defaultOpencodeRunModel,
@@ -52,6 +54,7 @@ import {
   resizeNativePtySession,
   saveNativeAgentLoopWorkbenchLayout,
   saveNativeAgentLoopTemplate,
+  suggestNativeAgentLoopProjectDirectories,
   startNativeAgentLoopRun,
   stopNativeAgentLoopTask,
   subscribeNativeAgentLoopRuntimeEvents,
@@ -133,12 +136,15 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   const [taskGoal, setTaskGoal] = useState("");
   const [taskTemplateId, setTaskTemplateId] = useState("");
   const [taskProjectPath, setTaskProjectPath] = useState(projectPath);
+  const [taskProjectVerified, setTaskProjectVerified] = useState(true);
+  const taskProjectPathRef = useRef(projectPath);
   const [busy, setBusy] = useState(false);
   const [messageBusy, setMessageBusy] = useState(false);
   // A draft belongs to a Task, not to the mounted textarea.  The Task page is
   // intentionally unmounted when the user opens Templates or Workbench.
   const [taskMessageDrafts, setTaskMessageDrafts] = useState<Record<string, string>>({});
   const [questionAnswerDrafts, setQuestionAnswerDrafts] = useState<Record<string, string>>({});
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const [permissionBusyId, setPermissionBusyId] = useState<string>();
   const [questionBusyId, setQuestionBusyId] = useState<string>();
   const [error, setError] = useState<string>();
@@ -150,6 +156,9 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   // an in-flight list/read request can resolve after the delete IPC succeeds;
   // they must never re-open a removed Task in the Workbench.
   const deletedTaskIdsRef = useRef(new Set<string>());
+  const selectedTaskIdRef = useRef<string | undefined>(undefined);
+  const taskRefreshGenerationRef = useRef(0);
+  const runReadGenerationRef = useRef(0);
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
   const activeTasks = useMemo(() => tasks.filter((task) => !["achieved", "archived"].includes(task.status)), [tasks]);
@@ -169,34 +178,48 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     setSelectedSessionId((current) => current && detail.turns.some((turn) => turn.sessionId === current) ? current : detail.turns[0]?.sessionId);
   }, []);
 
+  const loadRun = useCallback(async (runId: string, expectedTaskId?: string) => {
+    const requestGeneration = ++runReadGenerationRef.current;
+    const detail = await readNativeAgentLoopRun(runId);
+    if (!detail || requestGeneration !== runReadGenerationRef.current) return undefined;
+    if (deletedTaskIdsRef.current.has(detail.task.taskId)) return undefined;
+    const selectedTaskId = selectedTaskIdRef.current;
+    if (expectedTaskId && selectedTaskId !== expectedTaskId) return undefined;
+    if (selectedTaskId && detail.task.taskId !== selectedTaskId) return undefined;
+    acceptRun(detail);
+    return detail;
+  }, [acceptRun]);
+
   const refresh = useCallback(async (preferredTaskId?: string) => {
+    const refreshGeneration = ++taskRefreshGenerationRef.current;
     const [nextTemplates, nextTasks] = await Promise.all([listNativeAgentLoopTemplates(), listNativeAgentLoopTasks()]);
+    if (refreshGeneration !== taskRefreshGenerationRef.current) return;
     setTemplates(nextTemplates);
     const visibleNextTasks = nextTasks.filter((task) => !deletedTaskIdsRef.current.has(task.taskId));
     applyTaskList(nextTasks);
-    const preferred = visibleNextTasks.find((task) => task.taskId === preferredTaskId || task.taskId === selectedTaskId) ?? visibleNextTasks[0];
+    const preferred = visibleNextTasks.find((task) => task.taskId === preferredTaskId || task.taskId === selectedTaskIdRef.current) ?? visibleNextTasks[0];
     const template = nextTemplates.find((item) => item.id === selectedTemplateId) ?? nextTemplates[0];
     setSelectedTemplateId(template?.id);
     setTaskTemplateId((current) => nextTemplates.some((item) => item.id === current) ? current : template?.id ?? "");
+    selectedTaskIdRef.current = preferred?.taskId;
     setSelectedTaskId(preferred?.taskId);
     if (preferred?.latestRun?.runId) {
-      const detail = await readNativeAgentLoopRun(preferred.latestRun.runId);
-      if (detail) acceptRun(detail);
+      await loadRun(preferred.latestRun.runId, preferred.taskId);
     } else {
+      runReadGenerationRef.current += 1;
       setRun(undefined);
       setSelectedSessionId(undefined);
     }
-  }, [acceptRun, applyTaskList, selectedTaskId, selectedTemplateId]);
+  }, [applyTaskList, loadRun, selectedTemplateId]);
 
   useEffect(() => {
     void refresh().catch((reason: unknown) => setError(messageFor(reason)));
   }, []); // First desktop load only; refresh has deliberate live selection inputs.
 
   const refreshRun = useCallback((runId: string) => {
-    return readNativeAgentLoopRun(runId)
-      .then((next) => next && acceptRun(next))
+    return loadRun(runId)
       .catch((reason: unknown) => setError(messageFor(reason)));
-  }, [acceptRun]);
+  }, [loadRun]);
 
   useEffect(() => {
     if (!run) return undefined;
@@ -314,7 +337,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
 
   const createTask = async () => {
     const template = templates.find((item) => item.id === taskTemplateId);
-    if (!template) return;
+    if (!template || !taskProjectVerified) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -328,18 +351,33 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
       });
       if (!task) throw new Error("桌面 Runtime 未创建 Task。");
       setShowTaskCreate(false);
+      selectedTaskIdRef.current = task.taskId;
       setSelectedTaskId(task.taskId);
       await refresh(task.taskId);
     } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
   };
 
-  const chooseTaskProject = async () => {
+  const changeTaskProjectPath = (value: string) => {
+    taskProjectPathRef.current = value;
+    setTaskProjectPath(value);
+    setTaskProjectVerified(false);
+  };
+
+  const validateTaskProject = async (candidate = taskProjectPathRef.current) => {
+    const requestedPath = candidate.trim();
+    if (!requestedPath) return;
     setBusy(true);
     setError(undefined);
     try {
-      const selected = await chooseNativeAgentLoopProjectDirectory(taskProjectPath || projectPath);
-      if (selected?.path) setTaskProjectPath(selected.path);
-    } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
+      const validated = await validateNativeAgentLoopProjectDirectory(requestedPath);
+      if (!validated?.path) throw new Error("本地 Host 未确认项目文件夹。");
+      if (taskProjectPathRef.current !== requestedPath) return;
+      taskProjectPathRef.current = validated.path;
+      setTaskProjectPath(validated.path);
+      setTaskProjectVerified(true);
+    } catch (reason) {
+      if (taskProjectPathRef.current === requestedPath) setError(messageFor(reason));
+    } finally { setBusy(false); }
   };
 
   const startRun = async () => {
@@ -349,6 +387,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     try {
       const detail = await startNativeAgentLoopRun(selectedTask.taskId);
       if (!detail) throw new Error("桌面 Runtime 未创建 Agent Loop Run。");
+      selectedTaskIdRef.current = detail.task.taskId;
       acceptRun(detail);
       setTaskListMode("active");
       setSelectedTaskId(detail.task.taskId);
@@ -364,6 +403,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
       const achieved = await markNativeAgentLoopTaskAchieved(selectedTask.taskId);
       if (!achieved) throw new Error("桌面 Runtime 未确认 Task 的 achieved 状态。");
       setTaskListMode("completed");
+      selectedTaskIdRef.current = achieved.taskId;
       setSelectedTaskId(achieved.taskId);
       await refresh(selectedTask.taskId);
     } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
@@ -379,6 +419,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
       if (!stopped) throw new Error("桌面 Runtime 未确认 Task 已停止。");
       setTasks((current) => current.map((task) => task.taskId === stoppedTaskId ? { ...task, ...stopped } : task));
       setStopTarget(undefined);
+      selectedTaskIdRef.current = stopped.taskId;
       setSelectedTaskId(stopped.taskId);
       await refresh(stopped.taskId);
     } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
@@ -415,6 +456,9 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
       setArtifactPreview(undefined);
       setDeleteTargetIds(undefined);
       setSelectedAchievedTaskIds((current) => current.filter((taskId) => !targetIds.includes(taskId)));
+      selectedTaskIdRef.current = undefined;
+      taskRefreshGenerationRef.current += 1;
+      runReadGenerationRef.current += 1;
       setSelectedTaskId(undefined);
       setTaskListMode("completed");
       await refresh();
@@ -422,15 +466,18 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   };
 
   const selectTask = useCallback((task: NativeAgentLoopTask) => {
+    taskRefreshGenerationRef.current += 1;
+    selectedTaskIdRef.current = task.taskId;
     setSelectedTaskId(task.taskId);
     setArtifactPreview(undefined);
     if (task.latestRun?.runId) {
-      void readNativeAgentLoopRun(task.latestRun.runId).then((detail) => detail && acceptRun(detail));
+      void loadRun(task.latestRun.runId, task.taskId).catch((reason: unknown) => setError(messageFor(reason)));
     } else {
+      runReadGenerationRef.current += 1;
       setRun(undefined);
       setSelectedSessionId(undefined);
     }
-  }, [acceptRun]);
+  }, [loadRun]);
 
   const switchTaskList = (mode: TaskListMode) => {
     const candidates = mode === "active" ? activeTasks : completedTasks;
@@ -438,6 +485,9 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     if (mode === "active") setSelectedAchievedTaskIds([]);
     if (candidates[0]) selectTask(candidates[0]);
     else {
+      selectedTaskIdRef.current = undefined;
+      taskRefreshGenerationRef.current += 1;
+      runReadGenerationRef.current += 1;
       setSelectedTaskId(undefined);
       setRun(undefined);
       setSelectedSessionId(undefined);
@@ -532,9 +582,12 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   const timeline = useMemo(() => buildTimeline(selectedTask, run), [selectedTask, run]);
 
   return (
-    <div className={`harness-app agent-loop-app ${view === "workbench" ? "agent-loop-workbench-active" : ""} theme-${theme}`}>
+    <div className={`harness-app agent-loop-app ${view === "workbench" ? "agent-loop-workbench-active" : ""} ${railCollapsed ? "rail-collapsed" : ""} theme-${theme}`}>
       <aside className="harness-rail">
-        <div className="harness-brand"><Boxes size={21} /> <span>Agent Workspace</span></div>
+        <div className="harness-brand">
+          <div className="harness-brand-copy"><Boxes size={21} /> <span>Agent Workspace</span></div>
+          <button className="harness-icon-button harness-rail-toggle" aria-label={railCollapsed ? "展开导航栏" : "收起导航栏"} title={railCollapsed ? "展开导航栏" : "收起导航栏"} onClick={() => setRailCollapsed((current) => !current)}>{railCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
+        </div>
         <nav aria-label="Agent Loop pages">
           <RailButton active={view === "tasks"} onClick={() => setView("tasks")} icon={<ClipboardCheck size={18} />} label="任务" />
           <RailButton active={view === "templates"} onClick={() => setView("templates")} icon={<Layers2 size={18} />} label="模板" />
@@ -557,7 +610,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
         {view === "tasks" && <TaskSurface
           tasks={visibleTasks} selectedTask={selectedTask} run={run} timeline={timeline} taskListMode={taskListMode} activeTaskCount={activeTasks.length} completedTaskCount={completedTasks.length} selectedAchievedTaskIds={selectedAchievedTaskIds} runtimeAvailable={runtimeAvailable} busy={busy} messageBusy={messageBusy}
           onSelect={selectTask} onListModeChange={switchTaskList}
-          onCreate={() => { setTaskTitle(""); setTaskGoal(""); setTaskTemplateId(selectedTemplate?.id ?? ""); setTaskProjectPath(projectPath); setShowTaskCreate(true); }}
+          onCreate={() => { setTaskTitle(""); setTaskGoal(""); setTaskTemplateId(selectedTemplate?.id ?? ""); taskProjectPathRef.current = projectPath; setTaskProjectPath(projectPath); setTaskProjectVerified(true); setShowTaskCreate(true); }}
           onStart={startRun} onAchieved={markAchieved} onStop={(task) => setStopTarget(task)} onToggleAchievedSelection={(taskId) => setSelectedAchievedTaskIds((current) => current.includes(taskId) ? current.filter((id) => id !== taskId) : [...current, taskId])} onDeleteAchievedSelection={() => setDeleteTargetIds(selectedAchievedTaskIds)} messageDraft={selectedTask ? taskMessageDrafts[selectedTask.taskId] ?? "" : ""} onMessageDraftChange={(message) => selectedTask && setTaskMessageDrafts((current) => current[selectedTask.taskId] === message ? current : { ...current, [selectedTask.taskId]: message })} onMessage={sendTaskMessage} onPermissionResponse={respondPermission} permissionBusyId={permissionBusyId} questionAnswerDrafts={questionAnswerDrafts} questionBusyId={questionBusyId} onQuestionAnswerDraftChange={(question, answer) => setQuestionAnswerDrafts((current) => current[taskQuestionDraftKey(question)] === answer ? current : { ...current, [taskQuestionDraftKey(question)]: answer })} onQuestionAnswer={respondQuestion} onWorkbench={() => setView("workbench")} onPermissionTerminal={(sessionId) => { setSelectedSessionId(sessionId); setView("workbench"); }} onArtifact={(path) => void openArtifact(path)} />}
         {view === "templates" && <TemplateSurface
           templates={templates} selectedTemplate={selectedTemplate} runtimeAvailable={runtimeAvailable} busy={busy}
@@ -565,10 +618,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
           onCopy={() => void copyTemplate()} onArchive={() => void archiveTemplate()} onDelete={() => void deleteTemplate()} />}
         {view === "workbench" && <WorkbenchSurface
           run={run} tasks={activeTasks} selectedTaskId={selectedTask?.taskId} selectedSessionId={selectedSessionId} runtimeAvailable={runtimeAvailable} theme={theme}
-          onSelectTask={(task) => {
-            setSelectedTaskId(task.taskId);
-            if (task.latestRun?.runId) void readNativeAgentLoopRun(task.latestRun.runId).then((detail) => detail && acceptRun(detail));
-          }}
+          onSelectTask={selectTask}
           onSelectSession={setSelectedSessionId}
           onArtifact={(path) => void openArtifact(path)}
           onLayoutChange={async (layout) => {
@@ -578,8 +628,8 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
           }} />}
       </main>
       {showTaskCreate && <TaskDialog
-        templates={templates} title={taskTitle} goal={taskGoal} templateId={taskTemplateId} projectPath={taskProjectPath} busy={busy} enabled={runtimeAvailable}
-        onTitle={setTaskTitle} onGoal={setTaskGoal} onTemplate={setTaskTemplateId} onChooseProject={() => void chooseTaskProject()} onClose={() => setShowTaskCreate(false)} onCreateTemplate={() => { setShowTaskCreate(false); openNewTemplate(taskGoal, true); }} onCreate={() => void createTask()} />}
+        templates={templates} title={taskTitle} goal={taskGoal} templateId={taskTemplateId} projectPath={taskProjectPath} projectVerified={taskProjectVerified} busy={busy} enabled={runtimeAvailable}
+        onTitle={setTaskTitle} onGoal={setTaskGoal} onTemplate={setTaskTemplateId} onProjectPath={changeTaskProjectPath} onValidateProject={(path) => void validateTaskProject(path)} onClose={() => setShowTaskCreate(false)} onCreateTemplate={() => { setShowTaskCreate(false); openNewTemplate(taskGoal, true); }} onCreate={() => void createTask()} />}
       {showTemplateStarter && <TemplateStarterDialog brief={templateBrief} busy={busy} enabled={runtimeAvailable} onBrief={setTemplateBrief} onClose={() => { setShowTemplateStarter(false); setReturnToTaskAfterTemplate(false); }} onManual={openManualTemplate} onGenerate={() => void generateTemplate()} />}
       {showTemplateEditor && <TemplateDialog draft={templateDraft} busy={busy} enabled={runtimeAvailable} onChange={setTemplateDraft} onClose={() => { setShowTemplateEditor(false); setReturnToTaskAfterTemplate(false); }} onSave={() => void saveTemplate()} />}
       {artifactPreview && <ArtifactDialog artifact={artifactPreview} onClose={() => setArtifactPreview(undefined)} />}
@@ -591,7 +641,7 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
 }
 
 function RailButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: import("react").ReactNode; label: string }) {
-  return <button className={`harness-rail-button ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span></button>;
+  return <button className={`harness-rail-button ${active ? "active" : ""}`} aria-label={label} title={label} onClick={onClick}>{icon}<span>{label}</span></button>;
 }
 
 type TaskQuestion = {
@@ -1150,17 +1200,103 @@ function TemplateStarterDialog({ brief, busy, enabled, onBrief, onClose, onManua
   </div>;
 }
 
-function TaskDialog({ templates, title, goal, templateId, projectPath, busy, enabled, onTitle, onGoal, onTemplate, onChooseProject, onClose, onCreateTemplate, onCreate }: { templates: NativeAgentLoopTemplate[]; title: string; goal: string; templateId: string; projectPath: string; busy: boolean; enabled: boolean; onTitle: (value: string) => void; onGoal: (value: string) => void; onTemplate: (value: string) => void; onChooseProject: () => void; onClose: () => void; onCreateTemplate: () => void; onCreate: () => void }) {
+function TaskDialog({ templates, title, goal, templateId, projectPath, projectVerified, busy, enabled, onTitle, onGoal, onTemplate, onProjectPath, onValidateProject, onClose, onCreateTemplate, onCreate }: { templates: NativeAgentLoopTemplate[]; title: string; goal: string; templateId: string; projectPath: string; projectVerified: boolean; busy: boolean; enabled: boolean; onTitle: (value: string) => void; onGoal: (value: string) => void; onTemplate: (value: string) => void; onProjectPath: (value: string) => void; onValidateProject: (path?: string) => void; onClose: () => void; onCreateTemplate: () => void; onCreate: () => void }) {
+  const [projectPathFocused, setProjectPathFocused] = useState(false);
+  const [projectSuggestions, setProjectSuggestions] = useState<string[]>([]);
+  const [activeProjectSuggestionIndex, setActiveProjectSuggestionIndex] = useState(-1);
+  const suggestionGenerationRef = useRef(0);
+  useEffect(() => {
+    const generation = ++suggestionGenerationRef.current;
+    if (!enabled || !projectPathFocused || !projectPath.trim()) {
+      setProjectSuggestions([]);
+      setActiveProjectSuggestionIndex(-1);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      void suggestNativeAgentLoopProjectDirectories(projectPath)
+        .then((suggestions) => {
+          if (generation === suggestionGenerationRef.current) {
+            setProjectSuggestions(suggestions);
+            setActiveProjectSuggestionIndex(-1);
+          }
+        })
+        .catch(() => {
+          if (generation === suggestionGenerationRef.current) {
+            setProjectSuggestions([]);
+            setActiveProjectSuggestionIndex(-1);
+          }
+        });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [enabled, projectPath, projectPathFocused]);
+
+  const selectProjectSuggestion = (suggestion: string) => {
+    setProjectPathFocused(false);
+    setProjectSuggestions([]);
+    setActiveProjectSuggestionIndex(-1);
+    onProjectPath(suggestion);
+    onValidateProject(suggestion);
+  };
+
+  const moveProjectSuggestion = (direction: 1 | -1) => {
+    if (!projectSuggestions.length) return;
+    setActiveProjectSuggestionIndex((current) => {
+      if (current < 0) return direction === 1 ? 0 : projectSuggestions.length - 1;
+      return (current + direction + projectSuggestions.length) % projectSuggestions.length;
+    });
+  };
+
   return <div className="agent-loop-drawer-backdrop" role="dialog" aria-modal="true" aria-label="创建 Task">
     <button className="agent-loop-drawer-scrim" aria-label="取消创建任务" onClick={onClose} />
     <section className="agent-loop-drawer agent-loop-task-drawer">
       <header className="agent-loop-drawer-header"><div><h2>创建 Task</h2><p>选择已保存的 Agent Loop Template。创建后会固化快照；之后修改模板不会影响这个 Task。</p></div><button className="agent-loop-drawer-close" onClick={onClose} aria-label="关闭">×</button></header>
       <div className="agent-loop-drawer-scroll">
-        <section className="agent-loop-drawer-basics"><label>任务标题<input autoFocus value={title} onChange={(event) => onTitle(event.target.value)} placeholder="例如：整理产品竞品调研" /></label><label>任务目标<textarea rows={5} value={goal} onChange={(event) => onGoal(event.target.value)} placeholder="写清交付物、范围和验收标准。Conductor 会据此形成每次派发的工作契约。" /></label><label>项目文件夹<div className="agent-loop-project-path"><code title={projectPath}>{projectPath}</code><button className="harness-secondary-button compact" type="button" disabled={busy || !enabled} onClick={onChooseProject}>选择文件夹…</button></div><small>这是此 Task 的项目根目录。原生 Session、相对产物路径及 `.agent-workspace/runtime` 都以此为准。</small></label></section>
+        <section className="agent-loop-drawer-basics">
+          <label>任务标题<input autoFocus value={title} onChange={(event) => onTitle(event.target.value)} placeholder="例如：整理产品竞品调研" /></label>
+          <label>任务目标<textarea rows={5} value={goal} onChange={(event) => onGoal(event.target.value)} placeholder="写清交付物、范围和验收标准。Conductor 会据此形成每次派发的工作契约。" /></label>
+          <label>项目文件夹
+            <div className="agent-loop-project-picker">
+              <div className="agent-loop-project-path">
+                <input
+                  value={projectPath}
+                  role="combobox"
+                  aria-expanded={projectPathFocused && projectSuggestions.length > 0}
+                  aria-controls="agent-loop-project-suggestions"
+                  aria-activedescendant={activeProjectSuggestionIndex >= 0 ? `agent-loop-project-suggestion-${activeProjectSuggestionIndex}` : undefined}
+                  onFocus={() => setProjectPathFocused(true)}
+                  onBlur={() => setProjectPathFocused(false)}
+                  onChange={(event) => { setProjectPathFocused(true); onProjectPath(event.target.value); }}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown") { event.preventDefault(); moveProjectSuggestion(1); }
+                    else if (event.key === "ArrowUp") { event.preventDefault(); moveProjectSuggestion(-1); }
+                    else if (event.key === "Enter") {
+                      const suggestion = projectSuggestions[activeProjectSuggestionIndex];
+                      event.preventDefault();
+                      if (suggestion) selectProjectSuggestion(suggestion);
+                      else onValidateProject();
+                    } else if (event.key === "Escape") {
+                      setProjectPathFocused(false);
+                      setActiveProjectSuggestionIndex(-1);
+                    }
+                  }}
+                  placeholder="例如：/Users/name/project"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <button className="harness-secondary-button compact" type="button" disabled={busy || !enabled || !projectPath.trim()} onClick={() => onValidateProject()}>确定</button>
+              </div>
+              {projectPathFocused && projectSuggestions.length > 0 ? <div className="agent-loop-project-suggestions" id="agent-loop-project-suggestions" role="listbox" aria-label="项目文件夹匹配">
+                <span>匹配的本地文件夹</span>
+                {projectSuggestions.map((suggestion, index) => <button key={suggestion} id={`agent-loop-project-suggestion-${index}`} className={index === activeProjectSuggestionIndex ? "active" : ""} type="button" role="option" aria-selected={index === activeProjectSuggestionIndex} onMouseDown={(event) => event.preventDefault()} onClick={() => selectProjectSuggestion(suggestion)}>{suggestion}</button>)}
+              </div> : null}
+            </div>
+            <small>{projectVerified ? "目录已由本地 Host 验证。原生 Session、相对产物路径及 `.agent-workspace/runtime` 都以此为准。" : "输入路径时会匹配本地文件夹；点击匹配项后自动验证；也可用 ↑/↓ 和 Enter 选择。"}</small>
+          </label>
+        </section>
         <section className="agent-loop-task-template-choice"><div><strong>选择协作模板</strong><p>模板保存 Conductor Charter 与 Session Agent 的稳定能力，不包含本次任务的固定路线。</p></div><label>Agent Loop Template<select value={templateId} onChange={(event) => onTemplate(event.target.value)}>{templates.map((template) => <option value={template.id} key={template.id}>{template.name} · v{template.version}</option>)}</select></label><div className="agent-loop-task-template-alternative"><span>没有合适的模板？</span><button className="harness-secondary-button compact" disabled={busy || !goal.trim()} onClick={onCreateTemplate}><Plus size={14} /> 根据任务目标生成新 Template</button><small>会先进入 Template 草案编辑器；保存后再回到这里创建 Task。</small></div></section>
         <section className="agent-loop-task-snapshot-note"><strong>创建后会发生什么</strong><p>Task 会保存当前 Template 的版本快照。启动后，只有 Conductor 可以异步派发原生 OpenCode Session Agent；每个 Session 的结果、失败或需要输入才会唤醒 Conductor。</p></section>
       </div>
-      <footer className="agent-loop-drawer-footer"><button className="harness-secondary-button" disabled={busy} onClick={onClose}>取消</button><button className="harness-primary-button" disabled={!enabled || busy || !title.trim() || !goal.trim() || !templateId} onClick={onCreate}>{busy ? "创建中…" : "创建 Task"}</button></footer>
+      <footer className="agent-loop-drawer-footer"><button className="harness-secondary-button" disabled={busy} onClick={onClose}>取消</button><button className="harness-primary-button" disabled={!enabled || busy || !title.trim() || !goal.trim() || !templateId || !projectVerified} onClick={onCreate}>{busy ? "创建中…" : "创建 Task"}</button></footer>
     </section>
   </div>;
 }

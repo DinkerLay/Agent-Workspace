@@ -1396,6 +1396,58 @@ describe("Session wakeup monitor", () => {
     expect(worker.events.map((event) => event.type)).not.toContain("dispatch.delivery_failed");
   });
 
+  it("shares one in-flight delivery when concurrent ticks drain the same wakeup", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-wakeup-inflight-"));
+    const store = createSessionStore({ root });
+    const taskId = "task-wakeup-inflight";
+    const conductorId = "opencode:project-runtime-current:task-wakeup-inflight:task-wakeup-inflight-conductor";
+    const writes = [];
+    const accepted = [];
+    let releaseWrite;
+    let writeStarted;
+    const writeMayFinish = new Promise((resolve) => { releaseWrite = resolve; });
+    const writeHasStarted = new Promise((resolve) => { writeStarted = resolve; });
+    const sessions = [{ id: conductorId, taskId, status: "running", provider: "opencode", cwd: root, incarnationId: "inc-1" }];
+
+    store.startSession({ taskId, sessionId: conductorId, command: "opencode", cwd: root });
+    store.recordState({ taskId, sessionId: conductorId }, "waiting_conductor", "Conductor is ready for a durable wakeup.");
+    store.recordConductorWakeup({
+      taskId,
+      sessionId: conductorId,
+      wakeupKey: "result:task-wakeup-inflight:ABC123",
+      kind: "result",
+      workerSessionId: "worker-private-id",
+      dispatchId: "ABC123",
+      resultId: "result-ABC123",
+      status: "queued",
+    });
+    const monitor = createSessionWakeupMonitor({
+      ptyManager: {
+        list: () => sessions,
+        get: (id) => sessions.find((session) => session.id === id),
+        sampleStatus: (id) => ({ id, state: "running", cursor: 9, lastOutputAgeMs: 0 }),
+      },
+      sessionStore: store,
+      enqueueConductorInput: async (input) => {
+        writes.push(input);
+        writeStarted();
+        await writeMayFinish;
+        return { disposition: "written" };
+      },
+      onConductorWakeupAccepted: (input) => accepted.push(input),
+    });
+
+    const first = monitor.tick();
+    await writeHasStarted;
+    const second = monitor.tick();
+    releaseWrite();
+    await Promise.all([first, second]);
+
+    assert.equal(writes.length, 1);
+    assert.equal(accepted.length, 1);
+    assert.equal(store.readTaskState({ taskId }).wakeups[0].status, "sent");
+  });
+
   it("rehydrates a queued semantic wakeup after monitor restart and opens the next Conductor decision only after input acceptance", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-wakeup-recovery-"));
     const store = createSessionStore({ root });

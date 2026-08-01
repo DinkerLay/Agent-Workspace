@@ -283,7 +283,7 @@ async function main() {
     );
     const secondCompletion = await bridge.claimTaskCompletion({ taskId: task.taskId, message: "The continuation was considered and the delivery is ready again." });
     assert.equal(secondCompletion.ok, true);
-    assert.equal(runtime.markTaskAchieved({ taskId: task.taskId }).status, "achieved");
+    assert.equal((await runtime.markTaskAchieved({ taskId: task.taskId })).status, "achieved");
 
     process.stdout.write("Agent Loop control-plane harness passed\n");
   } finally {

@@ -568,7 +568,7 @@ describe("desktop PTY manager", () => {
     });
   });
 
-  it("keeps stop effective for a session that is already stopping", () => {
+  it("treats a repeated stop for a stopping session as idempotent", () => {
     const fake = createAsyncExitFakePty();
     const manager = createPtyManager({ pty: fake.pty });
 
@@ -585,7 +585,6 @@ describe("desktop PTY manager", () => {
     expect(secondStop).toMatchObject({ status: "stopping" });
     expect(fake.calls.filter((call) => call[0] === "kill")).toEqual([
       ["kill", session.pid, "SIGTERM"],
-      ["kill", session.pid, "SIGKILL"],
     ]);
   });
 

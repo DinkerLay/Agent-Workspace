@@ -123,7 +123,11 @@ function createTerminalSession({
 
   function stop({ expectedIncarnationId } = {}) {
     if (!isLive() || (expectedIncarnationId && expectedIncarnationId !== incarnationId)) return undefined;
-    const stopSignal = status === "stopping" ? "SIGKILL" : "SIGTERM";
+    // A second stop request commonly means two control paths observed the
+    // same live terminal. It must not turn an ordinary cancellation into an
+    // immediate force-kill; timeout escalation is a separate policy.
+    if (status === "stopping") return publicSession();
+    const stopSignal = "SIGTERM";
     status = "stopping";
     process.kill?.(stopSignal);
     return publicSession();

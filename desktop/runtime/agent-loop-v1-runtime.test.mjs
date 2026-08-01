@@ -1228,7 +1228,7 @@ describe("Agent Loop v1 runtime", () => {
 
     const delivery = runtime.recordCompletionClaim({ taskId: task.taskId });
     assert.equal(delivery.task.status, "delivery_ready");
-    assert.equal(runtime.markTaskAchieved({ taskId: task.taskId }).status, "achieved");
+    assert.equal((await runtime.markTaskAchieved({ taskId: task.taskId })).status, "achieved");
     assert.ok(taskEvents.some((event) => event.type === "task.achieved"));
     runtime.close();
   });
@@ -1253,7 +1253,7 @@ describe("Agent Loop v1 runtime", () => {
     const task = runtime.createTask({ cwd: projectRoot, projectId: "project", taskId: "lifecycle-task", title: "Lifecycle", goal: "Keep the project delivery while deleting Runtime state." });
     const first = await runtime.startRun({ taskId: task.taskId });
     runtime.recordCompletionClaim({ taskId: task.taskId });
-    assert.equal(runtime.markTaskAchieved({ taskId: task.taskId }).status, "achieved");
+    assert.equal((await runtime.markTaskAchieved({ taskId: task.taskId })).status, "achieved");
     assert.equal(runtime.readRun({ runId: first.run.runId }).run.status, "achieved");
 
     const second = await runtime.startRun({ taskId: task.taskId });
@@ -1262,7 +1262,7 @@ describe("Agent Loop v1 runtime", () => {
     assert.equal(runtime.readRun({ runId: first.run.runId }).run.status, "achieved", "prior Run remains durable history");
 
     runtime.recordCompletionClaim({ taskId: task.taskId });
-    runtime.markTaskAchieved({ taskId: task.taskId });
+    await runtime.markTaskAchieved({ taskId: task.taskId });
     const deliveryPath = path.join(projectRoot, "delivery.md");
     fs.writeFileSync(deliveryPath, "# User delivery\n", "utf8");
     const deleted = await runtime.deleteTask({ taskId: task.taskId });
@@ -1328,6 +1328,82 @@ describe("Agent Loop v1 runtime", () => {
     assert.equal(deleted.runsDeleted, 2);
     assert.equal(runtime.readTask({ taskId: task.taskId }), undefined);
     assert.deepEqual(stoppedSessions, [first.run.conductorSessionId, restarted.run.conductorSessionId]);
+    runtime.close();
+  });
+
+  it("serializes concurrent re-runs so only one replacement Run is created", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-rerun-race-"));
+    const sessionStore = createSessionStore({ root: ({ cwd }) => path.join(cwd, ".agent-workspace", "runtime") });
+    const runtime = createAgentLoopV1Runtime({
+      opencodePath: "/usr/local/bin/opencode",
+      databasePath: path.join(projectRoot, "agent-loop.sqlite"),
+      getConductorBridgeConfig: async () => ({ conductorToolBridgeUrl: "http://127.0.0.1:4567", conductorToolBridgeToken: "test-token", conductorMcpServerPath: "/workspace/desktop/conductor-mcp-server.cjs" }),
+      sessionAuthority: {
+        registerLaunchProfile() {},
+        async activateSession({ workspaceSessionId }) { return { session: { id: workspaceSessionId, status: "running" } }; },
+      },
+      ptyManager: { read: () => undefined, get: () => undefined },
+      sessionStore,
+    });
+    const task = runtime.createTask({ cwd: projectRoot, projectId: "project", taskId: "rerun-race", title: "Rerun race", goal: "Create only one new Run." });
+    const first = await runtime.startRun({ taskId: task.taskId });
+    runtime.recordCompletionClaim({ taskId: task.taskId });
+    await runtime.markTaskAchieved({ taskId: task.taskId });
+
+    const outcomes = await Promise.allSettled([
+      runtime.startRun({ taskId: task.taskId }),
+      runtime.startRun({ taskId: task.taskId }),
+    ]);
+    const successes = outcomes.filter((outcome) => outcome.status === "fulfilled");
+    const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+    assert.equal(successes.length, 1);
+    assert.equal(failures.length, 1);
+    assert.match(String(failures[0].reason), /loop_run_already_running/);
+    assert.notEqual(successes[0].value.run.runId, first.run.runId);
+    assert.equal(runtime.listTasks()[0].latestRun.runId, successes[0].value.run.runId);
+    runtime.close();
+  });
+
+  it("lets Stop win over a queued achievement while terminal shutdown is pending", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-stop-achieve-race-"));
+    const sessionStore = createSessionStore({ root: ({ cwd }) => path.join(cwd, ".agent-workspace", "runtime") });
+    const liveSessions = new Map();
+    let releaseStop;
+    let stopStarted;
+    const stopMayFinish = new Promise((resolve) => { releaseStop = resolve; });
+    const stopHasStarted = new Promise((resolve) => { stopStarted = resolve; });
+    const runtime = createAgentLoopV1Runtime({
+      opencodePath: "/usr/local/bin/opencode",
+      databasePath: path.join(projectRoot, "agent-loop.sqlite"),
+      getConductorBridgeConfig: async () => ({ conductorToolBridgeUrl: "http://127.0.0.1:4567", conductorToolBridgeToken: "test-token", conductorMcpServerPath: "/workspace/desktop/conductor-mcp-server.cjs" }),
+      sessionAuthority: {
+        registerLaunchProfile() {},
+        async activateSession({ workspaceSessionId }) {
+          const session = { id: workspaceSessionId, status: "running" };
+          liveSessions.set(workspaceSessionId, session);
+          return { session };
+        },
+        async stopSession({ workspaceSessionId }) {
+          stopStarted();
+          await stopMayFinish;
+          liveSessions.set(workspaceSessionId, { id: workspaceSessionId, status: "stopped" });
+        },
+      },
+      ptyManager: { read: () => undefined, get: (sessionId) => liveSessions.get(sessionId) },
+      sessionStore,
+    });
+    const task = runtime.createTask({ cwd: projectRoot, projectId: "project", taskId: "stop-achieve-race", title: "Stop-achieve race", goal: "Do not overwrite Stop." });
+    const first = await runtime.startRun({ taskId: task.taskId });
+
+    const stopping = runtime.stopTask({ taskId: task.taskId });
+    await stopHasStarted;
+    const achieving = runtime.markTaskAchieved({ taskId: task.taskId });
+    releaseStop();
+
+    const stopped = await stopping;
+    assert.equal(stopped.status, "stopped");
+    assert.equal(runtime.readRun({ runId: first.run.runId }).run.status, "stopped");
+    await assert.rejects(achieving, /loop_task_not_achievable/);
     runtime.close();
   });
 });
