@@ -81,6 +81,12 @@ function installIpc({ runtime, sessionAuthority, ptyManager, sessionStore }) {
     message: String(input?.data?.message ?? input?.summary ?? ""),
     data: input?.data && typeof input.data === "object" ? input.data : {},
   }));
+  ipcMain.handle("native:send-agent-loop-task-message", (_event, input) => runtime.recordUserMessage({
+    taskId: String(input?.taskId ?? ""),
+    message: String(input?.message ?? ""),
+    commandId: String(input?.commandId ?? ""),
+    expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+  }));
   ipcMain.handle("native:read-workspace-session", (_event, input) => sessionAuthority.readSession({ workspaceSessionId: String(input?.workspaceSessionId ?? ""), cursor: Number(input?.cursor ?? 0) }));
   ipcMain.handle("native:read-workspace-terminal-log", (_event, input) => {
     const taskId = String(input?.taskId ?? "");
@@ -315,7 +321,7 @@ async function main() {
       hasRecover: document.body.innerText.includes("恢复当前 Run"),
       hasTaskDelete: document.body.innerText.includes("删除任务")
     }))()`);
-    assert.deepEqual(liveTaskControls, { hasWorkbench: true, hasAchieve: true, hasStop: true, hasRecover: false, hasTaskDelete: false });
+    assert.deepEqual(liveTaskControls, { hasWorkbench: true, hasAchieve: false, hasStop: true, hasRecover: false, hasTaskDelete: false });
     assert.equal(await execute(window, 'document.body.innerText.includes("等待产物")'), false, "Task Timeline must not present a missing artifact as a state");
     const timelineTask = runtime.listTasks()[0];
     const timelineConductorSessionId = runtime.readRun({ runId: timelineTask.latestRun.runId }).run.conductorSessionId;
@@ -360,7 +366,7 @@ async function main() {
       // logical Session has a new live TUI, but the Provider observer has not
       // yet confirmed that this TUI is showing the same question.
       const historicalQuestionId = "opencode-question-before-terminal-restart";
-      sessionStore.recordState(
+      sessionStore.recordProviderSessionState(
         { taskId: timelineTask.taskId, sessionId: timelineConductorSessionId, cwd: timelineTask.cwd },
         "waiting_input",
         "旧终端里的确认问题。",
@@ -388,7 +394,7 @@ async function main() {
         { ok: false, status: "waiting_input", errorCode: "question_terminal_changed" },
         "Runtime must reject an answer that targets an old terminal incarnation",
       );
-      sessionStore.recordState(
+      sessionStore.recordProviderSessionState(
         { taskId: timelineTask.taskId, sessionId: timelineConductorSessionId, cwd: timelineTask.cwd },
         "waiting_input",
         questionText,
@@ -545,7 +551,7 @@ async function main() {
       // This is the persisted state left by an Electron restart: no terminal
       // and no in-memory hook transport, but a proven Provider conversation.
       sessionStore.startSession({ taskId: timelineTask.taskId, sessionId: permissionSessionId, command: fakeOpenCode, cwd: timelineTask.cwd });
-      sessionStore.recordState({ taskId: timelineTask.taskId, sessionId: permissionSessionId, cwd: timelineTask.cwd }, "permission_required", "OpenCode 正在等待用户授权。", { provider: "opencode", providerSessionId: "ses-researcher-before-restart" });
+      sessionStore.recordProviderSessionState({ taskId: timelineTask.taskId, sessionId: permissionSessionId, cwd: timelineTask.cwd }, "permission_required", "OpenCode 正在等待用户授权。", { provider: "opencode", providerSessionId: "ses-researcher-before-restart" });
       sessionStore.recordPermissionRequested({
         taskId: timelineTask.taskId,
         sessionId: permissionSessionId,
@@ -835,6 +841,7 @@ async function main() {
     await waitUntil(() => runtime.listTasks()[0].status === "running" && runtime.listTasks()[0].latestRun.runId !== firstRunId, "restart after stop");
     const restartedRunId = runtime.listTasks()[0].latestRun.runId;
     assert.notEqual(runtime.readRun({ runId: restartedRunId }).run.conductorSessionId, runtime.readRun({ runId: firstRunId }).run.conductorSessionId);
+    runtime.recordCompletionClaim({ taskId: runtime.listTasks()[0].taskId });
     await click(window, "任务");
     await waitUntil(() => execute(window, 'document.body.innerText.includes("Achieve")'), "achievement action");
     await click(window, "Achieve");
@@ -844,6 +851,7 @@ async function main() {
     await waitUntil(() => runtime.listTasks()[0].status === "running" && runtime.listTasks()[0].latestRun.runId !== restartedRunId, "isolated re-run");
     const secondRunId = runtime.listTasks()[0].latestRun.runId;
     assert.notEqual(runtime.readRun({ runId: secondRunId }).run.conductorSessionId, runtime.readRun({ runId: restartedRunId }).run.conductorSessionId);
+    runtime.recordCompletionClaim({ taskId: runtime.listTasks()[0].taskId });
     await click(window, "任务");
     await waitUntil(() => execute(window, 'document.body.innerText.includes("Achieve")'), "second achievement action");
     await click(window, "Achieve");

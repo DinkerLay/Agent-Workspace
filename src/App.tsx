@@ -89,8 +89,8 @@ function createRuntimeOperationId(kind: string, sessionId: string) {
 }
 
 function requestedSurface() {
-  if (typeof window === "undefined") return "harness";
-  return new URLSearchParams(window.location.search).get("surface") === "legacy" ? "legacy" : "harness";
+  if (typeof window === "undefined") return "agent-loop";
+  return new URLSearchParams(window.location.search).get("surface") === "legacy" ? "legacy" : "agent-loop";
 }
 
 function App({ initialState }: { initialState?: PrototypeState } = {}) {

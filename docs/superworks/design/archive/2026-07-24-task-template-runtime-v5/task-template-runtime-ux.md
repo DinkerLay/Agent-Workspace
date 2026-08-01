@@ -2,12 +2,13 @@
 
 Date: 2026-07-24
 
-Status: Design reference for the desktop mock.
+Status: Historical design exploration. It includes deferred Workflow/Graph and
+Task Assembly concepts and must not be used as the current product or UI spec.
 
 Related active specs:
 
-- ../spec/task-template-runtime-model.md
-- ../spec/product-interaction-map.md
+- ../../../spec/task-template-runtime-model.md
+- ../../../spec/product-interaction-map.md
 
 ## Design Principle
 
@@ -170,7 +171,7 @@ Run rather than the whole project.
 
 ## Visual References And Deliverable
 
-The active visual references are deliberately separated by product surface:
+The historical visual references are deliberately separated by product surface:
 
 - `mockups/task-assembly-v5.png`
 - `mockups/templates-agent-loop-v5.png`
@@ -178,7 +179,7 @@ The active visual references are deliberately separated by product surface:
 - `mockups/tasks-timeline-v5.png`
 - `mockups/workbench-session-runtime-v5.png`
 
-The interactive desktop mock is
+The historical interactive desktop mock is
 `public/mockups/agent-workspace-task-architecture-v5.html`. The historical
 v1–v4 images remain available under `archive/2026-07-24-pre-task-architecture/`
 for comparison only; they are not the active interaction reference.

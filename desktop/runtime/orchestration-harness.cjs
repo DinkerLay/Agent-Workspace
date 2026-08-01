@@ -19,6 +19,11 @@ const WORKFLOW_NODE_REGISTRY = Object.freeze({
 });
 
 /**
+ * @deprecated Historical nested-Workflow experiment. The active product owns
+ * Template/Task/Run state through Agent Loop v1; this Harness is retained only
+ * for migration evidence and its focused verification harnesses. Do not add
+ * new product state or user-facing behavior here.
+ *
  * Narrow, real Runtime harness for one OpenCode Agent Loop that invokes one
  * bounded Workflow. It deliberately owns only deterministic state transitions;
  * Session Authority remains the sole PTY/process owner.

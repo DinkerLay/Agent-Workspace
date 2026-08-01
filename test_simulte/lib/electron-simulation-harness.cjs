@@ -8,7 +8,10 @@ const {
   startConductorToolBridgeHttpServer,
 } = require("../../desktop/conductor-tool-bridge.cjs");
 const { ensureNodePtySpawnHelperExecutable } = require("../../desktop/node-pty-runtime.cjs");
-const { getDispatchAssistantAnswer } = require("../../desktop/opencode/session-adapter.cjs");
+const {
+  getDispatchAssistantAnswer,
+  inspectDispatchProviderState,
+} = require("../../desktop/opencode/session-adapter.cjs");
 const { getRuntimeStatus, resolveOpencodePath } = require("../../desktop/opencode-runner.cjs");
 const { createPtyManager } = require("../../desktop/pty-manager.cjs");
 const { createSessionAuthority } = require("../../desktop/runtime/session-authority.cjs");
@@ -85,13 +88,41 @@ async function createElectronSimulationHarness(options = {}) {
   const conductorToolBridge = createConductorToolBridge({
     sessionStore,
     ptyManager,
-    activateWorkerSession: ({ sessionId, operationId }) =>
-      sessionAuthority.activateSession({
+    prepareWorkerSession: ({ taskId, sessionId, initialPrompt }) => {
+      const model = options.model ?? "opencode-go/deepseek-v4-flash";
+      sessionAuthority.registerLaunchProfile({
+        workspaceSessionId: sessionId,
+        taskId,
+        command: opencodePath,
+        args: ["--model", model, "--prompt", String(initialPrompt)],
+        cwd: projectPath,
+        provider: "opencode",
+        model,
+        cols: 100,
+        rows: 30,
+        stdin: "pipe",
+        requirePty: Boolean(realPtyAvailable.pty),
+      });
+      return { initialPromptSubmitted: true, sessionId };
+    },
+    activateWorkerSession: async ({ taskId, sessionId, operationId }) => {
+      const activation = await sessionAuthority.activateSession({
         workspaceSessionId: sessionId,
         operationId,
         callerId: "simulation-conductor",
         reason: "conductor-dispatch",
-      }),
+      });
+      // This legacy in-process E2E PTY fixture does not expose the production
+      // Terminal Runtime's typed `bufferMode` readiness fact. Synchronize the
+      // test driver only (never product state) on OpenCode entering its
+      // alternate buffer before allowing the Coordinator to write input.
+      await waitUntil(
+        () => sessionStore.readTerminalLog({ taskId, sessionId, maxBytes: 40_000 }).content.includes("\x1b[?1049h"),
+        "OpenCode worker TUI enters alternate buffer",
+      );
+      await delay(250);
+      return activation;
+    },
     enqueueWorkerInput: ({ sessionId, expectedIncarnationId, payload, idempotencyKey }) =>
       sessionAuthority.enqueueInput({
         workspaceSessionId: sessionId,
@@ -110,6 +141,11 @@ async function createElectronSimulationHarness(options = {}) {
   const sessionWakeupMonitor = createSessionWakeupMonitor({
     ptyManager,
     sessionStore,
+    dispatchStateReader: ({ session, dispatch }) => inspectDispatchProviderState({
+      dispatchId: dispatch.dispatchId,
+      cwd: session.cwd,
+      dispatchCreatedAt: dispatch.createdAt,
+    }),
     dispatchResultReader: ({ session, dispatch }) => {
       if (!isOpencodeSession(session)) return undefined;
       return getDispatchAssistantAnswer({

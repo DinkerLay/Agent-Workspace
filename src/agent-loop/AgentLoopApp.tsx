@@ -33,7 +33,6 @@ import remarkGfm from "remark-gfm";
 import { PtyTerminal } from "../components/PtyTerminal";
 import {
   archiveNativeAgentLoopTemplate,
-  appendNativeTaskEvent,
   validateNativeAgentLoopProjectDirectory,
   copyNativeAgentLoopTemplate,
   createNativeAgentLoopTask,
@@ -54,6 +53,7 @@ import {
   resizeNativePtySession,
   saveNativeAgentLoopWorkbenchLayout,
   saveNativeAgentLoopTemplate,
+  sendNativeAgentLoopTaskMessage,
   suggestNativeAgentLoopProjectDirectories,
   startNativeAgentLoopRun,
   stopNativeAgentLoopTask,
@@ -115,6 +115,11 @@ function blankTemplate(): TemplateDraft {
   };
 }
 
+function newTaskCommandId(kind: string, taskId: string) {
+  const nonce = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `ui:${kind}:${taskId}:${nonce}`;
+}
+
 export function AgentLoopApp({ projectPath, projectName }: { projectPath: string; projectName: string }) {
   const runtimeAvailable = isNativeAgentLoopRuntimeAvailable();
   const [view, setView] = useState<View>("tasks");
@@ -159,6 +164,23 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   const selectedTaskIdRef = useRef<string | undefined>(undefined);
   const taskRefreshGenerationRef = useRef(0);
   const runReadGenerationRef = useRef(0);
+  // Retain one identity until a command succeeds. A second click or transport
+  // retry therefore replays the same durable command instead of creating a
+  // second lifecycle mutation.
+  const taskCommandIdsRef = useRef(new Map<string, string>());
+
+  const commandIdFor = (kind: string, taskId: string) => {
+    const key = `${kind}:${taskId}`;
+    const existing = taskCommandIdsRef.current.get(key);
+    if (existing) return existing;
+    const commandId = newTaskCommandId(kind, taskId);
+    taskCommandIdsRef.current.set(key, commandId);
+    return commandId;
+  };
+
+  const completeCommand = (kind: string, taskId: string) => {
+    taskCommandIdsRef.current.delete(`${kind}:${taskId}`);
+  };
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
   const activeTasks = useMemo(() => tasks.filter((task) => !["achieved", "archived"].includes(task.status)), [tasks]);
@@ -220,17 +242,6 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     return loadRun(runId)
       .catch((reason: unknown) => setError(messageFor(reason)));
   }, [loadRun]);
-
-  useEffect(() => {
-    if (!run) return undefined;
-    // Push is the primary path. This is only recovery for a renderer that
-    // missed an invalidation while reloading; it is not tied to a task or PTY
-    // status and therefore cannot freeze a live semantic Run.
-    const timer = window.setInterval(() => {
-      void refreshRun(run.run.runId);
-    }, 3_000);
-    return () => window.clearInterval(timer);
-  }, [refreshRun, run?.run.runId]);
 
   useEffect(() => subscribeNativeAgentLoopRuntimeEvents((event) => {
     if (event.runId === run?.run.runId) {
@@ -323,7 +334,9 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     try {
       await archiveNativeAgentLoopTemplate(selectedTemplate.id);
       await refresh();
-    } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
+    } catch (reason) {
+      setError(messageFor(reason));
+    } finally { setBusy(false); }
   };
 
   const deleteTemplate = async () => {
@@ -382,26 +395,44 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
 
   const startRun = async () => {
     if (!selectedTask) return;
+    const commandId = commandIdFor("start", selectedTask.taskId);
     setBusy(true);
     setError(undefined);
     try {
-      const detail = await startNativeAgentLoopRun(selectedTask.taskId);
+      const detail = await startNativeAgentLoopRun({
+        taskId: selectedTask.taskId,
+        commandId,
+        expectedRevision: selectedTask.revision,
+      });
       if (!detail) throw new Error("桌面 Runtime 未创建 Agent Loop Run。");
+      completeCommand("start", selectedTask.taskId);
       selectedTaskIdRef.current = detail.task.taskId;
       acceptRun(detail);
       setTaskListMode("active");
       setSelectedTaskId(detail.task.taskId);
       setView("workbench");
       await refresh(selectedTask.taskId);
-    } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
+    } catch (reason) {
+      // Runtime durably compensates a failed native Start and records that
+      // command as failed. A later explicit retry is a new start attempt and
+      // therefore needs a new command identity.
+      completeCommand("start", selectedTask.taskId);
+      setError(messageFor(reason));
+    } finally { setBusy(false); }
   };
 
   const markAchieved = async () => {
     if (!selectedTask) return;
+    const commandId = commandIdFor("achieve", selectedTask.taskId);
     setBusy(true);
     try {
-      const achieved = await markNativeAgentLoopTaskAchieved(selectedTask.taskId);
+      const achieved = await markNativeAgentLoopTaskAchieved({
+        taskId: selectedTask.taskId,
+        commandId,
+        expectedRevision: selectedTask.revision,
+      });
       if (!achieved) throw new Error("桌面 Runtime 未确认 Task 的 achieved 状态。");
+      completeCommand("achieve", selectedTask.taskId);
       setTaskListMode("completed");
       selectedTaskIdRef.current = achieved.taskId;
       setSelectedTaskId(achieved.taskId);
@@ -412,11 +443,17 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
   const stopTask = async () => {
     if (!stopTarget) return;
     const stoppedTaskId = stopTarget.taskId;
+    const commandId = commandIdFor("stop", stoppedTaskId);
     setBusy(true);
     setError(undefined);
     try {
-      const stopped = await stopNativeAgentLoopTask(stoppedTaskId);
+      const stopped = await stopNativeAgentLoopTask({
+        taskId: stoppedTaskId,
+        commandId,
+        expectedRevision: stopTarget.revision,
+      });
       if (!stopped) throw new Error("桌面 Runtime 未确认 Task 已停止。");
+      completeCommand("stop", stoppedTaskId);
       setTasks((current) => current.map((task) => task.taskId === stoppedTaskId ? { ...task, ...stopped } : task));
       setStopTarget(undefined);
       selectedTaskIdRef.current = stopped.taskId;
@@ -432,8 +469,16 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     setError(undefined);
     try {
       for (const taskId of targetIds) {
-        const result = await deleteNativeAgentLoopTask(taskId);
+        const target = tasks.find((task) => task.taskId === taskId);
+        if (!target) throw new Error("找不到待删除的 Task 状态。");
+        const commandId = commandIdFor("delete", taskId);
+        const result = await deleteNativeAgentLoopTask({
+          taskId,
+          commandId,
+          expectedRevision: target.revision,
+        });
         if (!result?.deleted) throw new Error("桌面 Runtime 未删除所选 Task。");
+        completeCommand("delete", taskId);
         deletedTaskIdsRef.current.add(taskId);
       }
       // Remove selected history synchronously before refresh. A late Runtime
@@ -498,17 +543,19 @@ export function AgentLoopApp({ projectPath, projectName }: { projectPath: string
     if (!selectedTask || !message.trim()) return;
     const taskId = selectedTask.taskId;
     const submitted = message.trim();
+    const commandKind = `message:${submitted}`;
+    const commandId = commandIdFor(commandKind, taskId);
     setMessageBusy(true);
     setError(undefined);
     try {
-      const result = await appendNativeTaskEvent({
+      const result = await sendNativeAgentLoopTaskMessage({
         taskId,
-        cwd: selectedTask.cwd,
-        type: "task.user_message",
-        summary: submitted,
-        data: { message: submitted },
+        message: submitted,
+        commandId,
+        expectedRevision: selectedTask.revision,
       });
       if (!result.ok) throw new Error(result.error || "无法将消息交给 Conductor。");
+      completeCommand(commandKind, taskId);
       // Clear only the exact draft that was accepted.  This preserves text if
       // the user changed it before an asynchronous Runtime receipt returned.
       setTaskMessageDrafts((current) => {
@@ -667,7 +714,7 @@ function TaskSurface({ tasks, selectedTask, run, timeline, taskListMode, activeT
       return <div className={`harness-task-row-wrap ${completed ? "completed" : ""}`} key={task.taskId}>{completed && task.status === "achieved" && <label className="harness-achieved-select" title={`选择“${task.title}”删除`} onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selectedAchievedTaskIds.includes(task.taskId)} onChange={() => onToggleAchievedSelection(task.taskId)} /><span className="sr-only">{`选择“${task.title}”`}</span></label>}<button className={`harness-task-row ${active ? "active" : ""}`} onClick={() => onSelect(task)}><i className={`harness-state-dot ${task.status}`} /><span><strong>{task.title}</strong><small>{task.architecture.template.name} · v{task.architecture.template.version}</small></span><em title={currentActivity ? `Task 生命周期：${taskStatusLabel(task.status)}；当前活动态：${currentActivity.label}` : undefined}>{currentActivity?.shortLabel ?? taskStatusLabel(task.status)}</em></button></div>;
     }) : <Empty title={completed ? "还没有已完成任务" : "还没有进行中 Task"} detail={completed ? "确认交付后的 Task 会自动移动到这里。" : "新建 Task 后，它会出现在这个列表。"} />}</div><button className={`harness-task-manager-button ${completed ? "active" : ""}`} onClick={() => onListModeChange(completed ? "active" : "completed")}><Archive size={15} /><span>{completed ? "返回进行中任务" : "已完成任务"}</span><b>{completed ? activeTaskCount : completedTaskCount}</b><ChevronRight size={15} /></button></aside>
     <section className="harness-timeline-panel">{selectedTask ? <>
-      <header className="harness-task-head"><div><div className="harness-breadcrumb">Task / {completed ? "Completed history" : "Agent Loop"}</div><h1>{selectedTask.title}</h1><p>{selectedTask.goal}</p></div><div className="harness-task-actions">{selectedTask.status === "queued" && <button className="harness-primary-button" disabled={!runtimeAvailable || busy} onClick={onStart}><Play size={15} /> 启动 Agent Loop</button>}{selectedTask.status === "stopped" && <button className="harness-primary-button" disabled={!runtimeAvailable || busy} onClick={onStart}><Play size={15} /> 重新启动</button>}{["running", "delivery_ready"].includes(selectedTask.status) && <><button className="harness-secondary-button" onClick={onWorkbench}><TerminalSquare size={15} /> 进入运行现场</button><button className="harness-primary-button" disabled={busy || !runtimeAvailable} onClick={onAchieved}><CheckCircle2 size={15} /> Achieve</button></>}{selectedTask.status === "achieved" && <span className="harness-achieved-label"><CheckCircle2 size={15} /> achieved</span>}</div></header>
+      <header className="harness-task-head"><div><div className="harness-breadcrumb">Task / {completed ? "Completed history" : "Agent Loop"}</div><h1>{selectedTask.title}</h1><p>{selectedTask.goal}</p></div><div className="harness-task-actions">{selectedTask.status === "queued" && <button className="harness-primary-button" disabled={!runtimeAvailable || busy} onClick={onStart}><Play size={15} /> 启动 Agent Loop</button>}{selectedTask.status === "stopped" && <button className="harness-primary-button" disabled={!runtimeAvailable || busy} onClick={onStart}><Play size={15} /> 重新启动</button>}{["running", "delivery_ready"].includes(selectedTask.status) && <button className="harness-secondary-button" onClick={onWorkbench}><TerminalSquare size={15} /> 进入运行现场</button>}{selectedTask.status === "delivery_ready" && <button className="harness-primary-button" disabled={busy || !runtimeAvailable} onClick={onAchieved}><CheckCircle2 size={15} /> Achieve</button>}{selectedTask.status === "achieved" && <span className="harness-achieved-label"><CheckCircle2 size={15} /> achieved</span>}</div></header>
       <div className="harness-timeline-meta"><b>Agent Loop</b><ChevronRight size={14} /><span>Conductor 派发原生 Session Agent；每次结果、失败或需要输入才唤醒 Conductor。</span></div>
       <section className="harness-task-activity" aria-label="Task 活动">
         <div className="harness-conversation" aria-label="任务时间线" role="log" tabIndex={0}>{timeline.map((item) => <TimelineMessage item={item} key={item.id} />)}</div>

@@ -92,7 +92,7 @@ function createConductorToolBridge({
     const taskId = String(input?.taskId ?? "");
     const sessionId = String(input?.sessionId ?? resolveConductorSessionIdForTask({ taskId, ptyManager }) ?? "");
     const message = String(input?.message ?? "");
-    if (typeof sessionStore.recordTaskCompletionClaim !== "function") {
+    if (typeof onCompletionClaim !== "function") {
       return {
         ok: false,
         taskId,
@@ -101,7 +101,7 @@ function createConductorToolBridge({
         eventType: "task.completion_claim",
         turnPolicy: "recover_or_stop",
         errorCode: "completion_claim_not_supported",
-        message: "Session Store does not support structured task completion claims.",
+        message: "Task/Run service does not support structured task completion claims.",
       };
     }
 
@@ -140,16 +140,12 @@ function createConductorToolBridge({
         message: "Runtime could not record the Conductor delivery claim. Inspect the technical error and decide the next action.",
       };
     }
-    // Runtime records the claim as a durable Conductor decision. It never
-    // adjudicates a business route, a review result, or artifact correctness.
-    const claimInput = {
-      taskId,
-      sessionId,
-      message,
-      source: "conductor",
-    };
-    if (input?.summary) claimInput.summary = String(input.summary);
-    const event = sessionStore.recordTaskCompletionClaim(claimInput);
+    // The Task/Run command atomically owns the lifecycle transition, Run
+    // decision and Timeline outbox. The bridge only reads the resulting
+    // projection; it must never impersonate a second state writer.
+    const event = loopRun?.runtimeState?.events
+      ?.filter((item) => item?.type === "task.completion_claim")
+      .at(-1);
     return {
       ok: true,
       taskId,

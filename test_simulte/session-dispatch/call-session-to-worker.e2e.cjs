@@ -42,49 +42,57 @@ async function main() {
       });
     `);
 
-    assert.equal(initialResult.ok, true);
+    if (!initialResult.ok) {
+      const failedView = await harness.conductorToolBridge.readSession({
+        taskId,
+        sessionId: workerSessionId,
+        maxChars: 20_000,
+      });
+      const terminalLog = harness.sessionStore.readTerminalLog({ taskId, sessionId: workerSessionId, maxBytes: 20_000 });
+      assert.fail(JSON.stringify({ initialResult, failedView, terminalLog }));
+    }
     assert.equal(typeof initialResult.dispatchId, "string");
     assert.match(initialResult.dispatchId, /^[A-F0-9]{6}$/);
     assert.equal(initialResult.dispatchKey, undefined);
-    assert.equal(initialResult.status, "delivered");
-    assert.equal(initialResult.deliveryState, "delivered");
+    assert.equal(initialResult.status, "accepted");
+    assert.equal(initialResult.deliveryState, "input_accepted");
     assert.equal(initialResult.resultState, "pending");
-    assert.equal(initialResult.turnPolicy, "stop_after_dispatch");
-    assert.match(initialResult.message, /End this Conductor turn/);
+    assert.equal(initialResult.turnPolicy, "conductor_decides_turn_boundary");
+    assert.match(initialResult.message, /not Provider delivery yet/);
 
-    const sessionView = await waitUntil(
-      async () => {
-        const view = await harness.conductorToolBridge.readSession({
-          taskId,
-          sessionId: workerSessionId,
-          maxChars: 20_000,
-        });
-        const dispatch = view.dispatches.find((item) => item.dispatchId === initialResult.dispatchId);
-        return dispatch?.status === "delivered" ? view : false;
-      },
-      "worker session receives dispatched assignment through real opencode PTY",
-      { timeoutMs: 12_000, intervalMs: 100 },
-    );
+    let sessionView;
+    try {
+      sessionView = await waitUntil(
+        async () => {
+          const view = await harness.conductorToolBridge.readSession({
+            taskId,
+            sessionId: workerSessionId,
+            maxChars: 20_000,
+          });
+          const dispatch = view.dispatches.find((item) => item.dispatchId === initialResult.dispatchId);
+          return dispatch?.status === "delivered" ? view : false;
+        },
+        "worker session receives dispatched assignment through real opencode PTY",
+        { timeoutMs: 12_000, intervalMs: 100 },
+      );
+    } catch (error) {
+      const failedView = await harness.conductorToolBridge.readSession({ taskId, sessionId: workerSessionId, maxChars: 20_000 });
+      const terminalLog = harness.sessionStore.readTerminalLog({ taskId, sessionId: workerSessionId, maxBytes: 40_000 });
+      throw new Error(JSON.stringify({ reason: error.message, failedView, terminalLog, ptyWrites: harness.ptyWrites }));
+    }
 
     const workerStarts = harness.ptyStarts.filter((item) => item.id === workerSessionId);
     assert.equal(workerStarts.length, 1, "worker session should be started exactly once");
     assert.equal(workerStarts[0].taskId, taskId);
     assert.equal(workerStarts[0].cwd, harness.projectPath);
     assert.equal(workerStarts[0].command, "opencode");
-    assert.deepEqual(workerStarts[0].args, ["--model", "opencode-go/deepseek-v4-flash"]);
+    assert.deepEqual(workerStarts[0].args.slice(0, 3), ["--model", "opencode-go/deepseek-v4-flash", "--prompt"]);
+    assert.ok(workerStarts[0].args[3].includes(assignmentToken), "fresh worker launch prompt should contain the assignment token");
+    assert.ok(workerStarts[0].args[3].includes(`[Agent Workspace] Dispatch ID ${initialResult.dispatchId}`));
     assert.ok(!workerStarts[0].args.includes("--agent"), "workspace role must not be passed as provider --agent");
 
     const workerWrites = harness.ptyWrites.filter((item) => item.id === workerSessionId);
-    assert.equal(workerWrites.length, 1, "dispatch layer should write exactly one assignment to worker PTY");
-    assert.ok(workerWrites[0].text.includes("\x1b[200~"), "assignment should start bracketed paste");
-    assert.ok(workerWrites[0].text.includes("\x1b[201~\r"), "assignment should end bracketed paste and submit");
-    assert.ok(!workerWrites[0].text.includes("\x1b[201]\r"), "old malformed bracketed paste terminator must not be used");
-    assert.ok(workerWrites[0].text.includes(assignmentToken), "assignment token should be written to PTY");
-    assert.ok(
-      workerWrites[0].text.includes(`[Agent Workspace] Dispatch ID ${initialResult.dispatchId}`),
-      "dispatch id should be written to the worker PTY for visible correlation",
-    );
-    assert.ok(!workerWrites[0].text.includes("Dispatch Key"), "legacy dispatch key marker must not be written");
+    assert.equal(workerWrites.length, 0, "fresh workers submit the assignment once through OpenCode --prompt, not a second PTY write");
 
     const rendererEvents = await window.webContents.executeJavaScript(`
       window.__e2ePtyEvents.map((event) => ({
@@ -100,7 +108,8 @@ async function main() {
 
     const eventTypes = sessionView.events.map((event) => event.type);
     assert.ok(eventTypes.includes("dispatch.created"));
-    assert.ok(eventTypes.includes("dispatch.delivered"));
+    assert.ok(eventTypes.includes("dispatch.input_accepted"));
+    assert.ok(eventTypes.includes("dispatch.provider.received"));
     assert.ok(!eventTypes.includes("session.output"), "terminal chunks must not be stored as session events");
 
     console.log(

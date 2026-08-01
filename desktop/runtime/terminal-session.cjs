@@ -93,7 +93,9 @@ function createTerminalSession({
       exitCode = event.exitCode ?? event.code ?? null;
       signal = event.signal ?? null;
       stoppedAtMs = now();
-      sessionStore?.recordState(
+      const recordTerminalState = sessionStore?.recordTerminalState ?? sessionStore?.recordState;
+      recordTerminalState?.call(
+        sessionStore,
         { taskId, sessionId: id, cwd },
         "exited",
         "PTY process exited",

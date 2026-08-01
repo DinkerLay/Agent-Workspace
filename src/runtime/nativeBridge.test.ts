@@ -15,6 +15,7 @@ import {
   readNativePtySession,
   readNativeWorkspaceTerminalLog,
   resizeNativePtySession,
+  sendNativeAgentLoopTaskMessage,
   runNativeVerification,
   runNativeOpencode,
   generateNativeTaskDraft,
@@ -410,6 +411,29 @@ describe("native runtime bridge", () => {
     expect(calls).toEqual(["task-1:task-1-conductor:user.intervention:后端纠偏消息"]);
   });
 
+  it("submits an active Agent Loop message as a Task command", async () => {
+    const calls: string[] = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async (input) => ({ ok: true, command: "opencode", cwd: input.cwd, stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
+        sendAgentLoopTaskMessage: async (input) => {
+          calls.push(`${input.taskId}:${input.commandId}:${input.expectedRevision}:${input.message}`);
+          return { ok: true, messageId: "message-1" };
+        },
+      },
+    };
+
+    await expect(sendNativeAgentLoopTaskMessage({
+      taskId: "task-1",
+      message: "继续核对证据",
+      commandId: "command-message-1",
+      expectedRevision: 3,
+    }))
+      .resolves.toMatchObject({ ok: true, messageId: "message-1" });
+    expect(calls).toEqual(["task-1:command-message-1:3:继续核对证据"]);
+  });
+
   it("delegates managed Workspace Session lifecycle requests to the desktop preload bridge", async () => {
     const calls: string[] = [];
     window.agentWorkspace = {
@@ -768,19 +792,23 @@ describe("native runtime bridge", () => {
   });
 
   it("delegates Task stop requests to the desktop preload bridge", async () => {
-    const taskIds: string[] = [];
+    const taskCommands: string[] = [];
     window.agentWorkspace = {
       native: {
         getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
         runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
-        stopAgentLoopTask: async ({ taskId }) => {
-          taskIds.push(taskId);
+        stopAgentLoopTask: async ({ taskId, commandId, expectedRevision }) => {
+          taskCommands.push(`${taskId}:${commandId}:${expectedRevision}`);
           return undefined;
         },
       },
     };
 
-    await expect(stopNativeAgentLoopTask("task-stop-1")).resolves.toBeUndefined();
-    expect(taskIds).toEqual(["task-stop-1"]);
+    await expect(stopNativeAgentLoopTask({
+      taskId: "task-stop-1",
+      commandId: "command-stop-1",
+      expectedRevision: 4,
+    })).resolves.toBeUndefined();
+    expect(taskCommands).toEqual(["task-stop-1:command-stop-1:4"]);
   });
 });

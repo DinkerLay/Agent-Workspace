@@ -149,8 +149,10 @@ A Task stores an immutable snapshot of the selected Loop Template, including
 its Charter and Agent cards. During Task
 creation the user selects a writable project root; that Task-owned `cwd` is the
 only root for native Sessions, relative artifacts, and `.agent-workspace`
-Runtime metadata. It may be `queued`, `running`, `delivery_ready`, `achieved`,
-`blocked`, or `archived`.
+Runtime metadata. Its product lifecycle is `queued`, `running`,
+`delivery_ready`, `stopped`, `achieved`, or `archived`. Runtime may expose
+`stopping` or `deleting` while the corresponding serialized command is in
+progress; those projections are not stable product completion states.
 
 `achieved` is a user action after accepting Conductor's current delivery claim.
 An artifact can be useful delivery evidence, but no particular file is
@@ -159,10 +161,10 @@ artifacts; it does not archive or delete any files. Archive/delete are separate
 confirmed operations.
 
 A Conductor delivery claim changes the Task to `delivery_ready`, but does not
-close the logical Run, detach/kill a PTY, suppress Provider events, or prevent
-a later explicit Conductor dispatch. If the Conductor later dispatches again,
-the Task returns to `running`; Runtime never decides whether that continuation
-was needed.
+close the logical Run, detach/kill a PTY, or suppress Provider events. It fences
+the current Conductor decision: another dispatch requires a later causal input
+such as a user follow-up or a delivered Runtime wakeup, which returns the Task
+to `running`. Runtime never decides whether that continuation was needed.
 
 ## UI
 

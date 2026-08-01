@@ -339,7 +339,9 @@ function recordTranscriptChunk(session, chunk, emitEvent) {
 
 function emitExitEvent(session, emitEvent) {
   session.stoppedAtMs = session.now();
-  session.sessionStore?.recordState(
+  const recordTerminalState = session.sessionStore?.recordTerminalState ?? session.sessionStore?.recordState;
+  recordTerminalState?.call(
+    session.sessionStore,
     {
       taskId: session.taskId ?? "unscoped-task",
       sessionId: session.id,

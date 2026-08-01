@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import test from "node:test";
 import { createRequire } from "node:module";
+
+const isVitest = process.env.VITEST === "true" || process.env.VITEST_WORKER_ID !== undefined;
+const test = isVitest ? (await import("vitest")).test : (await import("node:test")).default;
 
 const require = createRequire(import.meta.url);
 const { createRuntimeBridgeHttpServer } = require("./runtime-bridge-http.cjs");
@@ -15,7 +17,7 @@ test("Runtime Bridge HTTP rejects unauthenticated and unknown calls", async (t) 
     },
   });
   const address = await server.start();
-  t.after(() => server.close());
+  afterTest(t, () => server.close());
 
   await assert.rejects(
     requestJson(`${address.url}/v1/status`),
@@ -33,6 +35,8 @@ test("Runtime Bridge HTTP rejects unauthenticated and unknown calls", async (t) 
 
 test("Runtime Bridge HTTP forwards only allowlisted calls and targets SSE events", async (t) => {
   const disconnected = [];
+  let resolveDisconnected;
+  const disconnectObserved = new Promise((resolve) => { resolveDisconnected = resolve; });
   const server = createRuntimeBridgeHttpServer({
     token: "test-token",
     handlers: {
@@ -41,9 +45,11 @@ test("Runtime Bridge HTTP forwards only allowlisted calls and targets SSE events
     },
   });
   const address = await server.start();
-  t.after(() => server.close());
-  t.after(() => assert.deepEqual(disconnected, ["browser-client-1234"]));
-  server.onClientDisconnected((clientId) => disconnected.push(clientId));
+  afterTest(t, () => server.close());
+  server.onClientDisconnected((clientId) => {
+    disconnected.push(clientId);
+    resolveDisconnected(clientId);
+  });
 
   const call = await requestJson(`${address.url}/v1/call`, {
     token: "test-token",
@@ -57,7 +63,14 @@ test("Runtime Bridge HTTP forwards only allowlisted calls and targets SSE events
   server.publish("agent-loop-runtime", { runId: "run-1" }, { clientId: "browser-client-1234" });
   assert.match(await readEvent(events.response), /"channel":"agent-loop-runtime"/);
   events.request.destroy();
+  assert.equal(await disconnectObserved, "browser-client-1234");
+  assert.deepEqual(disconnected, ["browser-client-1234"]);
 });
+
+function afterTest(context, callback) {
+  if (typeof context.onTestFinished === "function") context.onTestFinished(callback);
+  else context.after(callback);
+}
 
 function requestJson(url, { token, body, clientId } = {}) {
   return new Promise((resolve, reject) => {

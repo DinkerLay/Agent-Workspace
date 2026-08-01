@@ -99,6 +99,25 @@ describe("Shell Session Store", () => {
     expect(fs.existsSync(path.join(root, "task-1", "sessions", "task-1-researcher", "snapshots", "latest.txt"))).toBe(false);
   });
 
+  it("keeps Terminal and Provider owner facts separate and derives presentation state", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-owner-facts-"));
+    const store = createSessionStore({ root });
+    const session = { taskId: "task-owner", sessionId: "task-owner-researcher", command: "opencode", cwd: root };
+
+    store.startSession(session);
+    store.recordTerminalState(session, "running", "PTY is live.", { incarnationId: "inc-1" });
+    store.recordProviderSessionState(session, "waiting_input", "OpenCode is waiting for an answer.", { questionId: "question-1" });
+
+    let view = store.readSession(session);
+    expect(view).toMatchObject({ state: "waiting_input", terminalState: "running", providerState: "waiting_input" });
+
+    store.recordTerminalState(session, "exited", "PTY exited.", { incarnationId: "inc-1" });
+    view = store.readSession(session);
+    expect(view).toMatchObject({ state: "exited", terminalState: "exited", providerState: "waiting_input" });
+    const persisted = JSON.parse(fs.readFileSync(path.join(root, "task-owner", "sessions", "task-owner-researcher", "state.json"), "utf8"));
+    expect(Object.hasOwn(persisted, "state")).toBe(false);
+  });
+
   it("projects one durable permission request until OpenCode confirms the user's reply", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-permission-"));
     const store = createSessionStore({ root });
@@ -402,7 +421,7 @@ describe("Shell Session Store", () => {
       dispatchId: dispatch.dispatchId,
       status: "delivered",
     });
-    expect(view.events.map((event) => event.type)).toEqual(["dispatch.created", "dispatch.provider.received"]);
+    expect(view.events.map((event) => event.type)).toEqual(["dispatch.created", "dispatch.provider.received", "provider.running"]);
   });
 
   it("keeps a cancellation pending until a terminal or Provider confirmation records it", () => {
@@ -444,8 +463,8 @@ describe("Shell Session Store", () => {
     expect(view.dispatches[0]).toMatchObject({ status: "cancelled", cancellationConfirmation: "terminal_exit" });
     expect(view.events.map((event) => event.type)).toContain("dispatch.cancellation_requested");
     expect(view.events.map((event) => event.type)).toContain("dispatch.cancelled");
-    expect(view.state).toBe("ready");
-    expect(store.readTaskState({ taskId: "task-1" }).pendingDecisions.some((decision) => decision.actionHint === "restart_or_recover")).toBe(false);
+    expect(view.state).toBe("exited");
+    expect(store.readTaskState({ taskId: "task-1" }).pendingDecisions.some((decision) => decision.actionHint === "restart_or_recover")).toBe(true);
   });
 
   it("keeps an OpenCode Session binding after later terminal state updates", () => {
@@ -505,7 +524,7 @@ describe("Shell Session Store", () => {
       sessionId: "task-1-reviewer",
       dispatchId: dispatch.dispatchId,
     });
-    expect(store.readSession({ taskId: "task-1", sessionId: "task-1-reviewer" }).state).toBe("delivered_pending");
+    expect(store.readSession({ taskId: "task-1", sessionId: "task-1-reviewer" }).state).toBe("running");
 
     store.recordDispatchResult({
       taskId: "task-1",
@@ -1119,6 +1138,27 @@ describe("Shell Session Store", () => {
     expect(sessionView.events).toEqual([event]);
     expect(fs.existsSync(path.join(root, "task-1", "events.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(root, "task-1", "sessions", "task-1-conductor", "events.jsonl"))).toBe(true);
+  });
+
+  it("deduplicates Task/Run outbox publication by its stable source event id", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-task-outbox-event-"));
+    const store = createSessionStore({ root });
+    const input = {
+      eventId: "outbox-command-1-task-started",
+      taskId: "task-1",
+      sessionId: "task-1-conductor",
+      cwd: root,
+      type: "task.run.started",
+      summary: "Started once.",
+      data: { runId: "run-1" },
+    };
+
+    const first = store.recordTaskEvent(input);
+    const replay = store.recordTaskEvent(input);
+    expect(replay).toEqual(first);
+    expect(first).toMatchObject({ sourceEventId: input.eventId, cursor: 1 });
+    expect(store.readTaskState({ taskId: "task-1" }).events).toEqual([first]);
+    expect(store.readSession({ taskId: "task-1", sessionId: "task-1-conductor" }).events).toEqual([first]);
   });
 
   it("bounds JSONL event view reads to a tail window without truncating durable task events", () => {

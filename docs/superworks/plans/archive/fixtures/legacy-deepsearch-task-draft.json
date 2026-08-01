@@ -1,4 +1,6 @@
 {
+  "historical": true,
+  "status": "Legacy TaskSessionPlan generation output; not an active Loop Template schema or import file.",
   "assistantMessage": "已生成 DeepSearch Agent Loop Template，可编辑确认后保存使用。",
   "draft": {
     "projectPath": "/private/var/folders/ml/xxwd05zn1x38r3h33wj5l1gh0000gn/T/agent-loop-real-conductor-beGNI4",

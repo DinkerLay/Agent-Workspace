@@ -2,7 +2,12 @@
 
 Date: 2026-07-26
 
-Status: Accepted OpenCode semantic-plane contract.
+Status: Historical context. Superseded for current implementation changes by
+[`opencode-provider-adapter-orca-alignment.md`](opencode-provider-adapter-orca-alignment.md).
+
+Do not use this file as the current state-management or Provider Adapter
+authority. It remains in place only because historical bug reports and plans
+cite its earlier terminology.
 
 ## Purpose
 

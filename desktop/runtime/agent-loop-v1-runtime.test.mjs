@@ -114,6 +114,11 @@ describe("Agent Loop v1 runtime", () => {
     const reviewer = "opencode:project:conductor-autonomy:reviewer";
     assert.equal(runtime.validateDispatch({ taskId: task.taskId, agentId: "researcher", toSessionId: researcher }).ok, true);
     assert.equal(runtime.validateDispatch({ taskId: task.taskId, agentId: "reviewer", toSessionId: reviewer }).ok, true);
+    await assert.rejects(
+      runtime.markTaskAchieved({ taskId: task.taskId }),
+      /loop_task_not_achievable/,
+      "a user cannot achieve a Task before Conductor records a delivery claim",
+    );
     const delivery = runtime.recordCompletionClaim({ taskId: task.taskId });
     assert.equal(delivery.task.status, "delivery_ready");
     assert.equal(delivery.run.status, "running", "a delivery claim must not close the live logical Run or its PTY attachments");
@@ -367,6 +372,36 @@ describe("Agent Loop v1 runtime", () => {
     restartedRuntime.close();
   });
 
+  it("projects a default Workbench layout without writing during readRun", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-pure-read-model-"));
+    const databasePath = path.join(root, "runtime.sqlite");
+    const runtime = createAgentLoopV1Runtime({
+      opencodePath: "/usr/local/bin/opencode",
+      databasePath,
+      getConductorBridgeConfig: async () => ({ conductorToolBridgeUrl: "http://127.0.0.1:4567", conductorToolBridgeToken: "test-token", conductorMcpServerPath: "/workspace/desktop/conductor-mcp-server.cjs" }),
+      sessionAuthority: { registerLaunchProfile() {}, async activateSession({ workspaceSessionId }) { return { session: { id: workspaceSessionId, status: "running" } }; } },
+      ptyManager: { read: () => undefined },
+      sessionStore: { recordTaskEvent() {}, readTaskState: () => ({ sessions: [], dispatches: [], results: [], pendingDecisions: [], messages: [] }) },
+    });
+    const task = runtime.createTask({ cwd: root, projectId: "project", taskId: "pure-read", title: "Pure read", goal: "Do not materialize defaults while reading." });
+    const started = await runtime.startRun({ taskId: task.taskId });
+
+    const external = new DatabaseSync(databasePath);
+    external.prepare("DELETE FROM agent_loop_workbench_layouts WHERE run_id = ?").run(started.run.runId);
+    external.close();
+    const projected = runtime.readRun({ runId: started.run.runId });
+    assert.equal(projected.workbenchLayout.version, 1);
+
+    const checked = new DatabaseSync(databasePath);
+    assert.equal(
+      checked.prepare("SELECT COUNT(*) AS count FROM agent_loop_workbench_layouts WHERE run_id = ?").get(started.run.runId).count,
+      0,
+      "readRun must not persist a projected default layout",
+    );
+    checked.close();
+    runtime.close();
+  });
+
   it("records a user follow-up and wakes the same ready Conductor Session", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-user-message-"));
     const writes = [];
@@ -402,7 +437,12 @@ describe("Agent Loop v1 runtime", () => {
     });
     const task = runtime.createTask({ cwd: root, projectId: "project", taskId: "user-message", title: "Follow-up", goal: "Let the user redirect the Conductor." });
     await runtime.startRun({ taskId: task.taskId });
-    const result = await runtime.recordUserMessage({ taskId: task.taskId, message: "不要比较 GitHub Copilot，改为核实 ChatGPT Codex。" });
+    const messageCommand = {
+      taskId: task.taskId,
+      message: "不要比较 GitHub Copilot，改为核实 ChatGPT Codex。",
+      commandId: "command-user-message-1",
+    };
+    const result = await runtime.recordUserMessage(messageCommand);
     assert.equal(result.ok, true);
     assert.equal(result.wakeup.delivered, 0);
     assert.equal(result.wakeup.queued, 1);
@@ -414,6 +454,12 @@ describe("Agent Loop v1 runtime", () => {
     assert.match(writes[0].payload, /ChatGPT Codex/);
     assert.deepEqual(wakeups.map((item) => item.status), ["attempting"]);
     assert.ok(taskEvents.some((event) => event.type === "task.user_message"));
+
+    const replay = await runtime.recordUserMessage(messageCommand);
+    assert.equal(replay.messageId, result.messageId);
+    assert.equal(replay.wakeup.delivery, "idempotent_command_replay");
+    assert.equal(writes.length, 1, "replaying one UI command must not write its Conductor input twice");
+    assert.equal(taskEvents.filter((event) => event.type === "task.user_message").length, 1);
 
     wakeups[0] = { ...wakeups[0], status: "observed", observedAt: "2026-07-29T21:00:00.000Z" };
     const confirmed = await runtime.flushPendingUserMessages({ taskId: task.taskId });
@@ -576,7 +622,7 @@ describe("Agent Loop v1 runtime", () => {
             : [],
         };
       },
-      recordState(input, state, summary, data) {
+      recordTerminalState(input, state, summary, data) {
         states.push({ input, state, summary, data });
       },
     };
@@ -623,7 +669,7 @@ describe("Agent Loop v1 runtime", () => {
       "ses-conductor-original",
     ]);
     assert.equal(profiles[1].args.includes("--prompt"), false);
-    assert.equal(states.at(-1)?.state, "waiting_conductor");
+    assert.equal(states.at(-1)?.state, "ready");
     assert.equal(states.at(-1)?.data?.source, "worker_result_wakeup");
     assert.equal(runtime.readTask({ taskId: task.taskId }).latestRun.status, "running");
     runtime.close();
@@ -863,9 +909,9 @@ describe("Agent Loop v1 runtime", () => {
     const receipt = store.readQuestionResponse({ taskId: task.taskId, sessionId, cwd: root, questionId: "question-native-1" });
     assert.equal(receipt?.answer, "Confirmed.");
     assert.equal(receipt?.status, "submitted");
-    assert.equal(store.readTaskState({ taskId: task.taskId }).sessions.find((session) => session.sessionId === sessionId)?.state, "running");
+    assert.equal(store.readTaskState({ taskId: task.taskId }).sessions.find((session) => session.sessionId === sessionId)?.state, "waiting_input");
     const staleQuestion = await runtime.respondSessionQuestion({ taskId: task.taskId, sessionId, questionId: "question-native-stale", answer: "No route." });
-    assert.deepEqual(staleQuestion, { ok: false, status: "running", errorCode: "session_not_waiting_input" });
+    assert.deepEqual(staleQuestion, { ok: false, status: "waiting_input", errorCode: "provider_question_changed" });
     runtime.close();
   });
 
@@ -1046,6 +1092,68 @@ describe("Agent Loop v1 runtime", () => {
     const restoredPermission = restartedStore.readSession({ taskId: task.taskId, sessionId: publisherSessionId }).permissions[0];
     assert.equal(restoredPermission.status, "recovery_pending");
     assert.equal(restoredPermission.response, "once");
+    restartedRuntime.close();
+  });
+
+  it("reconciles a prepared Stop command after a Main-process restart", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-prepared-stop-"));
+    const databasePath = path.join(root, "runtime.sqlite");
+    const store = createSessionStore({ root });
+    const runtimeInput = {
+      opencodePath: "/usr/local/bin/opencode",
+      databasePath,
+      getConductorBridgeConfig: async () => ({ conductorToolBridgeUrl: "http://127.0.0.1:4567", conductorToolBridgeToken: "test-token", conductorMcpServerPath: "/workspace/desktop/conductor-mcp-server.cjs" }),
+      sessionAuthority: {
+        registerLaunchProfile() {},
+        async activateSession({ workspaceSessionId }) { return { session: { id: workspaceSessionId, status: "running" } }; },
+        async stopSession() {},
+      },
+      ptyManager: { read: () => undefined, get: () => undefined },
+      sessionStore: store,
+    };
+    const firstRuntime = createAgentLoopV1Runtime(runtimeInput);
+    const task = firstRuntime.createTask({
+      cwd: root,
+      projectId: "project",
+      taskId: "prepared-stop-task",
+      title: "Prepared stop",
+      goal: "Finish a persisted stop after restart.",
+    });
+    const started = await firstRuntime.startRun({ taskId: task.taskId });
+    firstRuntime.close();
+
+    const crashDb = new DatabaseSync(databasePath);
+    const currentRevision = Number(crashDb.prepare("SELECT revision FROM agent_loop_tasks WHERE task_id = ?").get(task.taskId).revision);
+    const preparedRevision = currentRevision + 1;
+    const timestamp = "2026-08-02T01:00:00.000Z";
+    crashDb.prepare("UPDATE agent_loop_tasks SET status = 'stopping', revision = ?, updated_at = ? WHERE task_id = ?")
+      .run(preparedRevision, timestamp, task.taskId);
+    crashDb.prepare(
+      `INSERT INTO agent_loop_commands
+       (command_id, task_id, kind, payload_json, status, result_json, created_at, updated_at)
+       VALUES (?, ?, 'task.stop', '{}', 'prepared', ?, ?, ?)`,
+    ).run(
+      "command-stop-after-crash",
+      task.taskId,
+      JSON.stringify({ taskId: task.taskId, runId: started.run.runId, taskRevision: preparedRevision }),
+      timestamp,
+      timestamp,
+    );
+    crashDb.close();
+
+    const restartedRuntime = createAgentLoopV1Runtime(runtimeInput);
+    const reconciliation = await restartedRuntime.reconcilePreparedLifecycleCommands();
+    assert.deepEqual(reconciliation, {
+      attempted: 1,
+      results: [{
+        commandId: "command-stop-after-crash",
+        taskId: task.taskId,
+        kind: "task.stop",
+        status: "committed",
+      }],
+    });
+    assert.equal(restartedRuntime.readTask({ taskId: task.taskId }).status, "stopped");
+    assert.equal(restartedRuntime.readRun({ runId: started.run.runId }).run.status, "stopped");
     restartedRuntime.close();
   });
 
@@ -1230,6 +1338,42 @@ describe("Agent Loop v1 runtime", () => {
     assert.equal(delivery.task.status, "delivery_ready");
     assert.equal((await runtime.markTaskAchieved({ taskId: task.taskId })).status, "achieved");
     assert.ok(taskEvents.some((event) => event.type === "task.achieved"));
+    runtime.close();
+  });
+
+  it("keeps Delete prepared until Runtime-owned state is removed, then retries it idempotently", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-delete-retry-"));
+    const rawStore = createSessionStore({ root: ({ cwd }) => path.join(cwd, ".agent-workspace", "runtime") });
+    let rejectDelete = true;
+    const sessionStore = {
+      ...rawStore,
+      deleteTask(input) {
+        if (rejectDelete) throw new Error("runtime-directory-busy");
+        return rawStore.deleteTask(input);
+      },
+    };
+    const runtime = createAgentLoopV1Runtime({
+      opencodePath: "/usr/local/bin/opencode",
+      databasePath: path.join(root, "runtime.sqlite"),
+      getConductorBridgeConfig: async () => ({ conductorToolBridgeUrl: "http://127.0.0.1:4567", conductorToolBridgeToken: "test-token", conductorMcpServerPath: "/workspace/desktop/conductor-mcp-server.cjs" }),
+      sessionAuthority: {
+        registerLaunchProfile() {},
+        async activateSession({ workspaceSessionId }) { return { session: { id: workspaceSessionId, status: "running" } }; },
+        releaseTask() {},
+      },
+      ptyManager: { read: () => undefined, get: () => undefined },
+      sessionStore,
+    });
+    const task = runtime.createTask({ cwd: root, projectId: "project", taskId: "delete-retry-task", title: "Delete retry", goal: "Do not orphan Runtime state." });
+    await runtime.startRun({ taskId: task.taskId });
+
+    await assert.rejects(() => runtime.deleteTask({ taskId: task.taskId }), /runtime-directory-busy/);
+    assert.equal(runtime.readTask({ taskId: task.taskId }).status, "deleting");
+    rejectDelete = false;
+    const reconciliation = await runtime.reconcilePreparedLifecycleCommands();
+    assert.equal(reconciliation.attempted, 1);
+    assert.equal(reconciliation.results[0].status, "committed");
+    assert.equal(runtime.readTask({ taskId: task.taskId }), undefined);
     runtime.close();
   });
 

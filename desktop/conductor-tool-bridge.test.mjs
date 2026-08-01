@@ -342,27 +342,26 @@ describe("Conductor tool bridge", () => {
 
   it("records structured task completion claims without parsing provider output text", async () => {
     const recordedClaims = [];
-    const store = {
-      recordTaskCompletionClaim(input) {
-        recordedClaims.push(input);
-        return {
-          id: "event-7",
-          taskId: input.taskId,
-          sessionId: input.sessionId,
-          type: "task.completion_claim",
-          cursor: 7,
-          summary: input.summary ?? "Task completion claimed by Conductor",
-          data: {
-            message: input.message,
-            source: input.source,
-          },
-        };
-      },
-    };
     const bridge = createConductorToolBridge({
-      sessionStore: store,
+      sessionStore: {},
       ptyManager: {
         get: () => undefined,
+      },
+      onCompletionClaim(input) {
+        recordedClaims.push(input);
+        return {
+          runtimeState: {
+            events: [{
+              id: "event-7",
+              taskId: input.taskId,
+              sessionId: input.sessionId,
+              type: "task.completion_claim",
+              cursor: 7,
+              summary: input.summary ?? "Task completion claimed by Conductor",
+              data: { message: input.message, source: "conductor" },
+            }],
+          },
+        };
       },
     });
 
@@ -386,7 +385,7 @@ describe("Conductor tool bridge", () => {
         taskId: "task-1",
         sessionId: "task-1-conductor",
         message: "Research and review both passed; ready for Review gate.",
-        source: "conductor",
+        summary: undefined,
       },
     ]);
   });
@@ -406,7 +405,13 @@ describe("Conductor tool bridge", () => {
         recordedClaims.push(input);
       },
     };
-    const bridge = createConductorToolBridge({ sessionStore: store, ptyManager: { get: () => undefined } });
+    const bridge = createConductorToolBridge({
+      sessionStore: store,
+      ptyManager: { get: () => undefined },
+      onCompletionClaim(input) {
+        recordedClaims.push(input);
+      },
+    });
 
     const result = await bridge.claimTaskCompletion({
       taskId: "task-1",

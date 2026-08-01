@@ -302,7 +302,7 @@ function createSessionWakeupMonitor({
     if (providerQuestion?.answerText || providerQuestion?.questionText) {
       const attentionKey = workerAttentionKey(session, providerQuestion, status);
       if (!recordedWorkerAttentionKeys.has(attentionKey)) {
-        sessionStore.recordState(
+        sessionStore.recordProviderSessionState(
           { taskId: session.taskId, sessionId: session.id },
           "waiting_input",
           workerQuestionSummary(providerQuestion),
@@ -539,7 +539,7 @@ function createSessionWakeupMonitor({
         const attention = fact.attention ?? {};
         const attentionKey = workerAttentionKey(session, attention, status);
         if (!recordedWorkerAttentionKeys.has(attentionKey)) {
-          sessionStore.recordState(
+          sessionStore.recordProviderSessionState(
             { taskId: session.taskId, sessionId: session.id },
             "waiting_input",
             workerQuestionSummary(attention),
@@ -801,7 +801,7 @@ function createSessionWakeupMonitor({
       providerSessionId,
     });
     if (providerQuestion?.answerText || providerQuestion?.questionText) {
-      sessionStore.recordState(
+      sessionStore.recordProviderSessionState(
         { taskId: session.taskId, sessionId: session.id },
         "waiting_input",
         conductorQuestionSummary(providerQuestion),
@@ -851,7 +851,7 @@ function createSessionWakeupMonitor({
       completedAt: providerMessage.completedAt,
       cursor: status.cursor,
     });
-    sessionStore.recordState(
+    sessionStore.recordProviderSessionState(
       { taskId: session.taskId, sessionId: session.id },
       "waiting_conductor",
       "Conductor decision completed; awaiting a semantic Runtime wakeup.",
@@ -1011,7 +1011,7 @@ function createSessionWakeupMonitor({
       return false;
     }
     if (!write) return false;
-    sessionStore.recordState(
+    sessionStore.recordProviderSessionState(
       { taskId: wakeup.taskId, sessionId: wakeup.conductorSessionId },
       "running",
       "Runtime delivered a semantic wakeup to Conductor.",

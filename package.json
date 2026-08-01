@@ -42,7 +42,7 @@
     "desktop:opencode-nested-workflow-harness-smoke": "node desktop/opencode-nested-workflow-harness-smoke.cjs",
     "desktop:opencode-harness-ui-smoke": "electron desktop/opencode-harness-ui-smoke.cjs",
     "simulate:session-dispatch": "electron test_simulte/session-dispatch/call-session-to-worker.e2e.cjs",
-    "simulate:state-message-flow": "electron test_simulte/state-message-flow/completion-claim-review-gate.e2e.cjs",
+    "simulate:state-message-flow": "node test_simulte/state-message-flow/completion-claim-review-gate.e2e.cjs",
     "simulate:task-home-real-research": "electron test_simulte/task-home-real-research/claude-dynamic-workflow.e2e.cjs",
     "simulate:workflow-collect": "electron test_simulte/workflow-collect/collector-node-e2e.cjs",
     "build": "tsc --noEmit && vite build",

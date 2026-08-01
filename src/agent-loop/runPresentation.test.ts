@@ -11,6 +11,7 @@ function runFixture(overrides: Partial<NativeAgentLoopRunDetail> = {}): NativeAg
       title: "状态投影",
       goal: "显示真实的 Runtime 状态。",
       status: "running",
+      revision: 1,
       architecture: {
         primaryMode: "agent_loop",
         template: {
@@ -29,7 +30,7 @@ function runFixture(overrides: Partial<NativeAgentLoopRunDetail> = {}): NativeAg
       createdAt: "2026-07-28T00:00:00.000Z",
       updatedAt: "2026-07-28T00:00:00.000Z",
     },
-    run: { runId: "run-1", taskId: "task-1", status: "running", conductorSessionId: "conductor", createdAt: "2026-07-28T00:00:00.000Z", updatedAt: "2026-07-28T00:00:00.000Z" },
+    run: { runId: "run-1", taskId: "task-1", status: "running", conductorSessionId: "conductor", revision: 1, createdAt: "2026-07-28T00:00:00.000Z", updatedAt: "2026-07-28T00:00:00.000Z" },
     instances: [],
     turns: [],
     artifacts: [],

@@ -8,7 +8,7 @@ The active authority is `../agent-loop-v1.md`,
 and `../orca-terminal-runtime-adoption.md`.
 
 > **Agent Loop v1 override (2026-07-26):**
-> [`agent-loop-conductor-guidance.md`](agent-loop-conductor-guidance.md) is
+> [`agent-loop-conductor-guidance.md`](../agent-loop-conductor-guidance.md) is
 > the authority for the active Loop. The Conductor may issue zero or more
 > asynchronous dispatches in one decision turn and decides when to end that
 > turn. Runtime records facts and wakes Conductor; it does not impose role

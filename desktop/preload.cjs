@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("agentWorkspace", {
     readTaskState: (input) => ipcRenderer.invoke("native:read-task-state", input),
     readSession: (input) => ipcRenderer.invoke("native:read-session", input),
     appendTaskEvent: (input) => ipcRenderer.invoke("native:append-task-event", input),
+    sendAgentLoopTaskMessage: (input) => ipcRenderer.invoke("native:send-agent-loop-task-message", input),
     listAgentLoopTemplates: () => ipcRenderer.invoke("native:list-agent-loop-templates"),
     generateAgentLoopTemplate: (input) => ipcRenderer.invoke("native:generate-agent-loop-template", input),
     saveAgentLoopTemplate: (input) => ipcRenderer.invoke("native:save-agent-loop-template", input),
@@ -51,21 +52,6 @@ contextBridge.exposeInMainWorld("agentWorkspace", {
         ipcRenderer.removeListener("native:agent-loop-runtime-event", listener);
       };
     },
-    listOrchestrationTemplates: () => ipcRenderer.invoke("native:list-orchestration-templates"),
-    listOrchestrationTemplateBlueprints: () => ipcRenderer.invoke("native:list-orchestration-template-blueprints"),
-    saveOrchestrationTemplate: (input) => ipcRenderer.invoke("native:save-orchestration-template", input),
-    createHarnessTask: (input) => ipcRenderer.invoke("native:create-harness-task", input),
-    generateOrchestrationTemplateDraft: (input) => ipcRenderer.invoke("native:generate-orchestration-template-draft", input),
-    createManualOrchestrationTemplateDraft: (input) => ipcRenderer.invoke("native:create-manual-orchestration-template-draft", input),
-    readOrchestrationTemplateDraft: (input) => ipcRenderer.invoke("native:read-orchestration-template-draft", input),
-    saveGeneratedOrchestrationTemplateDraft: (input) => ipcRenderer.invoke("native:save-generated-orchestration-template-draft", input),
-    listHarnessTasks: () => ipcRenderer.invoke("native:list-harness-tasks"),
-    readHarnessTask: (input) => ipcRenderer.invoke("native:read-harness-task", input),
-    startHarnessRun: (input) => ipcRenderer.invoke("native:start-harness-run", input),
-    readHarnessRun: (input) => ipcRenderer.invoke("native:read-harness-run", input),
-    readHarnessArtifact: (input) => ipcRenderer.invoke("native:read-harness-artifact", input),
-    markHarnessTaskAchieved: (input) => ipcRenderer.invoke("native:mark-harness-task-achieved", input),
-    respondHarnessAttention: (input) => ipcRenderer.invoke("native:respond-harness-attention", input),
     onPtyEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("native:pty-event", listener);

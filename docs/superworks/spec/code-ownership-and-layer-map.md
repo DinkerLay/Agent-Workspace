@@ -22,7 +22,7 @@ the absence of an explicit code map is not.
 
 | Area | Current home | Owns | Must not own |
 | --- | --- | --- | --- |
-| Task/Template/Run application service | `desktop/runtime/agent-loop-v1-runtime.cjs`, `desktop/runtime/run-continuity.cjs` | Template versions, Task snapshot, Run creation/stop/recovery projection, Timeline-facing Task events, persisted Workbench layout | raw terminal bytes, Provider parsing, rendering, Conductor route choice |
+| Task/Template/Run application service | `desktop/runtime/agent-loop-v1-runtime.cjs`, `desktop/runtime/loop-template-store.cjs`, `desktop/runtime/task-run-repository.cjs`, `desktop/runtime/task-run-service.cjs`, `desktop/runtime/task-run-read-model.cjs`, `desktop/runtime/agent-loop-state-model.cjs`, `desktop/runtime/run-continuity.cjs` | Template identity/versions, Task snapshot, command ledger and revision, canonical lifecycle transitions, Run creation/stop/recovery projection, Timeline outbox, persisted Workbench layout, pure typed read-model projection | raw terminal bytes, Provider parsing, rendering, Conductor route choice |
 | Dispatch coordination | `desktop/runtime/dispatch-coordinator.cjs`, `desktop/session-wakeup-monitor.cjs` | durable dispatch attempts, occupancy, wakeup delivery and later cancellation receipts | visual layout, business retry target, Task achieved verdict |
 | Terminal Runtime | `desktop/runtime/terminal-*.cjs`, `desktop/runtime/orca-terminal-*.cjs`, `desktop/runtime/session-authority.cjs` | PTY launch/claim, incarnation, input serialization, resize, snapshot/delta/ACK, exit fact | Provider result, semantic completion, next Agent selection |
 | OpenCode Provider Adapter | `desktop/opencode/*.cjs` | read-only Provider/session observation and exact receipt/result/attention facts | PTY lifecycle, retries, Task state, UI |
@@ -88,6 +88,17 @@ field. When a new status is added—such as `recovery_required` or
 `cancellation_requested`—its owner, durable record, projection, and UI read
 model must be named before code is written.
 
+The physical Session Store remains a compatibility container, but active
+production composition fences it through
+`desktop/runtime/session-store-capabilities.cjs`. A consumer receives only its
+read-model, Timeline, Coordinator, Provider, or Terminal methods. A composite
+service such as the wakeup monitor is assembled explicitly from the named
+views; it is not given the raw Store and cannot call an unassigned writer.
+Within that container, Terminal and Provider persist separate `terminalState`
+and `providerState` fields, while Coordinator state is derived from immutable
+Dispatch/Wakeup records. The generic `state` field and `recordState` method are
+legacy compatibility only and must not be used by active production code.
+
 ## Where new code goes
 
 | Change | Put the behavior here | Do not put it here |
@@ -107,7 +118,10 @@ The preferred incremental destinations are:
 
 ```text
 desktop/runtime/
-  task-run-service.cjs           # extracted only when changing Task/Run control
+  loop-template-store.cjs       # Loop Template CRUD and normalization
+  agent-loop-state-model.cjs    # canonical Task/Run status vocabulary
+  task-run-repository.cjs       # Task/Run SQL, command ledger, revision, outbox
+  task-run-service.cjs          # Task/Run lifecycle semantics
   dispatch-coordinator.cjs       # dispatch / cancellation / wakeup command state
   terminal-*.cjs                 # transport only
 desktop/opencode/                # Provider facts only
@@ -125,18 +139,20 @@ feature should move only the smallest coherent boundary with its tests.
 
 ## Known management problems to resolve
 
-1. **Too many state projections without an ownership table.** Task/Run storage,
-   Session Store, PTY state, and Renderer state can disagree. The recovery bug
-   exposed this directly: a UI message could cause a fresh terminal despite no
-   proof that the old one was the continuation target.
-2. **`AgentLoopApp.tsx` is a page, controller, refresh loop, and mutation
-   coordinator at once.** New Task controls should be extracted into Task,
+1. **The physical Session Store still contains several owners' records.** Active
+   product composition now fences consumers with owner-scoped capabilities,
+   but historical harnesses still construct the raw compatibility Store. Do
+   not copy that fixture pattern into production code. Physical extraction is
+   still pending and must preserve one typed read model rather than introduce
+   separate competing UI stores.
+2. **`AgentLoopApp.tsx` is a page, controller, and mutation coordinator at
+   once.** Its Task/Run cache is now semantic-invalidation driven. New Task controls should be extracted into Task,
    Template, and Workbench surface components before more lifecycle branches
    are added.
-3. **`agent-loop-v1-runtime.cjs` mixes several application-service concerns.**
-   New recovery and cancellation code must not turn it into a second terminal
-   manager or Provider adapter; extract a focused Run-control service when
-   modifying those paths.
+3. **`agent-loop-v1-runtime.cjs` remains a broad facade.** Task/Run SQL and
+   lifecycle decisions have moved to Repository/Service, but layout, artifact,
+   permission, and recovery composition still share the facade. Continue only
+   with coherent owner extractions; do not turn it into a Terminal or Provider writer.
 4. **Terminal and semantic state can be visually conflated.** A terminal being
    live, a Provider turn being complete, and a Task being delivery-ready are
    different facts. The read model must retain all three.
@@ -155,6 +171,10 @@ feature should move only the smallest coherent boundary with its tests.
    their owner; a cross-layer harness proves one causal path; a live OpenCode
    run proves user interaction. A UI screenshot or CSS assertion does not prove
    native terminal continuation, scroll, or cancellation.
+9. **Dispatch commands do not yet have a Task/Run-style durable command
+   ledger.** Existing dispatch ids and record transitions prevent several
+   duplicates, but a later slice must define stable command identity,
+   optimistic concurrency and restart reconciliation at the Coordinator owner.
 
 ## Change checklist
 
@@ -178,9 +198,8 @@ Before adding a feature, record these answers in its plan or PR description:
    owners; do not also reorganize unrelated folders.
 3. Extract Task, Template, and Workbench surfaces from `AgentLoopApp.tsx` as
    each receives a real feature change.
-4. Extract focused Task/Run control from `agent-loop-v1-runtime.cjs` when the
-   first recovery/cancellation command is implemented; preserve a thin facade
-   for existing IPC callers.
+4. Keep the extracted Task/Run Repository/Service behind the existing Runtime
+   facade; move another responsibility only when its behavior is being changed.
 5. Relocate root-level desktop helpers only with import updates and their
    sibling tests, after the behavior is covered.
 6. Delete duplicate/obsolete paths only after a traceable replacement and

@@ -46,6 +46,22 @@ export type SessionEventType =
   | "session.stopped"
   | "session.exited"
   | "session.start_failed"
+  | "terminal.not_started"
+  | "terminal.starting"
+  | "terminal.ready"
+  | "terminal.running"
+  | "terminal.stopping"
+  | "terminal.stopped"
+  | "terminal.exited"
+  | "terminal.start_failed"
+  | "provider.ready"
+  | "provider.running"
+  | "provider.waiting_input"
+  | "provider.permission_required"
+  | "provider.waiting_conductor"
+  | "provider.blocked"
+  | "provider.timeout"
+  | "provider.result_invalid"
   | "dispatch.created"
   | "dispatch.input_accepted"
   | "dispatch.delivered"
@@ -72,6 +88,8 @@ export type SessionEventType =
 
 export type SessionStoreEvent = {
   id: string;
+  /** Stable Task/Run outbox identity used to make cross-store publication idempotent. */
+  sourceEventId?: string;
   taskId: string;
   sessionId: string;
   type: SessionEventType;
@@ -235,7 +253,11 @@ export type ReadSessionInput = {
 export type ReadSessionResult = {
   sessionId: string;
   state: SessionStoreState;
+  terminalState?: SessionStoreState;
+  providerState?: SessionStoreState;
   cursor: number;
+  lastStateSummary?: string;
+  lastStateData?: Record<string, unknown>;
   activeDispatchId?: string;
   lastResultId?: string;
   resultCount?: number;
@@ -259,6 +281,8 @@ export type ReadTaskStateInput = {
 export type ReadTaskStateSessionSummary = {
   sessionId: string;
   state: SessionStoreState;
+  terminalState?: SessionStoreState;
+  providerState?: SessionStoreState;
   cursor: number;
   updatedAt?: string;
   lastStateSummary?: string;

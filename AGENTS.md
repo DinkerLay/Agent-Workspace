@@ -13,8 +13,14 @@ Shared instructions for Codex and other coding agents.
 ## Project Context
 
 - This workspace is exploring an AgentsRoom-like multi-agent workbench.
-- Before changing product direction, inspect the current `docs/research/`, `docs/superworks/spec/`, and `docs/superworks/plans/` files.
-- Treat those files as durable product intent: research facts, accepted specs, and executable plans.
+- `docs/README.md` is the only documentation entry point. Read it before using
+  any research, spec, plan, bug note, design image, or archive as authority.
+- Before changing product direction, read `docs/superworks/spec/spec_readme.md`
+  and the relevant current specs it names. Read only the research sources
+  relevant to the decision; research and generated analysis are evidence, not
+  product authority.
+- Only plans listed by `docs/superworks/plans/README.md` are executable current
+  plans. Files under `archive/` or `deprecated/` are historical evidence.
 - Keep runtime orchestration state out of product-intent files; use the storage location defined by the current spec or plan.
 - Before adding, moving, or coupling implementation code, read
   `docs/superworks/spec/code-ownership-and-layer-map.md`. It is the source of
@@ -61,6 +67,47 @@ Conductor MCP -> Dispatch Coordinator -> Terminal Runtime / Provider Adapter
   that an interrupt completed without a Runtime/Provider fact.
 - New code goes beside its owner and its focused test. Do not add another
   generic helper or extend a page component to cross an ownership boundary.
+
+## State Management Invariants
+
+- A command records user or Conductor intent; an event records a fact that an
+  owner observed or committed. Renderer, IPC, and Provider adapters must never
+  accept a generic append-event API as a substitute for a domain command.
+- Template Draft, Template identity, immutable Template Version, Task
+  Architecture snapshot, Task, and Task Run are distinct objects. Saving or
+  editing one must not silently create or mutate another.
+- Task and Run status changes go through the canonical state model and the
+  owning lifecycle service. Do not write free-form status strings from UI,
+  IPC, Terminal, Provider, or Coordinator code.
+- Every durable fact has one writer. A cache, Timeline item, summary, or read
+  model may duplicate data only when it is explicitly derived and rebuildable.
+- Production composition passes owner-scoped Session Store capabilities, not
+  the raw multi-writer store. Coordinator, Provider, Terminal, Timeline, and
+  read-model consumers may call only the methods assigned to their owner.
+- Terminal writes `terminalState`, Provider writes `providerState`, and
+  Coordinator writes Dispatch/Wakeup records. A combined Session `state` is a
+  read-model projection; active production code must not call legacy
+  `recordState`.
+- Read-model construction is side-effect free: it must not persist defaults,
+  repair data, launch/stop a Session, deliver input, or acknowledge a fact.
+- Cross-store work records durable intent and an idempotency key before an
+  external side effect. If atomic commit is impossible, use a recoverable
+  outbox/reconciliation record rather than optimistic UI state.
+- A user-facing Task mutation carries a stable `commandId` and the Task's
+  observed `expectedRevision`. Keep the same command id across ambiguous
+  transport retries; reject a stale revision before any external side effect.
+- Template archive metadata belongs to Template identity. Immutable Template
+  Version rows and existing Task Architecture snapshots are never rewritten
+  merely because an identity is archived.
+- Renderer state is limited to view selection, dialogs, unsaved drafts,
+  request progress, and typed read-model caches. It never owns Task, Run,
+  Dispatch, Terminal, or Provider lifecycle truth.
+- Renderer read-model caches refresh after initial load, command results, or a
+  semantic Runtime invalidation. Do not add Task/Run polling or use raw PTY
+  traffic as a cache-invalidation or lifecycle signal.
+- Historical Workflow/Blueprint Harnesses are standalone fixtures. Do not
+  register their IPC methods in production Main/Preload or expose them as a
+  second selectable Runtime.
 
 ## Operating Rules
 
@@ -111,7 +158,8 @@ Turn work into verifiable goals.
 
 - In an indexed checkout, use CodeGraph before `rg`/`rg --files` to locate or
   understand code; use `rg` for exact follow-up checks and non-code assets.
-- For AgentsRoom-like product work, read the research file before creating specs, plans, or implementation.
+- For product work, start at `docs/README.md`; follow its current-spec and
+  current-plan links instead of scanning or reviving historical documents.
 - Keep user-readable intent in files, not only in chat.
 - Do not mix runtime machine state with product intent.
 - Before editing files, state what will be edited and why.
@@ -159,8 +207,11 @@ For implementation work, additionally review:
 
 Use these loops as the organizing model:
 
-1. Research/spec loop: maintain durable product facts in `docs/research/` and `docs/superworks/spec/`.
-2. Planner loop: convert `docs/research/` and `docs/superworks/spec/` changes into self-consistent plans in `docs/superworks/plans/`.
+1. Research/spec loop: keep external evidence in `docs/research/`, current
+   product authority in `docs/superworks/spec/`, and their distinction visible
+   from `docs/README.md`.
+2. Planner loop: list every current executable plan in
+   `docs/superworks/plans/README.md`; archive it when completed or superseded.
 3. Executor loop: convert plan steps into task runs, code changes, verification, diff review, and commit context.
 
 Plan steps should include:

@@ -10,11 +10,11 @@ Coordinator wakeup path** in:
 
 - `orca-terminal-runtime-adoption.md`;
 - `provider-session-state-detection.md`; and
-- `plans/terminal-host-orca-migration-v1.plan.md`.
+- `../plans/archive/superseded/terminal-host-orca-migration-v1.plan.md`.
 
-Those documents remain authoritative for product intent and Terminal Runtime
-transport unless this document explicitly narrows or replaces a Provider
-Adapter statement.
+`orca-terminal-runtime-adoption.md` remains authoritative for Terminal Runtime
+transport. The other two files are historical context only and do not define
+the current Provider Adapter implementation.
 
 ## Decision
 

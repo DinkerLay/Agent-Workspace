@@ -22,6 +22,7 @@ prompt as a hidden route. Agent Loop Template cannot be serialized as a Workflow
 | Object | Owner | Meaning |
 | --- | --- | --- |
 | Template Draft | user/editor | generated or manual, editable and not yet reusable |
+| Loop Template identity | Template store | stable id plus mutable archive metadata |
 | Loop Template Version | Template store | immutable versioned Charter, Agent Cards, and defaults |
 | Task Architecture | Task store | task-owned snapshot of one saved Loop Template Version |
 | Task | Task store | user-visible work item and lifecycle owner |
@@ -74,6 +75,10 @@ delete an unreferenced identity. Archiving hides normal selection but never
 changes existing Task Architecture snapshots. Delete is rejected once a Task
 references the Template.
 
+Archive metadata belongs to Template identity, not a version body. The current
+tables reflect that boundary: `agent_loop_templates` stores identity metadata,
+while `agent_loop_template_versions` stores immutable reusable definitions.
+
 ## Task Architecture And Task Run
 
 ```text
@@ -100,13 +105,37 @@ history. The later **restart** action creates a new Run and new Conductor
 identity; it does not ask OpenCode to resume an old provider Session. A desktop
 process restart is distinct: Runtime may reconnect to a still-live Terminal
 Host for the same Run, but it must not silently replace a missing native Session
-with a new Run or a replacement terminal. A missing Conductor terminal puts
-the Run into explicit recovery: first attempt exact reattach, then let the user
-choose provider-native resume when provable, recovery with a new Conductor
-incarnation in the same Run, or a fresh new Run. A Task-page follow-up remains
-pending until one of those actions yields an exact delivery receipt. The
+with a new Run. A missing Conductor terminal puts the Run into explicit
+`recovery_required`; Send/Runtime wakeup may recover a new terminal incarnation
+inside the same Run only when it can continue the exact Provider Session.
+Otherwise the user uses Stop and Start to create a fresh Run. A Task-page
+follow-up remains pending until an exact Provider receipt is observed. The
 human-facing contract is defined in
 `task-run-continuity-and-terminal-experience.md`.
+
+Every Task and Run carries an optimistic `revision`. User commands carry both
+`commandId` and `expectedRevision`. The Task/Run Repository commits command
+intent, lifecycle mutation, Run event, and Timeline outbox in one SQLite
+transaction. Cross-store Timeline publication is retried and deduplicated by
+the outbox `sourceEventId`; the Session Store copy is a projection, not a
+second Task lifecycle writer.
+
+Start, Stop and Delete are two-phase lifecycle commands: their durable command
+becomes `prepared` before a native Session or Runtime-directory side effect.
+Runtime construction reconciles any prepared command after a Main-process
+restart. Delete removes the replay-safe Runtime directory before committing
+the Task DB deletion, so a filesystem failure leaves a visible, retryable
+`deleting` Task instead of an orphaned Session Store directory. Delivery Claim
+uses the same Task/Run transaction and outbox; the Conductor bridge never
+writes a parallel completion state.
+
+Run detail is a rebuildable `TaskRunReadModel`. Runtime gathers Task/Run,
+Coordinator, Terminal, and Provider facts through owner-scoped capabilities,
+then passes them to a pure projector. Projection may filter facts to the
+current Run and synthesize an unsaved default layout, but it must not write a
+store, acknowledge input, repair lifecycle state, or launch a Session.
+Renderer caches this model only as presentation state and refreshes it from
+command results or semantic Runtime invalidations, not polling or PTY output.
 
 ## Agent Loop Control Cycle
 
@@ -131,15 +160,20 @@ output or let workers communicate directly.
 
 | Entity | States / meaning |
 | --- | --- |
-| Task | `queued`, `running`, `delivery_ready`, `stopped`, `achieved`, `archived` |
-| Run | delivery lifecycle plus control state: `active`, `recovery_required`, `stopped`, or `failed` |
+| Task | `queued`, `running`, `delivery_ready`, `stopping`, `stopped`, `deleting`, `achieved`, `archived` |
+| Run | `running`, `recovery_required`, `stopped`, `achieved`, or `failed` |
 | Dispatch | `queued`, `input_accepted`, `delivered`, `result_available`, `waiting_input`, `cancellation_requested`, `cancelled`, `cancel_failed`, `failed` |
-| Session | Runtime transport lifecycle plus Provider-derived semantic state |
+| Session | separate Terminal lifecycle and Provider semantic facts, plus a rebuildable presentation state |
 
 `delivery_ready` is Conductor's recorded delivery claim, not a quality verdict.
 `achieved` is an explicit user action after accepting the current delivery; an
 artifact is optional supporting evidence, not a requirement. Neither a file,
 a worker's “done”, nor raw terminal text can make a Task achieved.
+
+`stopping` and `deleting` are durable command-in-progress projections used to
+serialize destructive lifecycle work. They are not completion states and do
+not permit Task continuation. Code must use the canonical state model instead
+of creating additional free-form status strings.
 
 An achieved Task's later follow-up explicitly creates a new Run with preserved
 Task history as context. It does not pretend that the accepted Run's old native

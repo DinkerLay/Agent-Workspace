@@ -20,10 +20,10 @@ acceptance criteria are now in
 
 Authoritative inputs:
 
-- `../spec/task-run-continuity-and-terminal-experience.md`
-- `../spec/code-ownership-and-layer-map.md`
-- `../spec/task-template-runtime-model.md`
-- `../spec/orca-terminal-runtime-adoption.md`
+- `../../../spec/task-run-continuity-and-terminal-experience.md`
+- `../../../spec/code-ownership-and-layer-map.md`
+- `../../../spec/task-template-runtime-model.md`
+- `../../../spec/orca-terminal-runtime-adoption.md`
 
 ## Non-goals
 
@@ -113,7 +113,7 @@ Authoritative inputs:
   for an interrupt transport failure. It never selects replacement work or
   marks the Task complete.
 - Step 6: recorded in
-  `../spec/browser-terminal-host-architecture.md`. The accepted direction is a
+  `../../../spec/browser-terminal-host-architecture.md`. The accepted direction is a
   browser renderer plus authenticated local/remote Terminal Host; no Electron
   removal is scheduled.
 - Permission interaction and terminal theme parity: completed for the typed

@@ -16,7 +16,6 @@ function createBrowserRuntimeBridge({
   getAgentLoopRuntime,
   readWorkspaceTerminalLog,
   appendTaskEvent,
-  sanitizeAgentLoopTemplate,
   validateAgentLoopProjectDirectory,
   suggestAgentLoopProjectDirectories,
   terminalClientAttachments,
@@ -39,7 +38,6 @@ function createBrowserRuntimeBridge({
       runtime,
       readWorkspaceTerminalLog: requiredFunction(readWorkspaceTerminalLog, "browser_runtime_terminal_log"),
       appendTaskEvent: requiredFunction(appendTaskEvent, "browser_runtime_task_event"),
-      sanitizeAgentLoopTemplate: requiredFunction(sanitizeAgentLoopTemplate, "browser_runtime_template_sanitizer"),
       validateAgentLoopProjectDirectory: requiredFunction(validateAgentLoopProjectDirectory, "browser_runtime_project_validator"),
       suggestAgentLoopProjectDirectories: requiredFunction(suggestAgentLoopProjectDirectories, "browser_runtime_project_suggester"),
       browserProjectRoots,
@@ -79,7 +77,6 @@ function createHandlers({
   runtime,
   readWorkspaceTerminalLog,
   appendTaskEvent,
-  sanitizeAgentLoopTemplate,
   validateAgentLoopProjectDirectory,
   suggestAgentLoopProjectDirectories,
   browserProjectRoots,
@@ -103,9 +100,15 @@ function createHandlers({
     resizeWorkspaceSession: (input) => sessionAuthority.resizeSession({ workspaceSessionId: String(input?.workspaceSessionId ?? ""), expectedIncarnationId: input?.expectedIncarnationId ? String(input.expectedIncarnationId) : undefined, cols: Number(input?.cols ?? 100), rows: Number(input?.rows ?? 30) }),
     stopWorkspaceSession: (input) => sessionAuthority.stopSession({ workspaceSessionId: String(input?.workspaceSessionId ?? ""), expectedIncarnationId: input?.expectedIncarnationId ? String(input.expectedIncarnationId) : undefined }),
     appendTaskEvent,
+    sendAgentLoopTaskMessage: (input) => runtime().recordUserMessage({
+      taskId: String(input?.taskId ?? ""),
+      message: String(input?.message ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+    }),
     listAgentLoopTemplates: () => runtime().listTemplates(),
     generateAgentLoopTemplate: (input, context) => runtime().generateTemplateDraft({ cwd: projectRoot(input?.cwd, context.clientId), projectName: input?.projectName ? String(input.projectName) : undefined, brief: String(input?.brief ?? ""), model: input?.model ? String(input.model) : undefined }),
-    saveAgentLoopTemplate: (input) => runtime().saveTemplate(sanitizeAgentLoopTemplate(input)),
+    saveAgentLoopTemplate: (input) => runtime().saveTemplate(input),
     copyAgentLoopTemplate: (input) => runtime().copyTemplate({ templateId: String(input?.templateId ?? ""), name: input?.name ? String(input.name) : undefined }),
     archiveAgentLoopTemplate: (input) => runtime().archiveTemplate({ templateId: String(input?.templateId ?? "") }),
     deleteAgentLoopTemplate: (input) => runtime().deleteTemplate({ templateId: String(input?.templateId ?? "") }),
@@ -119,7 +122,7 @@ function createHandlers({
     createAgentLoopTask: (input, context) => runtime().createTask({ taskId: input?.taskId ? String(input.taskId) : undefined, projectId: input?.projectId ? String(input.projectId) : undefined, cwd: projectRoot(input?.cwd, context.clientId), title: String(input?.title ?? ""), goal: String(input?.goal ?? ""), templateId: input?.templateId ? String(input.templateId) : undefined, templateVersion: input?.templateVersion ? Number(input.templateVersion) : undefined }),
     listAgentLoopTasks: () => runtime().listTasks(),
     readAgentLoopTask: (input) => runtime().readTask({ taskId: String(input?.taskId ?? "") }),
-    startAgentLoopRun: (input) => runtime().startRun({ taskId: String(input?.taskId ?? "") }),
+    startAgentLoopRun: (input) => runtime().startRun({ taskId: String(input?.taskId ?? ""), commandId: String(input?.commandId ?? ""), expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined }),
     readAgentLoopRun: (input) => {
       const runId = String(input?.runId ?? "");
       return runId ? runtime().readRun({ runId }) : undefined;
@@ -127,11 +130,11 @@ function createHandlers({
     readAgentLoopWorkbenchLayout: (input) => runtime().readWorkbenchLayout({ runId: String(input?.runId ?? "") }),
     saveAgentLoopWorkbenchLayout: (input) => runtime().saveWorkbenchLayout({ runId: String(input?.runId ?? ""), layout: input?.layout }),
     readAgentLoopArtifact: (input) => runtime().readArtifact({ runId: String(input?.runId ?? ""), artifactPath: String(input?.artifactPath ?? "") }),
-    markAgentLoopTaskAchieved: (input) => runtime().markTaskAchieved({ taskId: String(input?.taskId ?? "") }),
-    stopAgentLoopTask: (input) => runtime().stopTask({ taskId: String(input?.taskId ?? "") }),
+    markAgentLoopTaskAchieved: (input) => runtime().markTaskAchieved({ taskId: String(input?.taskId ?? ""), commandId: String(input?.commandId ?? ""), expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined }),
+    stopAgentLoopTask: (input) => runtime().stopTask({ taskId: String(input?.taskId ?? ""), commandId: String(input?.commandId ?? ""), expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined }),
     respondAgentLoopPermission: (input) => runtime().respondPermission({ taskId: String(input?.taskId ?? ""), sessionId: String(input?.sessionId ?? ""), permissionId: String(input?.permissionId ?? ""), response: String(input?.response ?? "") }),
     respondAgentLoopQuestion: (input) => runtime().respondSessionQuestion({ taskId: String(input?.taskId ?? ""), sessionId: String(input?.sessionId ?? ""), questionId: String(input?.questionId ?? ""), answer: String(input?.answer ?? "") }),
-    deleteAgentLoopTask: (input) => runtime().deleteTask({ taskId: String(input?.taskId ?? "") }),
+    deleteAgentLoopTask: (input) => runtime().deleteTask({ taskId: String(input?.taskId ?? ""), commandId: String(input?.commandId ?? ""), expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined }),
   };
 }
 

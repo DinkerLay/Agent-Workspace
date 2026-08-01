@@ -277,6 +277,27 @@ export type NativeTaskEventResult = {
   error?: string;
 };
 
+export type NativeAgentLoopTaskMessageInput = {
+  taskId: string;
+  message: string;
+  commandId: string;
+  expectedRevision: number;
+};
+
+export type NativeAgentLoopTaskMessageResult = NativeTaskEventResult & {
+  messageId?: string;
+  retried?: boolean;
+  revision?: number;
+  wakeup?: Record<string, unknown>;
+};
+
+export type NativeAgentLoopTaskCommandInput = {
+  taskId: string;
+  commandId: string;
+  expectedRevision: number;
+};
+
+/** @deprecated Historical nested-Workflow Harness type; use NativeAgentLoopTemplate for active product state. */
 export type NativeOrchestrationTemplate = {
   id: string;
   family: "agent_loop" | "workflow";
@@ -287,6 +308,7 @@ export type NativeOrchestrationTemplate = {
   updatedAt: string;
 };
 
+/** @deprecated Historical nested-Workflow Harness type; not a v1 user-facing Template. */
 export type NativeTemplateBlueprint = {
   id: string;
   version: number;
@@ -299,11 +321,13 @@ export type NativeTemplateBlueprint = {
   updatedAt: string;
 };
 
+/** @deprecated Historical nested-Workflow Harness type; not a v1 Task Architecture field. */
 export type NativeTemplateBlueprintReference = Pick<
   NativeTemplateBlueprint,
   "id" | "version" | "name" | "description" | "source" | "agentLoopTemplate" | "workflowTemplate"
 >;
 
+/** @deprecated Historical nested-Workflow Harness draft; use NativeGeneratedAgentLoopTemplateDraft for active product state. */
 export type NativeGeneratedArchitectureDraft = {
   draftId: string;
   cwd: string;
@@ -342,6 +366,7 @@ export type NativeGeneratedArchitectureDraft = {
   updatedAt: string;
 };
 
+/** @deprecated Historical nested-Workflow Harness task; use NativeAgentLoopTask for active product state. */
 export type NativeHarnessTask = {
   taskId: string;
   projectId: string;
@@ -519,7 +544,10 @@ export type NativeAgentLoopTask = {
     agentCards: NativeSessionAgentCard[];
     delivery: { artifactPath: string; ownerAgentId: string };
   };
-  status: "queued" | "running" | "delivery_ready" | "stopped" | "achieved" | "archived";
+  /** stopping/deleting are durable command-in-progress projections, not completion states. */
+  status: "queued" | "running" | "delivery_ready" | "stopping" | "stopped" | "deleting" | "achieved" | "archived";
+  /** Optimistic Task aggregate version. Every durable Task/Run command checks it before mutation. */
+  revision: number;
   createdAt: string;
   updatedAt: string;
   latestRun?: NativeAgentLoopRun;
@@ -528,8 +556,9 @@ export type NativeAgentLoopTask = {
 export type NativeAgentLoopRun = {
   runId: string;
   taskId: string;
-  status: "running" | "recovery_required" | "delivery_ready" | "stopped" | "achieved" | "failed";
+  status: "running" | "recovery_required" | "stopped" | "achieved" | "failed";
   conductorSessionId: string;
+  revision: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -692,7 +721,9 @@ export type NativeRuntimeBridge = {
   callSessions?(input: { taskId: string; dispatches: CallSessionInput[] }): Promise<{ ok: boolean; results: CallSessionResult[] }>;
   readTaskState?(input: ReadTaskStateInput): Promise<ReadTaskStateResult | undefined>;
   readSession?(input: ReadSessionInput): Promise<ReadSessionResult | undefined>;
+  /** @deprecated Legacy surface command. Active Agent Loop UI uses sendAgentLoopTaskMessage. */
   appendTaskEvent?(input: NativeTaskEventInput): Promise<NativeTaskEventResult>;
+  sendAgentLoopTaskMessage?(input: NativeAgentLoopTaskMessageInput): Promise<NativeAgentLoopTaskMessageResult>;
   listAgentLoopTemplates?(): Promise<NativeAgentLoopTemplate[]>;
   generateAgentLoopTemplate?(input: { cwd: string; projectName?: string; brief: string; model?: string }): Promise<NativeGeneratedAgentLoopTemplateDraft>;
   saveAgentLoopTemplate?(input: Omit<NativeAgentLoopTemplate, "version" | "archivedAt" | "createdAt" | "updatedAt">): Promise<NativeAgentLoopTemplate>;
@@ -704,16 +735,16 @@ export type NativeRuntimeBridge = {
   createAgentLoopTask?(input: { taskId?: string; projectId?: string; cwd: string; title: string; goal: string; templateId?: string; templateVersion?: number }): Promise<NativeAgentLoopTask>;
   listAgentLoopTasks?(): Promise<NativeAgentLoopTask[]>;
   readAgentLoopTask?(input: { taskId: string }): Promise<NativeAgentLoopTask | undefined>;
-  startAgentLoopRun?(input: { taskId: string }): Promise<NativeAgentLoopRunDetail>;
+  startAgentLoopRun?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopRunDetail>;
   readAgentLoopRun?(input: { runId: string }): Promise<NativeAgentLoopRunDetail | undefined>;
   readAgentLoopWorkbenchLayout?(input: { runId: string }): Promise<NativeAgentLoopWorkbenchLayout | undefined>;
   saveAgentLoopWorkbenchLayout?(input: { runId: string; layout: NativeAgentLoopWorkbenchLayout }): Promise<NativeAgentLoopWorkbenchLayout | undefined>;
   readAgentLoopArtifact?(input: { runId: string; artifactPath: string }): Promise<NativeAgentLoopArtifact>;
-  markAgentLoopTaskAchieved?(input: { taskId: string }): Promise<NativeAgentLoopTask | undefined>;
-  stopAgentLoopTask?(input: { taskId: string }): Promise<NativeAgentLoopTask | undefined>;
+  markAgentLoopTaskAchieved?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined>;
+  stopAgentLoopTask?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined>;
   respondAgentLoopPermission?(input: { taskId: string; sessionId: string; permissionId: string; response: "once" | "always" | "reject" }): Promise<{ ok: boolean; status: string; changed?: boolean; errorCode?: string; message?: string }>;
   respondAgentLoopQuestion?(input: { taskId: string; sessionId: string; questionId: string; answer: string }): Promise<{ ok: boolean; status: string; changed?: boolean; errorCode?: string; message?: string }>;
-  deleteAgentLoopTask?(input: { taskId: string }): Promise<{ deleted: boolean; taskId: string; runsDeleted: number; runtimeDirectoryRemoved: boolean }>;
+  deleteAgentLoopTask?(input: NativeAgentLoopTaskCommandInput): Promise<{ deleted: boolean; taskId: string; runsDeleted: number; runtimeDirectoryRemoved: boolean }>;
   listOrchestrationTemplates?(): Promise<NativeOrchestrationTemplate[]>;
   listOrchestrationTemplateBlueprints?(): Promise<NativeTemplateBlueprint[]>;
   saveOrchestrationTemplate?(input: {
@@ -1097,6 +1128,17 @@ export async function appendNativeTaskEvent(input: NativeTaskEventInput): Promis
   );
 }
 
+export async function sendNativeAgentLoopTaskMessage(
+  input: NativeAgentLoopTaskMessageInput,
+): Promise<NativeAgentLoopTaskMessageResult> {
+  return (
+    window.agentWorkspace?.native.sendAgentLoopTaskMessage?.(input) ?? {
+      ok: false,
+      error: browserRuntimeStatus.message,
+    }
+  );
+}
+
 export async function listNativeAgentLoopTemplates(): Promise<NativeAgentLoopTemplate[]> {
   return (await window.agentWorkspace?.native.listAgentLoopTemplates?.()) ?? [];
 }
@@ -1159,8 +1201,8 @@ export async function readNativeAgentLoopTask(taskId: string): Promise<NativeAge
   return window.agentWorkspace?.native.readAgentLoopTask?.({ taskId });
 }
 
-export async function startNativeAgentLoopRun(taskId: string): Promise<NativeAgentLoopRunDetail | undefined> {
-  return window.agentWorkspace?.native.startAgentLoopRun?.({ taskId });
+export async function startNativeAgentLoopRun(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopRunDetail | undefined> {
+  return window.agentWorkspace?.native.startAgentLoopRun?.(input);
 }
 
 export async function readNativeAgentLoopRun(runId: string): Promise<NativeAgentLoopRunDetail | undefined> {
@@ -1182,12 +1224,12 @@ export async function readNativeAgentLoopArtifact(runId: string, artifactPath: s
   return window.agentWorkspace?.native.readAgentLoopArtifact?.({ runId, artifactPath });
 }
 
-export async function markNativeAgentLoopTaskAchieved(taskId: string): Promise<NativeAgentLoopTask | undefined> {
-  return window.agentWorkspace?.native.markAgentLoopTaskAchieved?.({ taskId });
+export async function markNativeAgentLoopTaskAchieved(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined> {
+  return window.agentWorkspace?.native.markAgentLoopTaskAchieved?.(input);
 }
 
-export async function stopNativeAgentLoopTask(taskId: string): Promise<NativeAgentLoopTask | undefined> {
-  return window.agentWorkspace?.native.stopAgentLoopTask?.({ taskId });
+export async function stopNativeAgentLoopTask(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined> {
+  return window.agentWorkspace?.native.stopAgentLoopTask?.(input);
 }
 
 export async function respondNativeAgentLoopPermission(input: {
@@ -1208,13 +1250,13 @@ export async function respondNativeAgentLoopQuestion(input: {
   return window.agentWorkspace?.native.respondAgentLoopQuestion?.(input);
 }
 
-export async function deleteNativeAgentLoopTask(taskId: string): Promise<{
+export async function deleteNativeAgentLoopTask(input: NativeAgentLoopTaskCommandInput): Promise<{
   deleted: boolean;
   taskId: string;
   runsDeleted: number;
   runtimeDirectoryRemoved: boolean;
 } | undefined> {
-  return window.agentWorkspace?.native.deleteAgentLoopTask?.({ taskId });
+  return window.agentWorkspace?.native.deleteAgentLoopTask?.(input);
 }
 
 export async function listNativeOrchestrationTemplates(): Promise<NativeOrchestrationTemplate[]> {

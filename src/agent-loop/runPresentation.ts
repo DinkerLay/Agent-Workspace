@@ -57,5 +57,5 @@ export function nativeTerminalEmptyState(turn: NativeAgentLoopRunDetail["turns"]
 }
 
 export function taskStatusLabel(status: string) {
-  return ({ queued: "待启动", running: "运行中", delivery_ready: "已声明交付", stopped: "已停止", achieved: "achieved", archived: "已归档" } as Record<string, string>)[status] ?? status;
+  return ({ queued: "待启动", running: "运行中", delivery_ready: "已声明交付", stopping: "停止中", stopped: "已停止", deleting: "删除中", achieved: "achieved", archived: "已归档" } as Record<string, string>)[status] ?? status;
 }

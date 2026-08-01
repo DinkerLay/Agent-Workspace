@@ -199,7 +199,7 @@ describe("Session wakeup monitor", () => {
         terminalIncarnationId: "conductor-question-incarnation",
       }),
     });
-    expect(conductorView.events.map((event) => event.type)).toContain("session.waiting_input");
+    expect(conductorView.events.map((event) => event.type)).toContain("provider.waiting_input");
   });
 
   it("checks only the changed worker session after a PTY data event", async () => {

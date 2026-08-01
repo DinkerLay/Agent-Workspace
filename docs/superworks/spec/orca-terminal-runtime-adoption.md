@@ -17,7 +17,7 @@ Reference implementation:
 - license: MIT, copyright notice retained for copied source
 
 This specification supersedes the implementation-complete claims in
-[`../plans/terminal-host-orca-migration-v1.plan.md`](../plans/terminal-host-orca-migration-v1.plan.md).
+[`../plans/archive/superseded/terminal-host-orca-migration-v1.plan.md`](../plans/archive/superseded/terminal-host-orca-migration-v1.plan.md).
 That plan remains useful historical evidence, but it does not define the
 target terminal runtime.
 

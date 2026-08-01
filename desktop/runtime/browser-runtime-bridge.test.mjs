@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { createRequire } from "node:module";
+
+const isVitest = process.env.VITEST === "true" || process.env.VITEST_WORKER_ID !== undefined;
+const test = isVitest ? (await import("vitest")).test : (await import("node:test")).default;
 
 const require = createRequire(import.meta.url);
 const { createBrowserRuntimeBridge } = require("./browser-runtime-bridge.cjs");
@@ -51,12 +53,11 @@ test("browser Runtime bridge grants a manually validated root only to the reques
     }),
     readWorkspaceTerminalLog: async () => undefined,
     appendTaskEvent: async () => ({ ok: true }),
-    sanitizeAgentLoopTemplate: (input) => input,
     terminalClientAttachments: attachments,
     terminalHostClientId: (ownerId, clientId) => `${ownerId}:${clientId}`,
   });
   const address = await bridge.start();
-  t.after(() => bridge.close());
+  afterTest(t, () => bridge.close());
 
   const status = await fetch(`${address.url}/v1/status`, { headers: { authorization: "Bearer test-token" } });
   assert.deepEqual(await status.json(), { result: { available: true, mode: "desktop", message: "ready" } });
@@ -101,6 +102,11 @@ test("browser Runtime bridge grants a manually validated root only to the reques
     false,
   );
 });
+
+function afterTest(context, callback) {
+  if (typeof context.onTestFinished === "function") context.onTestFinished(callback);
+  else context.after(callback);
+}
 
 async function call(url, request, clientId = "browser-client-1234") {
   const response = await fetch(`${url}/v1/call`, {

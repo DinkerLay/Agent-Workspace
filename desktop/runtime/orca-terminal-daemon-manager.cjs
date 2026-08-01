@@ -394,7 +394,9 @@ function createOrcaTerminalDaemonManager({
         signal: event.signal,
         stoppedAtMs: now(),
       });
-      sessionStore?.recordState?.(
+      const recordTerminalState = sessionStore?.recordTerminalState ?? sessionStore?.recordState;
+      recordTerminalState?.call(
+        sessionStore,
         { taskId: session.taskId, sessionId: session.id, cwd: session.cwd },
         "exited",
         "PTY process exited",

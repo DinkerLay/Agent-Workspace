@@ -3,7 +3,7 @@
 Date: 2026-07-25
 
 Status: Superseded as the terminal-runtime target by
-[`../spec/orca-terminal-runtime-adoption.md`](../spec/orca-terminal-runtime-adoption.md).
+[`../../../spec/orca-terminal-runtime-adoption.md`](../../../spec/orca-terminal-runtime-adoption.md).
 Its implementation notes are historical evidence only: the current custom
 Host is a partial migration, not Orca Runtime parity.
 
@@ -77,7 +77,7 @@ Implementation update (2026-07-26):
   skipped-phase completion gate are incorrect for Agent Loop. They remain a
   description of the then-current implementation only. Their removal is
   planned in
-  [`agent-loop-conductor-autonomy-rework-v1.plan.md`](agent-loop-conductor-autonomy-rework-v1.plan.md).
+  [`../completed/agent-loop-conductor-autonomy-rework-v1.plan.md`](../completed/agent-loop-conductor-autonomy-rework-v1.plan.md).
   The Conductor OpenCode config retains its restricted Workspace dispatch
   capability and does not directly edit worker-owned deliveries.
 - Evidence: focused unit suite (57 tests), native PTY control-plane harness,

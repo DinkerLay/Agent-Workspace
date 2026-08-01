@@ -317,12 +317,12 @@ remains in the active specifications:
   Conductor-only dispatch rules;
 - `task-template-runtime-model.md`: v1 Template, Task Architecture, Task Run,
   Session, and future-compatibility vocabulary;
-- `product-interaction-map.md`: Task Assembly, Templates, Tasks Timeline,
-  Workbench, Review, and user-visible execution state;
+- `product-interaction-map.md`: Task creation, Templates, Tasks Timeline,
+  Workbench, and user-visible execution state;
 - `orca-terminal-runtime-adoption.md`: daemon-owned terminal transport,
   snapshot/ACK/recovery, and transport receipts;
-- `provider-session-state-detection.md`: PTY triggers, Provider Adapter facts,
-  and result/state extraction;
+- `opencode-provider-adapter-orca-alignment.md`: current Provider Adapter facts,
+  exact bindings, result/attention extraction, and Coordinator wakeups;
 - `development-instrumentation.md`: semantic audit, diagnostics, E2E evidence,
   and redaction;
 - a future Workflow Runtime specification: Graph schema, template versioning,

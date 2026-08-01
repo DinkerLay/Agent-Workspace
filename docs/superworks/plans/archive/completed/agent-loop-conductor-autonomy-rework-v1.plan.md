@@ -11,7 +11,7 @@ asynchronous native-Session substrate and must no longer impose business
 routing, repair, review, or completion policy.
 
 Authoritative product intent:
-[`../spec/agent-loop-conductor-guidance.md`](../spec/agent-loop-conductor-guidance.md).
+[`../../../spec/agent-loop-conductor-guidance.md`](../../../spec/agent-loop-conductor-guidance.md).
 
 ## Success Criteria
 

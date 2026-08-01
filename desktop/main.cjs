@@ -15,8 +15,8 @@ const { createOrcaTerminalDaemonSupervisor } = require("./runtime/orca-terminal-
 const { createOpenCodeHookService } = require("./runtime/opencode-hook-service.cjs");
 const { createAgentLoopV1Runtime } = require("./runtime/agent-loop-v1-runtime.cjs");
 const { createBrowserRuntimeBridge } = require("./runtime/browser-runtime-bridge.cjs");
-const { createOrchestrationHarness } = require("./runtime/orchestration-harness.cjs");
 const { createSessionAuthority } = require("./runtime/session-authority.cjs");
+const { createSessionStoreCapabilities } = require("./runtime/session-store-capabilities.cjs");
 const { createSessionWakeupMonitor } = require("./session-wakeup-monitor.cjs");
 const { createSessionStore } = require("./session-store.cjs");
 const { generateAgentLoopTemplate } = require("./agent-loop-template-assistant.cjs");
@@ -34,7 +34,6 @@ let conductorToolBridgeRuntimeConfig = {};
 let conductorToolBridgeStartError;
 let sessionWakeupMonitor;
 let agentLoopRuntime;
-let orchestrationHarness;
 let openCodeHookService;
 let openCodeProviderObserver;
 let webRuntimeBridge;
@@ -48,11 +47,23 @@ const runtimeSessionStore = createSessionStore({
     return path.join(cwd, ".agent-workspace", "runtime");
   },
 });
+const runtimeSessionCapabilities = createSessionStoreCapabilities(runtimeSessionStore);
+const dispatchSessionStore = Object.freeze({
+  ...runtimeSessionCapabilities.readModel,
+  ...runtimeSessionCapabilities.coordinator,
+});
+const wakeupSessionStore = Object.freeze({
+  ...runtimeSessionCapabilities.readModel,
+  ...runtimeSessionCapabilities.taskTimeline,
+  ...runtimeSessionCapabilities.coordinator,
+  ...runtimeSessionCapabilities.provider,
+  ...runtimeSessionCapabilities.terminal,
+});
 
 // Semantic state changes are published independently from PTY transport.
 // Renderer clients receive only a lightweight invalidation and re-read the
 // durable Run; raw TUI output continues over the Orca-style terminal stream.
-runtimeSessionStore.onTaskChange?.((change) => publishAgentLoopRuntimeChange(change));
+runtimeSessionCapabilities.readModel.onTaskChange?.((change) => publishAgentLoopRuntimeChange(change));
 
 try {
   // Electron Main must not own node-pty. This only verifies that the isolated
@@ -69,7 +80,7 @@ try {
 terminalDaemonSupervisor = createOrcaTerminalDaemonSupervisor();
 ptyManager = createOrcaTerminalDaemonManager({
   endpointProvider: () => terminalDaemonSupervisor.start(),
-  sessionStore: runtimeSessionStore,
+  sessionStore: runtimeSessionCapabilities.terminal,
 });
 
 sessionAuthority = createSessionAuthority({
@@ -79,7 +90,6 @@ sessionAuthority = createSessionAuthority({
 ptyManager.onEvent((event) => {
   sessionAuthority.handlePtyEvent(event);
   if (event?.type === "exit") openCodeHookService?.clearSession?.(event.id);
-  void orchestrationHarness?.handlePtyEvent(event).catch(() => undefined);
 });
 ptyManager.onClientEvent((event, attachment) => {
   const target = terminalClientAttachments.get(String(attachment?.clientId ?? ""));
@@ -104,7 +114,7 @@ ptyManager.onClientEvent((event, attachment) => {
 });
 
 conductorToolBridge = createConductorToolBridge({
-  sessionStore: runtimeSessionStore,
+  sessionStore: dispatchSessionStore,
   ptyManager,
   activateWorkerSession: async ({ sessionId, operationId, interactiveTui }) =>
     sessionAuthority.activateSession({
@@ -150,15 +160,15 @@ conductorToolBridge = createConductorToolBridge({
     if (!agentLoopRuntime?.hasTask(taskId)) return { contextRefs: contextRefs ?? [], contextPackets: [] };
     return agentLoopRuntime.prepareDispatchContext({ taskId, agentId, toSessionId, contextRefs });
   },
-  onCompletionClaim: ({ taskId }) => {
+  onCompletionClaim: ({ taskId, sessionId, message, summary }) => {
     if (!agentLoopRuntime?.hasTask(taskId)) return undefined;
-    return agentLoopRuntime.recordCompletionClaim({ taskId });
+    return agentLoopRuntime.recordCompletionClaim({ taskId, sessionId, message, summary });
   },
 });
 
 sessionWakeupMonitor = createSessionWakeupMonitor({
   ptyManager,
-  sessionStore: runtimeSessionStore,
+  sessionStore: wakeupSessionStore,
   providerObserver: (openCodeProviderObserver ??= createOpenCodeProviderObserver()),
   conductorMessageReader: readProviderConductorMessage,
   conductorQuestionReader: readProviderConductorQuestion,
@@ -275,7 +285,6 @@ app.on("before-quit", () => {
   sessionWakeupMonitor?.stop?.();
   void openCodeProviderObserver?.close?.();
   agentLoopRuntime?.close?.();
-  orchestrationHarness?.close?.();
   void openCodeHookService?.close?.();
   void ptyManager?.close?.();
   void terminalDaemonSupervisor?.stop?.();
@@ -430,9 +439,9 @@ function registerIpc() {
 
   ipcMain.handle("native:read-session", (_event, input) => conductorToolBridge.readSession(input));
 
-  // Active product surface: pure Conductor-driven Agent Loop. The historical
-  // orchestration harness IPC remains below only for migration compatibility;
-  // no active renderer calls it.
+  // Active product surface: pure Conductor-driven Agent Loop. Historical
+  // Workflow/Blueprint harnesses are standalone test executables and are not
+  // registered as production IPC capabilities.
   ipcMain.handle("native:list-agent-loop-templates", () => ensureAgentLoopRuntime().listTemplates());
 
   ipcMain.handle("native:generate-agent-loop-template", (_event, input) =>
@@ -445,7 +454,7 @@ function registerIpc() {
   );
 
   ipcMain.handle("native:save-agent-loop-template", (_event, input) =>
-    ensureAgentLoopRuntime().saveTemplate(sanitizeAgentLoopTemplate(input)),
+    ensureAgentLoopRuntime().saveTemplate(input),
   );
 
   ipcMain.handle("native:copy-agent-loop-template", (_event, input) =>
@@ -487,7 +496,11 @@ function registerIpc() {
   );
 
   ipcMain.handle("native:start-agent-loop-run", (_event, input) =>
-    ensureAgentLoopRuntime().startRun({ taskId: String(input?.taskId ?? "") }),
+    ensureAgentLoopRuntime().startRun({
+      taskId: String(input?.taskId ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+    }),
   );
 
   ipcMain.handle("native:read-agent-loop-run", (_event, input) => {
@@ -506,11 +519,19 @@ function registerIpc() {
   );
 
   ipcMain.handle("native:mark-agent-loop-task-achieved", (_event, input) =>
-    ensureAgentLoopRuntime().markTaskAchieved({ taskId: String(input?.taskId ?? "") }),
+    ensureAgentLoopRuntime().markTaskAchieved({
+      taskId: String(input?.taskId ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+    }),
   );
 
   ipcMain.handle("native:stop-agent-loop-task", (_event, input) =>
-    ensureAgentLoopRuntime().stopTask({ taskId: String(input?.taskId ?? "") }),
+    ensureAgentLoopRuntime().stopTask({
+      taskId: String(input?.taskId ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+    }),
   );
 
   ipcMain.handle("native:respond-agent-loop-permission", (_event, input) =>
@@ -532,117 +553,23 @@ function registerIpc() {
   );
 
   ipcMain.handle("native:delete-agent-loop-task", (_event, input) =>
-    ensureAgentLoopRuntime().deleteTask({ taskId: String(input?.taskId ?? "") }),
+    ensureAgentLoopRuntime().deleteTask({
+      taskId: String(input?.taskId ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+    }),
   );
 
   ipcMain.handle("native:append-task-event", (_event, input) => appendTaskEvent(input));
 
-  ipcMain.handle("native:list-orchestration-templates", () => ensureOrchestrationHarness().listTemplates());
-
-  ipcMain.handle("native:list-orchestration-template-blueprints", () => ensureOrchestrationHarness().listTemplateBlueprints());
-
-  ipcMain.handle("native:save-orchestration-template", (_event, input) =>
-    ensureOrchestrationHarness().saveTemplateVersion({
-      id: String(input?.id ?? ""),
-      family: String(input?.family ?? ""),
-      version: Number(input?.version ?? 1),
-      name: String(input?.name ?? ""),
-      definition: sanitizeJsonObject(input?.definition),
+  ipcMain.handle("native:send-agent-loop-task-message", (_event, input) =>
+    ensureAgentLoopRuntime().recordUserMessage({
+      taskId: String(input?.taskId ?? ""),
+      message: String(input?.message ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
     }),
   );
-
-  ipcMain.handle("native:create-harness-task", (_event, input) =>
-    ensureOrchestrationHarness().createHarnessTask({
-      taskId: input?.taskId ? String(input.taskId) : undefined,
-      projectId: input?.projectId ? String(input.projectId) : undefined,
-      cwd: String(input?.cwd ?? ""),
-      title: input?.title ? String(input.title) : undefined,
-      goal: input?.goal ? String(input.goal) : undefined,
-      model: input?.model ? String(input.model) : undefined,
-      templateBlueprintId: input?.templateBlueprintId ? String(input.templateBlueprintId) : undefined,
-      templateBlueprintVersion: input?.templateBlueprintVersion ? Number(input.templateBlueprintVersion) : undefined,
-      agentLoopTemplateId: input?.agentLoopTemplateId ? String(input.agentLoopTemplateId) : undefined,
-      agentLoopTemplateVersion: input?.agentLoopTemplateVersion ? Number(input.agentLoopTemplateVersion) : undefined,
-    }),
-  );
-
-  ipcMain.handle("native:generate-orchestration-template-draft", (_event, input) =>
-    ensureOrchestrationHarness().generateTemplateDraft({
-      cwd: String(input?.cwd ?? ""),
-      title: input?.title ? String(input.title) : undefined,
-      goal: input?.goal ? String(input.goal) : undefined,
-      model: input?.model ? String(input.model) : undefined,
-    }),
-  );
-
-  ipcMain.handle("native:create-manual-orchestration-template-draft", (_event, input) =>
-    ensureOrchestrationHarness().createManualTemplateDraft({
-      cwd: String(input?.cwd ?? ""),
-      title: input?.title ? String(input.title) : undefined,
-      goal: input?.goal ? String(input.goal) : undefined,
-      description: input?.description ? String(input.description) : undefined,
-      model: input?.model ? String(input.model) : undefined,
-      agentLoop: input?.agentLoop,
-      workflow: input?.workflow,
-      rationale: input?.rationale ? String(input.rationale) : undefined,
-      assumptions: Array.isArray(input?.assumptions) ? input.assumptions : undefined,
-    }),
-  );
-
-  ipcMain.handle("native:read-orchestration-template-draft", (_event, input) =>
-    ensureOrchestrationHarness().readTemplateDraft({ draftId: String(input?.draftId ?? "") }),
-  );
-
-  ipcMain.handle("native:save-generated-orchestration-template-draft", (_event, input) =>
-    ensureOrchestrationHarness().saveGeneratedTemplateDraft({ draftId: String(input?.draftId ?? "") }),
-  );
-
-  ipcMain.handle("native:list-harness-tasks", () => ensureOrchestrationHarness().listHarnessTasks());
-
-  ipcMain.handle("native:read-harness-task", (_event, input) =>
-    ensureOrchestrationHarness().readTask({ taskId: String(input?.taskId ?? "") }),
-  );
-
-  ipcMain.handle("native:start-harness-run", (_event, input) =>
-    ensureOrchestrationHarness().startHarnessRun({ taskId: String(input?.taskId ?? "") }),
-  );
-
-  ipcMain.handle("native:read-harness-run", (_event, input) =>
-    ensureOrchestrationHarness().readRun({ runId: String(input?.runId ?? "") }),
-  );
-
-  ipcMain.handle("native:read-harness-artifact", (_event, input) =>
-    ensureOrchestrationHarness().readArtifact({
-      runId: String(input?.runId ?? ""),
-      artifactPath: String(input?.artifactPath ?? ""),
-    }),
-  );
-
-  ipcMain.handle("native:mark-harness-task-achieved", (_event, input) =>
-    ensureOrchestrationHarness().markTaskAchieved({ taskId: String(input?.taskId ?? "") }),
-  );
-
-  ipcMain.handle("native:respond-harness-attention", (_event, input) =>
-    ensureOrchestrationHarness().respondToAttention({
-      attentionId: String(input?.attentionId ?? ""),
-      response: String(input?.response ?? ""),
-    }),
-  );
-}
-
-function ensureOrchestrationHarness() {
-  if (orchestrationHarness) return orchestrationHarness;
-  const resolvedOpencodePath = resolveOpencodePath();
-  if (!resolvedOpencodePath) throw new Error("OpenCode is required for the orchestration harness.");
-  orchestrationHarness = createOrchestrationHarness({
-    sessionAuthority,
-    ptyManager,
-    sessionStore: runtimeSessionStore,
-    opencodePath: resolvedOpencodePath,
-    databasePath: path.join(app.getPath("userData"), "agent-workspace", "orchestration-harness.sqlite"),
-    openCodeHookService: (openCodeHookService ??= createOpenCodeHookService()),
-  });
-  return orchestrationHarness;
 }
 
 function publishAgentLoopRuntimeChange(change) {
@@ -679,7 +606,6 @@ async function startWebRuntimeBridge() {
     getAgentLoopRuntime: ensureAgentLoopRuntime,
     readWorkspaceTerminalLog,
     appendTaskEvent,
-    sanitizeAgentLoopTemplate,
     validateAgentLoopProjectDirectory,
     suggestAgentLoopProjectDirectories,
     terminalClientAttachments,
@@ -773,7 +699,7 @@ function readWorkspaceTerminalLog(input) {
   if (!Object.prototype.hasOwnProperty.call(sessionMap, sessionId)) {
     throw new Error("Terminal diagnostic log Session does not belong to this Task.");
   }
-  return runtimeSessionStore.readTerminalLog({
+  return runtimeSessionCapabilities.terminal.readTerminalLog({
     taskId,
     sessionId,
     cwd: task.cwd,
@@ -795,7 +721,7 @@ async function appendTaskEvent(input) {
       data: sanitizeJsonObject(input?.data),
     });
   }
-  const event = runtimeSessionStore.recordTaskEvent({
+  const event = runtimeSessionCapabilities.taskTimeline.recordTaskEvent({
     taskId,
     sessionId: input?.sessionId ? String(input.sessionId) : "",
     cwd: String(input?.cwd ?? ""),
@@ -803,7 +729,7 @@ async function appendTaskEvent(input) {
     summary: String(input?.summary ?? ""),
     data: sanitizeJsonObject(input?.data),
   });
-  return { ok: true, event, taskState: runtimeSessionStore.readTaskState({ taskId }) };
+  return { ok: true, event, taskState: runtimeSessionCapabilities.readModel.readTaskState({ taskId }) };
 }
 
 function ensureAgentLoopRuntime() {
@@ -813,7 +739,7 @@ function ensureAgentLoopRuntime() {
   agentLoopRuntime = createAgentLoopV1Runtime({
     sessionAuthority,
     ptyManager,
-    sessionStore: runtimeSessionStore,
+    sessionStoreCapabilities: runtimeSessionCapabilities,
     opencodePath: resolvedOpencodePath,
     databasePath: path.join(app.getPath("userData"), "agent-workspace", "agent-loop-v1.sqlite"),
     generateTemplateFromBrief: (input) => generateAgentLoopTemplate(input),
@@ -842,6 +768,13 @@ function ensureAgentLoopRuntime() {
       return conductorToolBridgeRuntimeConfig;
     },
   });
+  // Start/Stop/Delete persist their command intent before touching native
+  // Sessions or runtime directories. Resume any prepared intent immediately
+  // after the durable Task registry is restored; per-Task serialization keeps
+  // this safe if the renderer submits another lifecycle command concurrently.
+  void agentLoopRuntime.reconcilePreparedLifecycleCommands().catch((error) => {
+    console.error("Failed to reconcile prepared Agent Loop lifecycle commands", error);
+  });
   // Startup may reveal durable wakeups whose prior Conductor PTY was reaped
   // while Electron was closed.  The monitor will hydrate them from the newly
   // restored task registry and ask this runtime to create a fresh generation.
@@ -852,39 +785,6 @@ function ensureAgentLoopRuntime() {
   // retained answer once OpenCode asks again.
   void agentLoopRuntime.resumePendingPermissionRecoveries().catch(() => undefined);
   return agentLoopRuntime;
-}
-
-function sanitizeAgentLoopTemplate(input) {
-  const value = input && typeof input === "object" ? input : {};
-  return {
-    id: value.id ? String(value.id) : undefined,
-    name: String(value.name ?? ""),
-    source: value.source ? String(value.source) : "manual",
-    conductor: value.conductor && typeof value.conductor === "object" ? {
-      role: value.conductor.role ? String(value.conductor.role) : undefined,
-      model: value.conductor.model ? String(value.conductor.model) : undefined,
-      charter: value.conductor.charter ? String(value.conductor.charter) : "",
-    } : undefined,
-    agents: Array.isArray(value.agents) ? value.agents.map((agent) => ({
-      id: agent?.id ? String(agent.id) : undefined,
-      name: agent?.name ? String(agent.name) : undefined,
-      kind: agent?.kind ? String(agent.kind) : undefined,
-      role: agent?.role ? String(agent.role) : undefined,
-      model: agent?.model ? String(agent.model) : undefined,
-      mcp: Array.isArray(agent?.mcp) ? agent.mcp.map(String) : [],
-      skills: Array.isArray(agent?.skills) ? agent.skills.map(String) : [],
-      instructions: agent?.instructions ? String(agent.instructions) : "",
-      expectedOutput: agent?.expectedOutput ? String(agent.expectedOutput) : "",
-    })) : [],
-    limits: value.limits && typeof value.limits === "object" ? {
-      maxConcurrentSessions: Number(value.limits.maxConcurrentSessions),
-      maxDispatchesPerDecision: Number(value.limits.maxDispatchesPerDecision),
-    } : undefined,
-    delivery: value.delivery && typeof value.delivery === "object" ? {
-      artifactPath: value.delivery.artifactPath ? String(value.delivery.artifactPath) : "",
-      ownerAgentId: value.delivery.ownerAgentId ? String(value.delivery.ownerAgentId) : "",
-    } : undefined,
-  };
 }
 
 function watchTerminalClient(webContents) {

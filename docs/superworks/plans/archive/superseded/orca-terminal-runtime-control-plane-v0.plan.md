@@ -3,7 +3,7 @@
 Date: 2026-07-24
 
 Status: Historical v0 plan. Superseded for the active runtime by
-[`../spec/orca-terminal-runtime-adoption.md`](../spec/orca-terminal-runtime-adoption.md)
+[`../../../spec/orca-terminal-runtime-adoption.md`](../../../spec/orca-terminal-runtime-adoption.md)
 (2026-07-26): Electron Main is now the local-daemon client/coordinator, while
 the daemon is the only PTY owner. This document records the earlier Main-owned
 foundation and must not be used to reintroduce a direct Main PTY path or a
@@ -169,7 +169,7 @@ Verification:
 
 Generated/manual Loop Template Draft persistence is now part of Agent Loop v1.
 The former bounded Workflow graph runner is historical material at
-`../spec/archive/2026-07-25-opencode-nested-workflow-harness.md`; it is not an
+`../../../spec/archive/2026-07-25-opencode-nested-workflow-harness.md`; it is not an
 active Runtime dependency. The terminal transcript remains diagnostic evidence,
 while the semantic Task Timeline stays independently recorded.
 

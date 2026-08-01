@@ -1,6 +1,6 @@
 # Superworks Spec README
 
-Date: 2026-07-29
+Date: 2026-08-02
 
 This directory contains the current product contract for Agent Workspace.
 Historical material is kept only as implementation evidence. It must not be
@@ -21,7 +21,6 @@ or an old terminal-text parser.
 | `product-interaction-map.md` | Templates, Tasks Timeline, Workbench, task tabs, native attention, and artifact inspection interaction | MCP payloads or provider database parsing |
 | `orca-terminal-runtime-adoption.md` | daemon-owned PTY, snapshot/delta/ACK/backpressure, attach/recovery, and transport receipts | task routing or answer-quality judgment |
 | `opencode-provider-adapter-orca-alignment.md` | Orca-aligned OpenCode observer rewrite, exact dispatch binding, reconciliation, wakeup, and acceptance harnesses | terminal transport or Conductor next-step selection |
-| `provider-session-state-detection.md` | historical Provider-state detection context; superseded where it conflicts with the active adapter rewrite | Conductor next-step selection |
 | `development-instrumentation.md` | durable semantic events, diagnostics, redaction, and E2E evidence | live orchestration policy |
 
 ## Non-Negotiable Boundaries
@@ -34,7 +33,8 @@ Template description
   -> Conductor decides zero or more dispatches
   -> Terminal Runtime + Provider Adapter report facts
   -> Coordinator records facts and wakes Conductor
-  -> user inspects an artifact and may mark the Task achieved
+  -> Conductor records delivery_ready
+  -> user inspects the delivery and may mark the Task achieved
 ```
 
 - **Agent Loop is the only current mode.** A Loop Template has a Charter and
@@ -63,7 +63,8 @@ Template description
 3. Terminal ownership, snapshot, stream, ACK, reconnect, or input change:
    update `orca-terminal-runtime-adoption.md` first.
 4. OpenCode receipt/result/attention detection change: update
-   `provider-session-state-detection.md` first.
+   `opencode-provider-adapter-orca-alignment.md` first. The older
+   `provider-session-state-detection.md` is historical context only.
 5. Conductor prompt, Template generation, Agent Card, handoff, or user-message
    behavior: update `agent-loop-conductor-guidance.md` first.
 6. Template/Task/Run vocabulary or lifecycle change: update
@@ -86,11 +87,16 @@ Template description
   nested Workflow harness proposal; superseded by the native Agent Loop path.
 - `plans/deprecated/opencode-nested-workflow-harness-v1.plan.md` — historical
   execution plan for that proposal.
-- `plans/orca-terminal-runtime-control-plane-v0.plan.md` and
-  `plans/terminal-host-orca-migration-v1.plan.md` — migration evidence only;
+- `plans/archive/superseded/orca-terminal-runtime-control-plane-v0.plan.md` and
+  `plans/archive/superseded/terminal-host-orca-migration-v1.plan.md` — migration evidence only;
   `orca-terminal-runtime-adoption.md` is the active Runtime authority.
 - `design/archive/2026-07-24-pre-task-architecture/` — superseded visual
   mockups.
+- `design/archive/2026-07-24-task-template-runtime-v5/` — later Task Assembly
+  and Workflow mockups; also historical because Workflow is not an active mode.
+- `provider-session-state-detection.md` — earlier Provider-state contract;
+  retained in place for linked historical evidence, superseded by
+  `opencode-provider-adapter-orca-alignment.md` for current changes.
 
 Archived documents do not override the current specifications. Runtime machine
 state belongs under `.agent-workspace/`, never inside this directory.

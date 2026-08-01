@@ -58,6 +58,11 @@ const initialManualNodes: ManualNode[] = [
   { id: "verify", role: "Verifier", instruction: "Validate the collected evidence and report PASS or NEEDS_REVIEW.", kind: "verify", dependsOn: ["research"] },
 ];
 
+/**
+ * @deprecated Historical nested-Workflow Harness surface. The production app
+ * renders AgentLoopApp and its Loop Templates; keep this surface only for
+ * isolated migration and verification coverage.
+ */
 export function HarnessApp({ projectPath, projectName }: { projectPath: string; projectName: string }) {
   const runtimeAvailable = isNativeHarnessRuntimeAvailable();
   const [view, setView] = useState<HarnessView>("tasks");

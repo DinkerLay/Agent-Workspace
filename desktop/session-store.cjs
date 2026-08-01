@@ -70,7 +70,7 @@ function createSessionStore({
     const existed = fs.existsSync(taskDirectory);
     if (existed) fs.rmSync(taskDirectory, { recursive: true, force: true });
     taskRoots.delete(safeSegment(taskId));
-    notifyTaskChange({ taskId, type: "task.deleted" });
+    if (input.notify !== false) notifyTaskChange({ taskId, type: "task.deleted" });
     return { deleted: true, taskId, runtimeDirectoryRemoved: existed };
   }
 
@@ -78,7 +78,7 @@ function createSessionStore({
     ensureSessionDir(session);
     const cursor = appendEvent(session, "session.started", undefined, `Started ${session.command ?? "session"}`);
     writeState(session, {
-      state: "ready",
+      terminalState: "ready",
       command: session.command,
       cwd: session.cwd,
       provider: session.provider,
@@ -168,6 +168,35 @@ function createSessionStore({
       cursor,
       lastStateSummary: summary,
       lastStateData: data,
+      updatedAt: new Date().toISOString(),
+    });
+    return cursor;
+  }
+
+  function recordTerminalState(session, state, summary, data = {}) {
+    return recordOwnedSessionState(session, "terminal", normalizeTerminalOwnerState(state), summary, data);
+  }
+
+  function recordProviderSessionState(session, state, summary, data = {}) {
+    return recordOwnedSessionState(session, "provider", normalizeProviderOwnerState(state), summary, data);
+  }
+
+  function recordOwnedSessionState(session, owner, state, summary, data) {
+    if (!state) throw new Error(`Session Store ${owner} state is invalid.`);
+    const stateField = `${owner}State`;
+    const summaryField = `last${owner[0].toUpperCase()}${owner.slice(1)}StateSummary`;
+    const dataField = `last${owner[0].toUpperCase()}${owner.slice(1)}StateData`;
+    const current = readJson(path.join(ensureSessionDir(session), "state.json")) ?? {};
+    const unchanged = String(current[stateField] ?? "") === state
+      && current[summaryField] === summary
+      && JSON.stringify(current[dataField] ?? {}) === JSON.stringify(data ?? {});
+    if (unchanged) return latestKnownEventCursor(session, current.cursor ?? 0);
+    const cursor = appendEvent(session, `${owner}.${state}`, undefined, summary, data);
+    writeState(session, {
+      [stateField]: state,
+      [summaryField]: summary,
+      [dataField]: data,
+      cursor,
       updatedAt: new Date().toISOString(),
     });
     return cursor;
@@ -277,7 +306,7 @@ function createSessionStore({
         patterns: replayed.patterns,
         response,
       });
-      recordState(session, "permission_required", "OpenCode 已重新请求相同范围的授权；正在交付已保留的答复。", {
+      recordProviderSessionState(session, "permission_required", "OpenCode 已重新请求相同范围的授权；正在交付已保留的答复。", {
         permissionId,
         previousPermissionIds,
         provider: replayed.provider,
@@ -294,7 +323,7 @@ function createSessionStore({
       permission: record.permission,
       patterns: record.patterns,
     });
-    recordState(session, "permission_required", "OpenCode 正在等待用户授权。", {
+    recordProviderSessionState(session, "permission_required", "OpenCode 正在等待用户授权。", {
       permissionId: record.permissionId,
       permission: record.permission,
       patterns: record.patterns,
@@ -314,7 +343,7 @@ function createSessionStore({
     const record = { ...existing, status: "submitted", response, submittedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     upsertPermissionRecord(file, permissionId, record);
     appendEvent(session, "permission.response_submitted", undefined, "用户已提交 OpenCode 授权答复，等待 Provider 确认。", { permissionId, response });
-    recordState(session, "permission_required", "已提交授权答复，等待 OpenCode 确认。", { permissionId, response });
+    recordProviderSessionState(session, "permission_required", "已提交授权答复，等待 OpenCode 确认。", { permissionId, response });
     return { ...record, changed: true };
   }
 
@@ -341,7 +370,7 @@ function createSessionStore({
     };
     upsertPermissionRecord(file, permissionId, record);
     appendEvent(session, "permission.response_recovery_queued", undefined, "应用重启后旧授权通道不可用；已保留用户答复并等待恢复原生 Session。", { permissionId, response });
-    recordState(session, "permission_required", "已保留授权答复；正在恢复原生 Session，等待 OpenCode 重新请求。", { permissionId, response, recovery: true });
+    recordProviderSessionState(session, "permission_required", "已保留授权答复；正在恢复原生 Session，等待 OpenCode 重新请求。", { permissionId, response, recovery: true });
     return { ...record, changed: true };
   }
 
@@ -359,7 +388,7 @@ function createSessionStore({
     };
     upsertPermissionRecord(file, permissionId, record);
     appendEvent(session, "permission.response_recovery_failed", undefined, "未能恢复原生 Session；授权答复尚未送达 OpenCode，可在 Task 页重试。", { permissionId });
-    recordState(session, "permission_required", "无法恢复原生 Session；授权答复尚未送达 OpenCode。", { permissionId, recovery: "failed" });
+    recordProviderSessionState(session, "permission_required", "无法恢复原生 Session；授权答复尚未送达 OpenCode。", { permissionId, recovery: "failed" });
     return { ...record, changed: true };
   }
 
@@ -387,7 +416,7 @@ function createSessionStore({
     };
     upsertPermissionRecord(file, permissionId, record);
     appendEvent(session, "permission.response_retry_required", undefined, "OpenCode 未接收这次授权答复；需要在 Task 页重新选择。", { permissionId });
-    recordState(session, "permission_required", "OpenCode 未接收授权答复；需要在 Task 页重新选择。", { permissionId, retryRequired: true });
+    recordProviderSessionState(session, "permission_required", "OpenCode 未接收授权答复；需要在 Task 页重新选择。", { permissionId, retryRequired: true });
     return { ...record, changed: true };
   }
 
@@ -403,7 +432,7 @@ function createSessionStore({
     const record = { ...existing, status, response, resolvedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     upsertPermissionRecord(file, permissionId, record);
     appendEvent(session, "permission.resolved", undefined, `OpenCode 已确认用户${response === "reject" ? "拒绝" : "授权"}该请求。`, { permissionId, response });
-    recordState(session, "running", "OpenCode 已确认用户的授权答复。", { permissionId, response });
+    recordProviderSessionState(session, "running", "OpenCode 已确认用户的授权答复。", { permissionId, response });
     return { ...record, changed: true };
   }
 
@@ -482,11 +511,6 @@ function createSessionStore({
       contextRefs: record.contextRefs,
       contextResultIds: record.contextPackets.map((packet) => packet?.resultId).filter(Boolean),
     });
-    writeState(session, {
-      state: "queued",
-      activeDispatchId: dispatchId,
-      updatedAt: new Date().toISOString(),
-    });
     return record;
   }
 
@@ -503,8 +527,6 @@ function createSessionStore({
       timestampField: "inputAcceptedAt",
       eventType: "dispatch.input_accepted",
       eventSummary: `Dispatch ${input.dispatchId} accepted by Terminal Runtime`,
-      sessionState: "queued",
-      stateSummary: "Terminal Runtime accepted serialized dispatch input; awaiting OpenCode receipt.",
       data: {
         transport: input.transport ? String(input.transport) : "terminal_runtime",
         incarnationId: input.incarnationId ? String(input.incarnationId) : undefined,
@@ -525,8 +547,7 @@ function createSessionStore({
       timestampField: "providerReceivedAt",
       eventType: "dispatch.provider.received",
       eventSummary: `Dispatch ${input.dispatchId} recorded by OpenCode`,
-      sessionState: "delivered_pending",
-      stateSummary: "OpenCode recorded the exact dispatch marker; awaiting Provider outcome.",
+      ownerSummary: "OpenCode recorded the exact dispatch marker; awaiting Provider outcome.",
       data: {
         provider: input.provider ? String(input.provider) : "opencode",
         providerSessionId: input.providerSessionId ? String(input.providerSessionId) : undefined,
@@ -534,6 +555,8 @@ function createSessionStore({
         dispatchMessageCreatedAt: Number.isFinite(input.dispatchMessageCreatedAt) ? input.dispatchMessageCreatedAt : undefined,
         databaseSourceId: input.databaseSourceId ? String(input.databaseSourceId) : undefined,
       },
+      owner: "provider",
+      ownerState: "running",
       dispatchPatch: {
         provider: input.provider ? String(input.provider) : "opencode",
         providerSessionId: input.providerSessionId ? String(input.providerSessionId) : undefined,
@@ -554,8 +577,7 @@ function createSessionStore({
       timestampField: "providerFailedAt",
       eventType: "dispatch.provider.failed",
       eventSummary: input.message ?? `Dispatch ${input.dispatchId} reached a terminal Provider failure`,
-      sessionState: input.state === "exited" ? "exited" : "blocked",
-      stateSummary: input.message ?? "Provider reached a terminal failure without a usable result.",
+      ownerSummary: input.message ?? "Provider reached a terminal failure without a usable result.",
       data: {
         reason: input.reason ? String(input.reason) : "provider_terminal_failure",
         provider: input.provider ? String(input.provider) : "opencode",
@@ -564,6 +586,8 @@ function createSessionStore({
         providerStepFinishId: input.providerStepFinishId ? String(input.providerStepFinishId) : undefined,
         stepFinishReason: input.stepFinishReason ? String(input.stepFinishReason) : undefined,
       },
+      owner: "provider",
+      ownerState: "blocked",
       dispatchPatch: {
         failureReason: input.reason ? String(input.reason) : "provider_terminal_failure",
         failureMessage: input.message ? String(input.message) : undefined,
@@ -587,8 +611,6 @@ function createSessionStore({
       timestampField: "deliveryFailedAt",
       eventType: "dispatch.delivery_failed",
       eventSummary: input.message ?? `Terminal Runtime ended before Dispatch ${input.dispatchId} was observed by OpenCode`,
-      sessionState: "delivery_failed",
-      stateSummary: input.message ?? "Terminal Runtime ended before OpenCode recorded this dispatch.",
       data: {
         reason: input.reason ? String(input.reason) : "terminal_exit_before_receipt",
         terminalState: input.terminalState ? String(input.terminalState) : "exited",
@@ -610,8 +632,6 @@ function createSessionStore({
       timestampField: "cancellationRequestedAt",
       eventType: "dispatch.cancellation_requested",
       eventSummary: input.message ?? `Conductor requested cancellation of Dispatch ${input.dispatchId}`,
-      sessionState: "cancellation_requested",
-      stateSummary: input.message ?? "Conductor requested cancellation; awaiting terminal or Provider confirmation.",
       data: {
         reason: input.reason ? String(input.reason) : "conductor_cancelled",
         terminalIncarnationId: input.terminalIncarnationId ? String(input.terminalIncarnationId) : undefined,
@@ -636,8 +656,6 @@ function createSessionStore({
       timestampField: "cancelledAt",
       eventType: "dispatch.cancelled",
       eventSummary: input.message ?? `Dispatch ${input.dispatchId} cancellation confirmed`,
-      sessionState: "cancelled",
-      stateSummary: input.message ?? "Terminal Runtime confirmed the dispatch was cancelled.",
       data: {
         reason: input.reason ? String(input.reason) : "conductor_cancelled",
         confirmation: input.confirmation ? String(input.confirmation) : "terminal_exit",
@@ -660,8 +678,6 @@ function createSessionStore({
       timestampField: "cancellationFailedAt",
       eventType: "dispatch.cancel_failed",
       eventSummary: input.message ?? `Terminal Runtime could not cancel Dispatch ${input.dispatchId}`,
-      sessionState: "cancellation_failed",
-      stateSummary: input.message ?? "Cancellation request could not be delivered to the terminal.",
       data: { reason: input.reason ? String(input.reason) : "terminal_interrupt_failed" },
       dispatchPatch: {
         cancellationFailureReason: input.reason ? String(input.reason) : "terminal_interrupt_failed",
@@ -733,13 +749,14 @@ function createSessionStore({
         dispatchId: input.dispatchId,
         ...(transition.data ?? {}),
       });
-      writeState(session, {
-        state: transition.sessionState,
-        activeDispatchId: input.dispatchId,
-        lastStateSummary: transition.stateSummary,
-        lastStateData: { dispatchId: input.dispatchId, ...(transition.data ?? {}) },
-        updatedAt: new Date().toISOString(),
-      });
+      if (transition.owner === "provider") {
+        recordProviderSessionState(
+          session,
+          transition.ownerState,
+          transition.ownerSummary,
+          transition.data ?? {},
+        );
+      }
     }
     return { dispatchId: input.dispatchId, status: updated.status, changed };
   }
@@ -766,18 +783,6 @@ function createSessionStore({
       reason: input.reason,
       message: input.message,
       error: input.error,
-    });
-    writeState(session, {
-      state: "delivery_failed",
-      activeDispatchId: input.dispatchId,
-      lastStateSummary: input.message ?? input.reason ?? "Dispatch failed",
-      lastStateData: {
-        dispatchId: input.dispatchId,
-        reason: input.reason,
-        message: input.message,
-        error: input.error,
-      },
-      updatedAt: new Date().toISOString(),
     });
   }
 
@@ -861,12 +866,6 @@ function createSessionStore({
         answerPreview: resultRecord.answerPreview,
       });
     }
-    writeState(session, {
-      state: "result_available",
-      activeDispatchId: input.dispatchId,
-      lastResultId: resultRecord.resultId,
-      updatedAt: new Date().toISOString(),
-    });
     return { ...resultRecord, status: updated.status, changed };
   }
 
@@ -1049,13 +1048,14 @@ function createSessionStore({
 
     const dispatches = readJsonLines(path.join(dir, "dispatches.jsonl"));
     const results = readViewJsonLines(path.join(dir, "results.jsonl"));
-    const projection = projectSessionRuntimeState(state.state, dispatches, results);
+    const projection = projectSessionRuntimeState(state, dispatches, results);
 
     return {
       sessionId: input.sessionId,
       ...projection,
       cursor: state.cursor ?? events.at(-1)?.cursor ?? 0,
       providerBinding: state.providerBinding,
+      ...projectSessionStateDetail(state, projection),
       cleanTranscriptTail: "",
       events,
       dispatches,
@@ -1096,14 +1096,13 @@ function createSessionStore({
       const sessionArtifacts = readViewJsonLines(path.join(dir, "artifacts.jsonl"));
       const sessionId = state.sessionId ?? sessionDispatches[0]?.toSessionId ?? sessionResults[0]?.sessionId ?? entry.name;
 
-      const projection = projectSessionRuntimeState(state.state, sessionDispatches, sessionResults);
+      const projection = projectSessionRuntimeState(state, sessionDispatches, sessionResults);
       sessions.push({
         sessionId,
         ...projection,
         cursor: state.cursor ?? 0,
         updatedAt: state.updatedAt,
-        lastStateSummary: state.lastStateSummary,
-        lastStateData: state.lastStateData,
+        ...projectSessionStateDetail(state, projection),
         providerBinding: state.providerBinding,
       });
       dispatches.push(...sessionDispatches);
@@ -1149,15 +1148,28 @@ function createSessionStore({
   function recordTaskEvent(input) {
     const taskId = String(input?.taskId ?? "");
     const sessionId = input?.sessionId ? String(input.sessionId) : "";
+    const sourceEventId = input?.eventId ? String(input.eventId) : "";
     const eventRoot = resolveRoot({ taskId, cwd: input?.cwd ? String(input.cwd) : undefined });
     const taskEventsPath = path.join(eventRoot, safeSegment(taskId), "events.jsonl");
     fs.mkdirSync(path.dirname(taskEventsPath), { recursive: true });
     if (!fs.existsSync(taskEventsPath)) fs.writeFileSync(taskEventsPath, "");
 
     const taskEvents = readJsonLines(taskEventsPath);
-    const cursor = nextEventCursor(taskEvents);
-    const event = {
+    const existingTaskEvent = sourceEventId
+      ? taskEvents.find((event) => String(event?.sourceEventId ?? "") === sourceEventId)
+      : undefined;
+    if (existingTaskEvent) return existingTaskEvent;
+
+    const sessionEventsPath = sessionId
+      ? pathFor({ taskId, sessionId, cwd: input?.cwd ? String(input.cwd) : undefined }, "events.jsonl")
+      : undefined;
+    const existingSessionEvent = sourceEventId && sessionEventsPath
+      ? readJsonLines(sessionEventsPath).find((event) => String(event?.sourceEventId ?? "") === sourceEventId)
+      : undefined;
+    const cursor = existingSessionEvent?.cursor ?? nextEventCursor(taskEvents);
+    const event = existingSessionEvent ?? {
       id: `event-${cursor}`,
+      ...(sourceEventId ? { sourceEventId } : {}),
       taskId,
       sessionId,
       type: String(input?.type ?? "task.event"),
@@ -1167,9 +1179,7 @@ function createSessionStore({
       data: input?.data && typeof input.data === "object" && !Array.isArray(input.data) ? input.data : {},
     };
 
-    if (sessionId) {
-      appendJsonLine(pathFor({ taskId, sessionId, cwd: input?.cwd ? String(input.cwd) : undefined }, "events.jsonl"), event);
-    }
+    if (sessionEventsPath && !existingSessionEvent) appendJsonLine(sessionEventsPath, event);
     appendJsonLine(taskEventsPath, event);
     notifyTaskChange(event);
     return event;
@@ -1202,7 +1212,10 @@ function createSessionStore({
   function writeState(session, patch) {
     const file = pathFor(session, "state.json");
     const current = readJson(file) ?? {};
-    const providerBinding = nextProviderBinding(current.providerBinding, patch.providerBinding ?? patch.lastStateData);
+    const providerBinding = nextProviderBinding(
+      current.providerBinding,
+      patch.providerBinding ?? patch.lastProviderStateData ?? patch.lastStateData,
+    );
     fs.writeFileSync(
       file,
       `${JSON.stringify({ ...current, taskId: session.taskId, sessionId: session.sessionId, ...patch, providerBinding }, null, 2)}\n`,
@@ -1277,6 +1290,9 @@ function createSessionStore({
     startSession,
     recordOutput,
     readTerminalLog,
+    recordTerminalState,
+    recordProviderSessionState,
+    /** @deprecated Compatibility for historical harnesses and fixtures. */
     recordState,
     readQuestionResponse,
     recordQuestionResponseSubmitted,
@@ -1423,8 +1439,17 @@ function buildTaskPendingDecisions({ sessions, dispatches, results, permissions,
   return decisions;
 }
 
-function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
-  const state = normalizeSessionRuntimeState(rawState);
+function projectSessionRuntimeState(rawFacts, dispatches = [], results = []) {
+  const facts = rawFacts && typeof rawFacts === "object" ? rawFacts : { state: rawFacts };
+  // Historical state.json files used one generic `state` writer. Prefer that
+  // explicit compatibility fact over a passive Terminal `ready` fact, while
+  // keeping new owner-specific Terminal failure and Provider attention facts
+  // authoritative. New production writes never add this legacy field.
+  const legacyState = Object.hasOwn(facts, "state")
+    ? normalizeSessionRuntimeState(facts.state)
+    : undefined;
+  const terminalState = normalizeTerminalOwnerState(facts.terminalState);
+  const providerState = normalizeProviderOwnerState(facts.providerState);
   const resultDispatches = dispatches.filter((dispatch) => dispatch.status === "result_available");
   const activeDispatches = dispatches.filter((dispatch) => ["queued", "input_accepted", "delivered", "cancellation_requested", "cancel_failed"].includes(dispatch.status));
   const failedDispatches = dispatches.filter((dispatch) => ["failed", "delivery_failed", "provider_failed", "cancel_failed"].includes(dispatch.status));
@@ -1440,15 +1465,22 @@ function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
   const lastResultId = latestResult?.resultId ?? latestResultDispatch?.resultId;
   const attentionHints = [];
 
-  let projectedState = state;
-  if (PROVIDER_ATTENTION_STATES.has(state) || PROCESS_UNAVAILABLE_STATES.has(state)) {
-    projectedState = state;
+  let projectedState = providerState ?? legacyState ?? terminalState ?? "ready";
+  if (
+    (terminalState && PROCESS_UNAVAILABLE_STATES.has(terminalState))
+    || (legacyState && PROCESS_UNAVAILABLE_STATES.has(legacyState))
+  ) {
+    projectedState = terminalState && PROCESS_UNAVAILABLE_STATES.has(terminalState)
+      ? terminalState
+      : legacyState;
+  } else if (providerState && PROVIDER_ATTENTION_STATES.has(providerState)) {
+    projectedState = providerState;
   } else if (latestActiveDispatch?.status === "queued") {
     projectedState = "queued";
   } else if (latestActiveDispatch?.status === "input_accepted") {
     projectedState = "queued";
   } else if (latestActiveDispatch?.status === "delivered") {
-    projectedState = state === "running" ? "running" : "delivered_pending";
+    projectedState = providerState === "running" ? "running" : "delivered_pending";
   } else if (latestActiveDispatch?.status === "cancellation_requested") {
     projectedState = "cancellation_requested";
   } else if (latestActiveDispatch?.status === "cancel_failed") {
@@ -1465,6 +1497,8 @@ function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
 
   return {
     state: projectedState,
+    terminalState,
+    providerState,
     activeDispatchId: latestActiveDispatch?.dispatchId ?? unresolvedFailureDispatch?.dispatchId,
     lastResultId,
     resultCount,
@@ -1475,6 +1509,29 @@ function projectSessionRuntimeState(rawState, dispatches = [], results = []) {
       lastResultId,
       latestActiveDispatch,
     }),
+  };
+}
+
+function projectSessionStateDetail(facts, projection) {
+  if (projection.providerState && projection.state === projection.providerState) {
+    return {
+      lastStateSummary: facts.lastProviderStateSummary,
+      lastStateData: facts.lastProviderStateData,
+    };
+  }
+  if (projection.terminalState && projection.state === projection.terminalState) {
+    return {
+      lastStateSummary: facts.lastTerminalStateSummary,
+      lastStateData: facts.lastTerminalStateData,
+    };
+  }
+  return {
+    lastStateSummary: facts.lastStateSummary
+      ?? facts.lastProviderStateSummary
+      ?? facts.lastTerminalStateSummary,
+    lastStateData: facts.lastStateData
+      ?? facts.lastProviderStateData
+      ?? facts.lastTerminalStateData,
   };
 }
 
@@ -1540,6 +1597,38 @@ function normalizeSessionRuntimeState(state) {
   if (RUNTIME_SESSION_STATES.has(value)) return value;
   return "ready";
 }
+
+function normalizeTerminalOwnerState(state) {
+  const value = String(state ?? "").trim();
+  return TERMINAL_OWNER_STATES.has(value) ? value : undefined;
+}
+
+function normalizeProviderOwnerState(state) {
+  const value = String(state ?? "").trim();
+  return PROVIDER_OWNER_STATES.has(value) ? value : undefined;
+}
+
+const TERMINAL_OWNER_STATES = new Set([
+  "not_started",
+  "starting",
+  "ready",
+  "running",
+  "stopping",
+  "stopped",
+  "exited",
+  "start_failed",
+]);
+
+const PROVIDER_OWNER_STATES = new Set([
+  "ready",
+  "running",
+  "waiting_input",
+  "permission_required",
+  "waiting_conductor",
+  "blocked",
+  "timeout",
+  "result_invalid",
+]);
 
 const RUNTIME_SESSION_STATES = new Set([
   "not_started",

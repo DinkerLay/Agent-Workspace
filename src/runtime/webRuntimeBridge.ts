@@ -74,6 +74,7 @@ function createWebNativeRuntimeBridge({
     onTerminalClientEvent: (callback) => events.subscribe<NativeTerminalClientEvent>("terminal-client", callback),
     onAgentLoopRuntimeEvent: (callback) => events.subscribe<NativeAgentLoopRuntimeEvent>("agent-loop-runtime", callback),
     appendTaskEvent: (input) => request("appendTaskEvent", input),
+    sendAgentLoopTaskMessage: (input) => request("sendAgentLoopTaskMessage", input),
     listAgentLoopTemplates: () => request<NativeAgentLoopTemplate[]>("listAgentLoopTemplates"),
     generateAgentLoopTemplate: (input) => request<NativeGeneratedAgentLoopTemplateDraft>("generateAgentLoopTemplate", input),
     saveAgentLoopTemplate: (input) => request<NativeAgentLoopTemplate>("saveAgentLoopTemplate", input),
