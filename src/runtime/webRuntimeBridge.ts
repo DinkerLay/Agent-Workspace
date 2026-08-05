@@ -1,5 +1,6 @@
 import type {
   NativeAgentLoopArtifact,
+  NativeCreatedAgentLoopProjectDirectory,
   NativeAgentLoopRunDetail,
   NativeAgentLoopTask,
   NativeAgentLoopTemplate,
@@ -13,7 +14,15 @@ import type {
   NativeTerminalInputResult,
   NativePtySession,
   NativeAgentLoopRuntimeEvent,
+  NativeTemplateDesignDraft,
+  NativeTemplateDesignSaveResult,
+  NativeTemplateDesignEvent,
+  NativeTemplateDesignSession,
+  NativeTemplateDesignSessionSummary,
+  NativeOpenCodeSessionPage,
   NativeOpencodeInput,
+  NativeOpencodeModelCapabilityListInput,
+  NativeOpencodeModelCapabilityListResult,
   NativeOpencodeResult,
 } from "./nativeBridge";
 
@@ -64,6 +73,8 @@ function createWebNativeRuntimeBridge({
   return {
     getRuntimeStatus: async () => ({ ...(await request<NativeRuntimeStatus>("status")), mode: "browser" }),
     runOpencode: (input: NativeOpencodeInput) => request<NativeOpencodeResult>("runOpencode", input),
+    listOpencodeModelCapabilities: (input: NativeOpencodeModelCapabilityListInput = {}) =>
+      request<NativeOpencodeModelCapabilityListResult>("listOpencodeModelCapabilities", input),
     readWorkspaceTerminalLog: (input) => request<NativeTerminalDiagnosticLog | undefined>("readWorkspaceTerminalLog", input),
     attachTerminalClient: (input) => request<NativeTerminalAttachResult | undefined>("attachTerminalClient", input),
     acknowledgeTerminalOutput: (input) => request<{ accepted: boolean; reason?: string }>("acknowledgeTerminalOutput", input),
@@ -73,28 +84,45 @@ function createWebNativeRuntimeBridge({
     stopWorkspaceSession: (input) => request<NativePtySession | undefined>("stopWorkspaceSession", input),
     onTerminalClientEvent: (callback) => events.subscribe<NativeTerminalClientEvent>("terminal-client", callback),
     onAgentLoopRuntimeEvent: (callback) => events.subscribe<NativeAgentLoopRuntimeEvent>("agent-loop-runtime", callback),
+    onAgentLoopTemplateDesignEvent: (callback) => events.subscribe<NativeTemplateDesignEvent>("agent-loop-template-design", callback),
     appendTaskEvent: (input) => request("appendTaskEvent", input),
     sendAgentLoopTaskMessage: (input) => request("sendAgentLoopTaskMessage", input),
     listAgentLoopTemplates: () => request<NativeAgentLoopTemplate[]>("listAgentLoopTemplates"),
+    listAgentLoopTemplateVersions: (input) => request<NativeAgentLoopTemplate[]>("listAgentLoopTemplateVersions", input),
     generateAgentLoopTemplate: (input) => request<NativeGeneratedAgentLoopTemplateDraft>("generateAgentLoopTemplate", input),
     saveAgentLoopTemplate: (input) => request<NativeAgentLoopTemplate>("saveAgentLoopTemplate", input),
     copyAgentLoopTemplate: (input) => request<NativeAgentLoopTemplate>("copyAgentLoopTemplate", input),
     archiveAgentLoopTemplate: (input) => request<NativeAgentLoopTemplate>("archiveAgentLoopTemplate", input),
     deleteAgentLoopTemplate: (input) => request<{ deleted: boolean; templateId: string }>("deleteAgentLoopTemplate", input),
+    getOrCreateAgentLoopTemplateDesignSession: (input) => request<NativeTemplateDesignSession>("getOrCreateAgentLoopTemplateDesignSession", input),
+    listActiveAgentLoopTemplateDesignSessions: (input) => request<NativeTemplateDesignSessionSummary[]>("listActiveAgentLoopTemplateDesignSessions", input),
+    readAgentLoopTemplateDesignSession: (input) => request<NativeTemplateDesignDraft | undefined>("readAgentLoopTemplateDesignSession", input),
+    saveAgentLoopTemplateDesignDraft: (input) => request<NativeTemplateDesignSaveResult>("saveAgentLoopTemplateDesignDraft", input),
+    discardAgentLoopTemplateDesignDraft: (input) => request<NativeTemplateDesignDraft>("discardAgentLoopTemplateDesignDraft", input),
+    openAgentLoopTemplateDesignSessionPage: (input) => request<NativeOpenCodeSessionPage | undefined>("openAgentLoopTemplateDesignSessionPage", input),
+    releaseAgentLoopTemplateDesignSessionPage: (input) => request<boolean>("releaseAgentLoopTemplateDesignSessionPage", input),
     validateAgentLoopProjectDirectory: (input) => request<{ path: string; name: string } | undefined>("validateAgentLoopProjectDirectory", input),
     suggestAgentLoopProjectDirectories: (input) => request<string[]>("suggestAgentLoopProjectDirectories", input),
+    createAgentLoopProjectDirectory: (input) => request<NativeCreatedAgentLoopProjectDirectory>("createAgentLoopProjectDirectory", input),
     createAgentLoopTask: (input) => request<NativeAgentLoopTask>("createAgentLoopTask", input),
-    listAgentLoopTasks: () => request<NativeAgentLoopTask[]>("listAgentLoopTasks"),
+    listAgentLoopTasks: (input) => request<NativeAgentLoopTask[]>("listAgentLoopTasks", input),
     readAgentLoopTask: (input) => request<NativeAgentLoopTask | undefined>("readAgentLoopTask", input),
     startAgentLoopRun: (input) => request<NativeAgentLoopRunDetail>("startAgentLoopRun", input),
     readAgentLoopRun: (input) => request<NativeAgentLoopRunDetail | undefined>("readAgentLoopRun", input),
+    openAgentLoopOpenCodeSessionPage: (input) => request("openAgentLoopOpenCodeSessionPage", input),
+    releaseAgentLoopOpenCodeSessionPage: (input) => request<boolean>("releaseAgentLoopOpenCodeSessionPage", input),
     readAgentLoopWorkbenchLayout: (input) => request<NativeAgentLoopWorkbenchLayout | undefined>("readAgentLoopWorkbenchLayout", input),
     saveAgentLoopWorkbenchLayout: (input) => request<NativeAgentLoopWorkbenchLayout | undefined>("saveAgentLoopWorkbenchLayout", input),
     readAgentLoopArtifact: (input) => request<NativeAgentLoopArtifact>("readAgentLoopArtifact", input),
     markAgentLoopTaskAchieved: (input) => request<NativeAgentLoopTask | undefined>("markAgentLoopTaskAchieved", input),
+    resumeAchievedAgentLoopTask: (input) => request<NativeAgentLoopRunDetail>("resumeAchievedAgentLoopTask", input),
     stopAgentLoopTask: (input) => request<NativeAgentLoopTask | undefined>("stopAgentLoopTask", input),
     respondAgentLoopPermission: (input) => request("respondAgentLoopPermission", input),
     respondAgentLoopQuestion: (input) => request("respondAgentLoopQuestion", input),
+    moveAgentLoopTaskToRecycleBin: (input) => request("moveAgentLoopTaskToRecycleBin", input),
+    restoreAgentLoopTaskFromRecycleBin: (input) => request("restoreAgentLoopTaskFromRecycleBin", input),
+    previewAgentLoopTaskPermanentDeletion: (input) => request("previewAgentLoopTaskPermanentDeletion", input),
+    permanentlyDeleteAgentLoopTask: (input) => request("permanentlyDeleteAgentLoopTask", input),
     deleteAgentLoopTask: (input) => request("deleteAgentLoopTask", input),
   };
 }
@@ -107,10 +135,32 @@ function createRequest(fetchImpl: FetchLike, clientId: string) {
       headers: status ? undefined : { "content-type": "application/json", "x-agent-workspace-client": clientId },
       ...(status ? {} : { body: JSON.stringify({ method, input }) }),
     });
-    const body = await response.json() as { result?: T; error?: string };
-    if (!response.ok) throw new Error(body.error || "runtime_bridge_call_failed");
+    if (!response.ok) {
+      const body = await readErrorBody(response);
+      throw new Error(body?.error || `runtime_bridge_unavailable:${Number(response.status) || 0}`);
+    }
+    const body = await readSuccessBody<T>(response);
+    if (!body) throw new Error("runtime_bridge_response_invalid");
     return body.result as T;
   };
+}
+
+async function readErrorBody(response: Response): Promise<{ error?: string } | undefined> {
+  const contentType = String(response.headers?.get?.("content-type") ?? "").toLocaleLowerCase();
+  if (!contentType.includes("application/json")) return undefined;
+  try {
+    return await response.json() as { error?: string };
+  } catch {
+    return undefined;
+  }
+}
+
+async function readSuccessBody<T>(response: Response): Promise<{ result?: T; error?: string } | undefined> {
+  try {
+    return await response.json() as { result?: T; error?: string };
+  } catch {
+    return undefined;
+  }
 }
 
 function createEventSubscriptions(clientId: string, eventSourceFactory: (url: string) => RuntimeEventSource) {

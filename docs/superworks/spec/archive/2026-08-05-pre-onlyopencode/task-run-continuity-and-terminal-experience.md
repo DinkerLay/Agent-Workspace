@@ -102,7 +102,8 @@ It must behave as follows.
 | Terminal Host or Conductor process is unavailable | persist the message, prove the old PTY is unavailable, then continue the same Task Run through a new Host terminal | `正在继续任务` while starting; Timeline records whether the previous terminal was reused or replaced |
 | Historical message says `sent`, but has no exact Provider input receipt | reuse its original input ID, return that one message to the receipt-pending queue, and continue through the same rules as Send | the original blue user card remains singular; Timeline shows `正在重新发送此前消息` until a Provider receipt and new Conductor output arrive |
 | Task is `delivery_ready` and the current Conductor is live | same as active continuation; this is a new causal input and may reopen work | `已发送给当前 Conductor` |
-| Task is stopped or achieved | do not queue bytes to an old Session | composer explains the next explicit action instead of pretending to continue |
+| Task is stopped | do not queue bytes to an old Session | composer explains the explicit restart action instead of pretending to continue |
+| Task is achieved | the composer does not submit directly; the user first chooses `拉回继续`, whose eligibility and identity rule are defined by [Task, Template, And Runtime Model](task-template-runtime-model.md#states-and-completion) | show the historical delivery, then either attach the original conversation or explain why a new Task is required |
 
 A user follow-up sent to a live Conductor must retain all of the following
 identity facts in diagnostics and test evidence:
@@ -148,11 +149,13 @@ restored.
 
 ### Recovery is internal to Send
 
-There is no `再次连接` or `恢复当前 Run` control on the Task page. If automatic
-continuation cannot start, the message remains durable and pending; a later
-Send retries it. Runtime must not mark it delivered merely because it wrote a
-database row. `查看终端历史` remains a read-only Workbench diagnostic, and
-`重新执行（新 Run）` remains available only from achieved history.
+There is no `再次连接` control on the Task page. If automatic continuation
+cannot start, the message remains durable and pending; a later Send retries
+it. Runtime must not mark it delivered merely because it wrote a database
+row. `查看终端历史` remains a read-only Workbench diagnostic. An achieved Task
+uses the explicit `拉回继续` control rather than ordinary Send; the Task/Run
+lifecycle and fallback semantics are defined in
+`task-template-runtime-model.md`, not duplicated here.
 
 Older Runtime versions may have written a false success: a user-message row
 was marked delivered and its wakeup became `sent` when a replacement PTY
@@ -303,8 +306,8 @@ For a running or `delivery_ready` Task, the composer footer contains:
 | Stop Task | end the current Run's live native Sessions; preserve all durable history; set Task/Run to stopped |
 | Restart a stopped Task | make a new Run and fresh Session identities; never attach the old provider conversation under the word restart |
 | Continue in `delivery_ready` | deliver to the existing live Conductor, preserving the Run; the later Conductor decision can reopen work |
-| Mark achieved | records the user's acceptance from either `running` or `delivery_ready`; it is not a terminal-kill command by itself |
-| Continue an achieved Task | expose an explicit `基于此结果新建 Run` action; do not make the disabled composer appear to deliver to a completed old Run |
+| Mark achieved | records the user's acceptance from either `running` or `delivery_ready`; it is not a terminal-kill command. The durable lifecycle semantics belong to `task-template-runtime-model.md`. |
+| Continue an achieved Task | expose an explicit `拉回继续` action and render the Task/Run service's typed result; it must not invent a Session or decide a fallback route. |
 | Delete Task | available only from the achieved-task list through multi-select and one destructive confirmation; it deletes Runtime records only, never project files by implication |
 
 Stopping is a user-owned lifecycle decision. Recovery is a transport fact and

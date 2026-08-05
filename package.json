@@ -39,6 +39,8 @@
     "desktop:task-draft-native-smoke": "electron desktop/task-draft-native-smoke.cjs",
     "desktop:task-home-native-smoke": "electron desktop/task-home-native-smoke.cjs",
     "desktop:conductor-tool-smoke": "node desktop/conductor-tool-flow-smoke.cjs",
+    "desktop:template-design-opencode-harness": "node desktop/template-design-opencode-harness.cjs",
+    "desktop:template-design-opencode-live-host": "node desktop/template-design-opencode-harness.cjs --live-host",
     "desktop:opencode-nested-workflow-harness-smoke": "node desktop/opencode-nested-workflow-harness-smoke.cjs",
     "desktop:opencode-harness-ui-smoke": "electron desktop/opencode-harness-ui-smoke.cjs",
     "simulate:session-dispatch": "electron test_simulte/session-dispatch/call-session-to-worker.e2e.cjs",

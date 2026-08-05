@@ -1,141 +1,34 @@
-# Product Interaction Map: Agent Loop v1
+# Product Interaction Map: onlyopencode
 
-Date: 2026-07-26
+日期：2026-08-05
+状态：当前页面与操作边界
 
-Status: Accepted current interaction contract.
+| 页面 | 用户做什么 | 不做什么 |
+| --- | --- | --- |
+| Templates | 新建、选择、连续修改 Draft、保存 Version、回退为新 Draft | 直接启动 Task 或隐式保存 |
+| Task 创建 | 输入目标、选择/新建项目目录、选择已保存 Template Version | 默用仓库目录或未保存 Draft |
+| Tasks | 查看状态/Timeline、Start、Achieve、拉回继续、回收/放回 | 伪造 Provider 对话或决定派发路线 |
+| Task Session | 在单一中心画布打开官方 Conductor 或已物化 Worker Session | 自定义终端、多 Group 或预启动 Card |
+| Artifact | 打开已验证、可追溯的项目内交付物 | 把不存在路径显示为交付 |
 
-Agent Loop v1 deliberately has no Workflow or Graph page. A user creates or
-selects a reusable Loop Template, confirms a Task, and uses the Task Timeline
-and terminal Workbench for two different kinds of information.
+## Templates
 
-## Surface Responsibilities
+Meta Agent 入口属于 Templates 左侧栏；打开的是同一个 Draft 的官方 OpenCode Web UI。
+页面初始不自动发消息，用户先描述修改。输入 `@card-id` 或多个 `@card-id` 选择修改范围；
+Meta Agent 返回 Patch，不自动保存。Card 点击只打开 Inspector，不遮挡 Meta Agent。
 
-| Surface | Primary job | May write | Must not do |
-| --- | --- | --- | --- |
-| Task Assembly | turn user intent into a Task using a saved Loop Template | new Task and immutable Template snapshot | start a PTY while drafting |
-| Templates | generate, edit, version, copy, archive, or delete Loop Templates | editable Drafts and saved Template versions | show live execution as template state |
-| Tasks | manage Tasks and show their semantic event projection | user follow-up, start request, achieved action | render raw terminal transport as conversation |
-| Workbench | inspect an active Task Run's native Session terminals | user terminal input, temporary tabs/groups/layout | decide routing, approve a native permission, or alter task semantics |
+Inspector 分开显示 Dispatch profile 与 Worker system prompt。模型是可选列表；MCP/Skills
+使用项目已有 Provider 配置，不在 Card 内伪造新的 Provider Agent。
 
-Project context scopes all pages; a project task list is not a permanent
-Workbench sidebar.
+## Tasks 与官方会话
 
-## Template Creation And Reuse
+Task 创建时项目目录是显式必填项；“新建文件夹”由受控服务完成。没有合适 Template 时，
+页面保留 Task 目标和目录，并提供已有 Version、Meta Agent Draft、手工 Draft 三个入口。
 
-```text
-one-sentence description
-  -> OpenCode proposes an editable Loop Template Draft
-  -> user edits Charter and Agent Cards
-  -> explicit save creates Template Version N
-  -> Task Assembly selects Version N
-```
+Task 页面中央永远优先显示 Conductor 官方会话；左右 Task 列表与 Session 目录可调整宽度。
+Session 目录显示 Conductor 和 Task Architecture 的 Card，未派发 Card 不能打开官方页面。
+点击已物化 Worker 时，用其官方页面替换中心画布；不同时保留隐藏页面。
 
-Manual construction follows the same save path. A generated Draft is not an
-execution request, does not create a Session, and is never saved implicitly.
-
-The editor shows only:
-
-- Conductor role, model, and editable Charter;
-- native Session Agent Cards: name, capability guidance, model, optional MCP,
-  optional Skills, and default output guidance;
-- concurrency defaults and optional per-card output guidance.
-
-It does not offer a Graph canvas, route edges, mandatory reviewer/publisher
-sequence, or automatic repair rule. A card being visible does not launch it.
-
-## Task Timeline
-
-Tasks is the primary product page. Each Task shows title, goal, Template
-provenance, current status, and a causal semantic event projection:
-
-```text
-user task / user follow-up
-  -> Conductor decision
-  -> dispatch command and input receipt
-  -> Provider receipt / result / failure / attention
-  -> Runtime wakeup
-  -> next Conductor decision
-  -> delivery claim and user achieved action
-```
-
-Timeline cards are normal Markdown where the content is semantic text. They
-can link to a Session, an exact result, or a discovered artifact. Raw terminals do not appear as the primary task conversation.
-
-The task-level composer is the default Task-continuation surface. When the
-current Conductor terminal is live, it sends a new durable
-`task.user_message` to that exact current native Session. For example,
-“compare this with ChatGPT Codex rather than GitHub Codex” becomes a new
-decision input; the user does not rewrite a worker's task or type a Workspace
-protocol into an OpenCode terminal. When the exact terminal is unavailable,
-the composer presents explicit reconnect/recovery choices and preserves the
-message as pending; it cannot silently create a replacement Conductor. Stop,
-connection status, pending-state explanation, and Send live together in this
-composer. See `task-run-continuity-and-terminal-experience.md`.
-
-When a native worker asks a question or asks for permission, Tasks displays a
-clear attention card with “open its terminal”. It does not fake a modal answer
-or make the Runtime auto-approve. The selected native terminal remains the
-place where the user answers the provider.
-
-## Artifact And Completion
-
-Provider answers may name artifacts. Runtime indexes only task-relative files
-it has verified to exist through a safe reference, so the user can open
-Markdown, HTML, and other safe text artifacts from the Timeline. It never
-renders a missing path as an expected artifact or Task state. Markdown is
-rendered with GFM, including tables; source is available as a secondary view.
-
-`delivery_ready` means Conductor made a delivery claim. `achieved` is an
-explicit user action after accepting that current delivery; a file may be one
-form of evidence but is not a prerequisite. Achieving a Task preserves its Run,
-event stream, and files. Archiving/deleting Task-associated data is a separate
-later confirmed action.
-
-## Workbench
-
-Workbench is a dense, terminal-first **Task Run workspace**.
-
-- Task Run tabs are temporary open context. Closing a tab only removes it from
-  the visible strip; it does not stop native Sessions or delete the Run. Tasks
-  can reopen any Task's latest Run, which restores the persisted layout.
-- One Task Run starts with a Conductor terminal Group. A Session tab appears
-  only after Conductor dispatches it and Runtime has durable Session evidence.
-  All other Agent Cards remain Template metadata.
-- Newly materialized concurrent Sessions automatically receive separate usable
-  Groups until viewport capacity is reached (at most four default panes);
-  remaining Sessions enter tabs. This is a display allocator only: it neither
-  starts nor dispatches a Session and never steals terminal focus.
-- Each Group owns a tab strip and one selected native terminal. Users may move
-  started Sessions between Groups and split left/right or top/bottom. Manual
-  layout persists for the Run and is an override of automatic placement;
-  splits are UI-only and never dispatch or start an agent.
-- A new pane is refused below the terminal minimum usable bounds. Narrow
-  panes remain tabs rather than shrinking an OpenCode TUI into unreadable
-  columns. A Group can be closed/merged, moving its visible Session tabs to a
-  remaining Group.
-- Per-Group terminal zoom controls and shortcuts change the density and cause
-  a new PTY resize. Normal buffer scrollback belongs to xterm; an OpenCode
-  alternate-screen TUI keeps its own native wheel behavior. Both wheel/trackpad
-  interaction and text selection/copy must work in the terminal viewport;
-  semantic history remains in Tasks.
-- The selected Session can expose compact transport diagnostics, Timeline, and
-  artifacts in drawers. These are not a second permanent activity panel.
-
-A Workflow aggregate has no PTY. Workflow itself is deferred in v1, so no
-aggregate is rendered in navigation or Workbench; that rule prevents a future
-graph unit from masquerading as a native Session terminal.
-
-## Routes
-
-```text
-Templates -> save a Loop Template -> Task Assembly
-Task Assembly -> confirm Task -> Tasks Timeline
-Tasks Timeline -> start Run -> Workbench
-Tasks Timeline -> open result/artifact -> preview
-Tasks Timeline -> open Session -> Workbench selected tab
-Workbench -> Timeline/artifact drawers -> Tasks semantic context
-```
-
-Every route preserves the Task and Run identity. Browser preview is explicitly
-read-only; Template/Task/Run mutations and native PTY attach occur only in the
-Electron application.
+Achieve 后显示历史交付与 `拉回继续`。拉回成功后回到同一官方 Conductor 会话；失败说明
+原因并提供“基于历史新建 Task”。删除先进入回收站；彻底删除必须二次确认和显示将清理的
+受管 artifact。

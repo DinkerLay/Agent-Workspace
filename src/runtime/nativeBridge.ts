@@ -91,6 +91,41 @@ export type NativeOpencodeAgentListResult = {
   stderr?: string;
 };
 
+/** A Provider-owned model record safe to render in model selectors. */
+export type NativeOpencodeModelCapability = {
+  /** Canonical OpenCode id in provider/model form. */
+  id: string;
+  providerId: string;
+  modelId: string;
+  name: string;
+  /** `historical` preserves snapshots whose provider model is no longer selectable. */
+  availability: "available" | "historical";
+  /** Provider-defined catalog status; it is never a Task lifecycle status. */
+  status: string;
+  capabilities: {
+    reasoning: boolean;
+  };
+  /** Only variants declared by the current OpenCode catalog appear here. */
+  variants: Array<{
+    id: string;
+    reasoningEffort?: string;
+  }>;
+};
+
+export type NativeOpencodeModelCapabilityListInput = {
+  /** Keep immutable Template/Task model ids visible even when absent from the current Provider catalog. */
+  historicalModelIds?: string[];
+  /** Bypass the Host's short-lived read cache; this does not ask OpenCode to refresh remotely. */
+  forceRefresh?: boolean;
+};
+
+export type NativeOpencodeModelCapabilityListResult = {
+  ok: boolean;
+  source: "opencode-cli-verbose" | "opencode-cli-list" | "unavailable";
+  models: NativeOpencodeModelCapability[];
+  error?: string;
+};
+
 export type NativeOpencodeProcessInspection = {
   ok: boolean;
   processes: OpencodeProcessStat[];
@@ -225,6 +260,14 @@ export type NativeAgentLoopRuntimeEvent = {
   cursor?: number;
 };
 
+/** A semantic Draft invalidation. It is separate from Task/Run events because
+ * a Template Design Session never owns Task lifecycle state. */
+export type NativeTemplateDesignEvent = {
+  draftId: string;
+  type: "template_design.draft_patched" | "template_design.draft_saved" | "template_design.draft_discarded";
+  revision: number;
+};
+
 export type NativeWorkspaceSessionProfileInput = {
   workspaceSessionId: string;
   taskId: string;
@@ -295,6 +338,39 @@ export type NativeAgentLoopTaskCommandInput = {
   taskId: string;
   commandId: string;
   expectedRevision: number;
+};
+
+export type NativeAgentLoopTaskListInput = {
+  /** normal hides Recycle Bin; trash contains only recyclable/deleting Tasks. */
+  scope?: "normal" | "trash" | "all";
+};
+
+export type NativeManagedTaskArtifact = {
+  path: string;
+  source: string;
+  exists: boolean;
+  size?: number;
+  /** False when a registered path is currently a directory or otherwise unsafe to unlink. */
+  deletable: boolean;
+};
+
+export type NativeAgentLoopPermanentDeletionPreview = {
+  taskId: string;
+  projectCwd: string;
+  managedArtifacts: NativeManagedTaskArtifact[];
+};
+
+export type NativeAgentLoopPermanentDeleteInput = NativeAgentLoopTaskCommandInput & {
+  artifactPaths: string[];
+};
+
+export type NativeAgentLoopPermanentDeleteResult = {
+  deleted: boolean;
+  taskId: string;
+  runsDeleted: number;
+  runtimeDirectoryRemoved: boolean;
+  managedArtifactsDeleted: string[];
+  managedArtifactsSkipped: Array<{ path: string; reason: string }>;
 };
 
 /** @deprecated Historical nested-Workflow Harness type; use NativeAgentLoopTemplate for active product state. */
@@ -489,29 +565,67 @@ export type NativeHarnessArtifact = {
   contentType?: "markdown" | "html" | "text" | "unsupported" | "missing";
 };
 
-/** The active product model. Workflow/graph types above are retained only to
- * read historical local data during the migration. */
-export type NativeSessionAgentCard = {
+export type NativeSessionAgentCardBase = {
   id: string;
   name: string;
   /** Stable capability label for Conductor context and UI; it does not route the Loop. */
   kind: "researcher" | "publisher" | "reviewer" | "general";
-  role: string;
   model: string;
+  /** Optional provider-declared model variant, selected when the Session is created. */
+  modelVariant?: string;
   /** Empty means the native Session Agent is not capability-restricted. */
   mcp: string[];
   /** Empty means the native Session Agent is not capability-restricted. */
   skills: string[];
+};
+
+/** A persisted pre-split Card. It remains readable for existing Template
+ * Versions and Task Architecture snapshots, but must not be auto-upgraded. */
+export type NativeLegacySessionAgentCard = NativeSessionAgentCardBase & {
+  role: string;
   instructions: string;
   expectedOutput: string;
+  dispatchProfile?: never;
+  workerSystemPrompt?: never;
 };
+
+/** The explicit Card contract for new Template Versions. The profile is
+ * Conductor-only; the system prompt is Worker-only. */
+export type NativePromptSplitSessionAgentCard = NativeSessionAgentCardBase & {
+  dispatchProfile: {
+    title: string;
+    description: string;
+  };
+  workerSystemPrompt: string;
+  role?: never;
+  instructions?: never;
+  expectedOutput?: never;
+};
+
+/** The active product model. Workflow/graph types above are retained only to
+ * read historical local data during the migration. */
+export type NativeSessionAgentCard = NativeLegacySessionAgentCard | NativePromptSplitSessionAgentCard;
+
+export function isNativePromptSplitSessionAgentCard(
+  card: NativeSessionAgentCard,
+): card is NativePromptSplitSessionAgentCard {
+  return Boolean(
+    card
+      && typeof card === "object"
+      && "dispatchProfile" in card
+      && card.dispatchProfile
+      && typeof card.dispatchProfile.title === "string"
+      && typeof card.dispatchProfile.description === "string"
+      && typeof card.workerSystemPrompt === "string",
+  );
+}
 
 export type NativeAgentLoopTemplate = {
   id: string;
   version: number;
   name: string;
   source: "seed" | "generated" | "manual";
-  conductor: { role: string; model: string; charter?: string };
+  conductor: { role: string; model: string; modelVariant?: string; charter?: string };
   agents: NativeSessionAgentCard[];
   limits: { maxConcurrentSessions: number; maxDispatchesPerDecision: number };
   /** Optional delivery-path preference, not a Runtime completion gate. */
@@ -520,6 +634,73 @@ export type NativeAgentLoopTemplate = {
   createdAt: string;
   updatedAt: string;
 };
+
+/** A read-only validation projection for a mutable Template Design Draft.
+ * It is derived by the Template Design service; it is never independently
+ * persisted or repaired by the Renderer. */
+export type NativeTemplateDesignDraftValidation = {
+  valid: boolean;
+  issues: Array<{ path: string; code: string }>;
+};
+
+/** Mutable, non-Task working state for the Template Meta Agent. Saving this
+ * Draft is an explicit command that creates a new immutable Template Version. */
+export type NativeTemplateDesignDraft = {
+  draftId: string;
+  templateId?: string;
+  baseTemplateVersion?: number;
+  cwd: string;
+  model: string;
+  modelVariant?: string;
+  draftJson: Omit<NativeAgentLoopTemplate, "version" | "archivedAt" | "createdAt" | "updatedAt">;
+  validation: NativeTemplateDesignDraftValidation;
+  revision: number;
+  providerSessionId?: string;
+  status: "active" | "saved" | "discarded";
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** The explicit result of saving a mutable Draft. Keeping the saved Version
+ * beside the historical Draft avoids pretending that a newly created Draft
+ * had a base Template identity before it was saved. */
+export type NativeTemplateDesignSaveResult = {
+  draft: NativeTemplateDesignDraft;
+  savedTemplate: NativeAgentLoopTemplate;
+};
+
+export type NativeTemplateDesignSession = {
+  draft: NativeTemplateDesignDraft;
+  providerSessionId?: string;
+};
+
+/** Selects the durable object a Template Design Session is allowed to edit. */
+export type NativeTemplateDesignTarget =
+  /** `templateVersion` is optional only for legacy callers. New product
+   * actions always pin the immutable Version they selected. */
+  | { kind: "existing_template_version"; templateId: string; templateVersion?: number }
+  | { kind: "new_template"; draftId: string };
+
+/** Capability-free metadata used to reopen an unsaved Draft after navigation. */
+export type NativeTemplateDesignSessionSummary = {
+  draftId: string;
+  templateId?: string;
+  baseTemplateVersion?: number;
+  cwd: string;
+  model: string;
+  modelVariant?: string;
+  name: string;
+  revision: number;
+  providerSessionId?: string;
+  status: "active";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NativeTemplateDesignSessionRequest =
+  | { target: NativeTemplateDesignTarget; cwd: string; model: string; modelVariant?: string }
+  /** @deprecated Use the discriminated `target` form. */
+  | { templateId: string; cwd: string; model?: string; modelVariant?: string };
 
 export type NativeGeneratedAgentLoopTemplateDraft = {
   /**
@@ -541,6 +722,9 @@ export type NativeAgentLoopTask = {
     primaryMode: "agent_loop";
     template: Pick<NativeAgentLoopTemplate, "id" | "version" | "name" | "conductor" | "agents" | "limits" | "delivery">;
     defaultModel: string;
+    defaultModelVariant?: string;
+    /** Frozen Card contracts from the selected Template Version; legacy and
+     * split Cards may coexist across historical Task snapshots. */
     agentCards: NativeSessionAgentCard[];
     delivery: { artifactPath: string; ownerAgentId: string };
   };
@@ -551,6 +735,17 @@ export type NativeAgentLoopTask = {
   createdAt: string;
   updatedAt: string;
   latestRun?: NativeAgentLoopRun;
+};
+
+/** A user-selected local project root for a new Task. */
+export type NativeAgentLoopProjectDirectory = {
+  path: string;
+  name: string;
+};
+
+/** Returned only by the explicit "new project folder" Runtime command. */
+export type NativeCreatedAgentLoopProjectDirectory = NativeAgentLoopProjectDirectory & {
+  created: true;
 };
 
 export type NativeAgentLoopRun = {
@@ -581,6 +776,19 @@ export type NativeAgentLoopWorkbenchLayout = {
   root: NativeAgentLoopWorkbenchLayoutNode;
   groups: Record<string, { id: string; sessionIds: string[]; activeSessionId?: string; fontSize?: number }>;
   focusedGroupId: string;
+  /** Task-page geometry is persisted with its Run; inactive Session pages are never retained. */
+  taskPage?: { taskListWidth: number; inspectorWidth: number };
+};
+
+export type NativeOpenCodeSessionPage = {
+  presentation: "direct_url" | "unavailable";
+  providerSessionId?: string;
+  /** Opaque Runtime lease. It must be released when the embedded page unmounts. */
+  presentationLeaseId?: string;
+  providerVersion?: string;
+  openApiSchemaVersion?: string;
+  url?: string;
+  reason?: string;
 };
 
 export type NativeAgentLoopRunDetail = {
@@ -651,6 +859,7 @@ export type NativeRuntimeBridge = {
   runOpencode(input: NativeOpencodeInput): Promise<NativeOpencodeResult>;
   generateTaskDraft?(input: NativeTaskDraftInput): Promise<NativeTaskDraftResult>;
   listOpencodeAgents?(): Promise<NativeOpencodeAgentListResult>;
+  listOpencodeModelCapabilities?(input?: NativeOpencodeModelCapabilityListInput): Promise<NativeOpencodeModelCapabilityListResult>;
   inspectOpencodeProcesses?(): Promise<NativeOpencodeProcessInspection>;
   runVerification?(input: NativeVerificationInput): Promise<NativeVerificationResult>;
   registerWorkspaceSessionProfile?(input: NativeWorkspaceSessionProfileInput): Promise<{
@@ -725,6 +934,7 @@ export type NativeRuntimeBridge = {
   appendTaskEvent?(input: NativeTaskEventInput): Promise<NativeTaskEventResult>;
   sendAgentLoopTaskMessage?(input: NativeAgentLoopTaskMessageInput): Promise<NativeAgentLoopTaskMessageResult>;
   listAgentLoopTemplates?(): Promise<NativeAgentLoopTemplate[]>;
+  listAgentLoopTemplateVersions?(input: { templateId: string }): Promise<NativeAgentLoopTemplate[]>;
   generateAgentLoopTemplate?(input: { cwd: string; projectName?: string; brief: string; model?: string }): Promise<NativeGeneratedAgentLoopTemplateDraft>;
   saveAgentLoopTemplate?(input: Omit<NativeAgentLoopTemplate, "version" | "archivedAt" | "createdAt" | "updatedAt">): Promise<NativeAgentLoopTemplate>;
   copyAgentLoopTemplate?(input: { templateId: string; name?: string }): Promise<NativeAgentLoopTemplate>;
@@ -732,19 +942,36 @@ export type NativeRuntimeBridge = {
   deleteAgentLoopTemplate?(input: { templateId: string }): Promise<{ deleted: boolean; templateId: string }>;
   validateAgentLoopProjectDirectory?(input: { path: string }): Promise<{ path: string; name: string } | undefined>;
   suggestAgentLoopProjectDirectories?(input: { prefix: string }): Promise<string[]>;
+  createAgentLoopProjectDirectory?(input: { parentPath: string; name: string }): Promise<NativeCreatedAgentLoopProjectDirectory>;
   createAgentLoopTask?(input: { taskId?: string; projectId?: string; cwd: string; title: string; goal: string; templateId?: string; templateVersion?: number }): Promise<NativeAgentLoopTask>;
-  listAgentLoopTasks?(): Promise<NativeAgentLoopTask[]>;
+  listAgentLoopTasks?(input?: NativeAgentLoopTaskListInput): Promise<NativeAgentLoopTask[]>;
   readAgentLoopTask?(input: { taskId: string }): Promise<NativeAgentLoopTask | undefined>;
   startAgentLoopRun?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopRunDetail>;
   readAgentLoopRun?(input: { runId: string }): Promise<NativeAgentLoopRunDetail | undefined>;
+  openAgentLoopOpenCodeSessionPage?(input: { runId: string; sessionId: string }): Promise<NativeOpenCodeSessionPage | undefined>;
+  releaseAgentLoopOpenCodeSessionPage?(input: { runId: string; sessionId: string; leaseId: string }): Promise<boolean>;
+  getOrCreateAgentLoopTemplateDesignSession?(input: NativeTemplateDesignSessionRequest): Promise<NativeTemplateDesignSession>;
+  listActiveAgentLoopTemplateDesignSessions?(input: { cwd: string }): Promise<NativeTemplateDesignSessionSummary[]>;
+  readAgentLoopTemplateDesignSession?(input: { draftId: string }): Promise<NativeTemplateDesignDraft | undefined>;
+  saveAgentLoopTemplateDesignDraft?(input: { draftId: string; expectedRevision: number }): Promise<NativeTemplateDesignSaveResult>;
+  discardAgentLoopTemplateDesignDraft?(input: { draftId: string; expectedRevision: number }): Promise<NativeTemplateDesignDraft>;
+  openAgentLoopTemplateDesignSessionPage?(input: { draftId: string }): Promise<NativeOpenCodeSessionPage | undefined>;
+  releaseAgentLoopTemplateDesignSessionPage?(input: { draftId: string; leaseId: string }): Promise<boolean>;
+  onAgentLoopTemplateDesignEvent?(callback: (event: NativeTemplateDesignEvent) => void): () => void;
   readAgentLoopWorkbenchLayout?(input: { runId: string }): Promise<NativeAgentLoopWorkbenchLayout | undefined>;
   saveAgentLoopWorkbenchLayout?(input: { runId: string; layout: NativeAgentLoopWorkbenchLayout }): Promise<NativeAgentLoopWorkbenchLayout | undefined>;
   readAgentLoopArtifact?(input: { runId: string; artifactPath: string }): Promise<NativeAgentLoopArtifact>;
   markAgentLoopTaskAchieved?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined>;
+  resumeAchievedAgentLoopTask?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopRunDetail>;
   stopAgentLoopTask?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined>;
   respondAgentLoopPermission?(input: { taskId: string; sessionId: string; permissionId: string; response: "once" | "always" | "reject" }): Promise<{ ok: boolean; status: string; changed?: boolean; errorCode?: string; message?: string }>;
   respondAgentLoopQuestion?(input: { taskId: string; sessionId: string; questionId: string; answer: string }): Promise<{ ok: boolean; status: string; changed?: boolean; errorCode?: string; message?: string }>;
-  deleteAgentLoopTask?(input: NativeAgentLoopTaskCommandInput): Promise<{ deleted: boolean; taskId: string; runsDeleted: number; runtimeDirectoryRemoved: boolean }>;
+  moveAgentLoopTaskToRecycleBin?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined>;
+  restoreAgentLoopTaskFromRecycleBin?(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined>;
+  previewAgentLoopTaskPermanentDeletion?(input: { taskId: string }): Promise<NativeAgentLoopPermanentDeletionPreview | undefined>;
+  permanentlyDeleteAgentLoopTask?(input: NativeAgentLoopPermanentDeleteInput): Promise<NativeAgentLoopPermanentDeleteResult | undefined>;
+  /** @deprecated Alias for permanent deletion; Runtime now requires Recycle Bin state. */
+  deleteAgentLoopTask?(input: NativeAgentLoopPermanentDeleteInput): Promise<NativeAgentLoopPermanentDeleteResult | undefined>;
   listOrchestrationTemplates?(): Promise<NativeOrchestrationTemplate[]>;
   listOrchestrationTemplateBlueprints?(): Promise<NativeTemplateBlueprint[]>;
   saveOrchestrationTemplate?(input: {
@@ -896,6 +1123,22 @@ export async function listNativeOpencodeAgents(): Promise<NativeOpencodeAgentLis
     ok: false,
     agents: [],
     stderr: browserRuntimeStatus.message,
+  };
+}
+
+/**
+ * Reads the Provider-owned model catalog through the typed Runtime bridge.
+ * Callers may pass currently selected historical ids so a stale Template or
+ * Task snapshot remains inspectable without making it newly selectable.
+ */
+export async function listNativeOpencodeModelCapabilities(
+  input: NativeOpencodeModelCapabilityListInput = {},
+): Promise<NativeOpencodeModelCapabilityListResult> {
+  return window.agentWorkspace?.native.listOpencodeModelCapabilities?.(input) ?? {
+    ok: false,
+    source: "unavailable",
+    models: [],
+    error: browserRuntimeStatus.message,
   };
 }
 
@@ -1092,6 +1335,12 @@ export function subscribeNativeAgentLoopRuntimeEvents(callback: (event: NativeAg
   return window.agentWorkspace?.native.onAgentLoopRuntimeEvent?.(callback) ?? (() => undefined);
 }
 
+export function subscribeNativeAgentLoopTemplateDesignEvents(
+  callback: (event: NativeTemplateDesignEvent) => void,
+): () => void {
+  return window.agentWorkspace?.native.onAgentLoopTemplateDesignEvent?.(callback) ?? (() => undefined);
+}
+
 export async function callNativeSession(input: CallSessionInput): Promise<CallSessionResult> {
   return (
     window.agentWorkspace?.native.callSession?.(input) ?? {
@@ -1143,6 +1392,12 @@ export async function listNativeAgentLoopTemplates(): Promise<NativeAgentLoopTem
   return (await window.agentWorkspace?.native.listAgentLoopTemplates?.()) ?? [];
 }
 
+/** Immutable history for one Template identity. This is not a Draft and does
+ * not create or mutate any Task, Provider Session, or Template Version. */
+export async function listNativeAgentLoopTemplateVersions(templateId: string): Promise<NativeAgentLoopTemplate[]> {
+  return (await window.agentWorkspace?.native.listAgentLoopTemplateVersions?.({ templateId })) ?? [];
+}
+
 export async function generateNativeAgentLoopTemplate(input: {
   cwd: string;
   projectName?: string;
@@ -1173,12 +1428,19 @@ export async function deleteNativeAgentLoopTemplate(templateId: string): Promise
   return window.agentWorkspace?.native.deleteAgentLoopTemplate?.({ templateId });
 }
 
-export async function validateNativeAgentLoopProjectDirectory(path: string): Promise<{ path: string; name: string } | undefined> {
+export async function validateNativeAgentLoopProjectDirectory(path: string): Promise<NativeAgentLoopProjectDirectory | undefined> {
   return window.agentWorkspace?.native.validateAgentLoopProjectDirectory?.({ path });
 }
 
 export async function suggestNativeAgentLoopProjectDirectories(prefix: string): Promise<string[]> {
   return (await window.agentWorkspace?.native.suggestAgentLoopProjectDirectories?.({ prefix })) ?? [];
+}
+
+export async function createNativeAgentLoopProjectDirectory(input: {
+  parentPath: string;
+  name: string;
+}): Promise<NativeCreatedAgentLoopProjectDirectory | undefined> {
+  return window.agentWorkspace?.native.createAgentLoopProjectDirectory?.(input);
 }
 
 export async function createNativeAgentLoopTask(input: {
@@ -1193,8 +1455,8 @@ export async function createNativeAgentLoopTask(input: {
   return window.agentWorkspace?.native.createAgentLoopTask?.(input);
 }
 
-export async function listNativeAgentLoopTasks(): Promise<NativeAgentLoopTask[]> {
-  return (await window.agentWorkspace?.native.listAgentLoopTasks?.()) ?? [];
+export async function listNativeAgentLoopTasks(input?: NativeAgentLoopTaskListInput): Promise<NativeAgentLoopTask[]> {
+  return (await window.agentWorkspace?.native.listAgentLoopTasks?.(input)) ?? [];
 }
 
 export async function readNativeAgentLoopTask(taskId: string): Promise<NativeAgentLoopTask | undefined> {
@@ -1207,6 +1469,60 @@ export async function startNativeAgentLoopRun(input: NativeAgentLoopTaskCommandI
 
 export async function readNativeAgentLoopRun(runId: string): Promise<NativeAgentLoopRunDetail | undefined> {
   return window.agentWorkspace?.native.readAgentLoopRun?.({ runId });
+}
+
+export async function openNativeAgentLoopOpenCodeSessionPage(input: {
+  runId: string;
+  sessionId: string;
+}): Promise<NativeOpenCodeSessionPage | undefined> {
+  return window.agentWorkspace?.native.openAgentLoopOpenCodeSessionPage?.(input);
+}
+
+export async function releaseNativeAgentLoopOpenCodeSessionPage(input: {
+  runId: string;
+  sessionId: string;
+  leaseId: string;
+}): Promise<boolean> {
+  return (await window.agentWorkspace?.native.releaseAgentLoopOpenCodeSessionPage?.(input)) ?? false;
+}
+
+export async function getOrCreateNativeAgentLoopTemplateDesignSession(input: NativeTemplateDesignSessionRequest): Promise<NativeTemplateDesignSession | undefined> {
+  return window.agentWorkspace?.native.getOrCreateAgentLoopTemplateDesignSession?.(input);
+}
+
+export async function listActiveNativeAgentLoopTemplateDesignSessions(cwd: string): Promise<NativeTemplateDesignSessionSummary[]> {
+  return (await window.agentWorkspace?.native.listActiveAgentLoopTemplateDesignSessions?.({ cwd })) ?? [];
+}
+
+export async function readNativeAgentLoopTemplateDesignSession(draftId: string): Promise<NativeTemplateDesignDraft | undefined> {
+  return window.agentWorkspace?.native.readAgentLoopTemplateDesignSession?.({ draftId });
+}
+
+export async function saveNativeAgentLoopTemplateDesignDraft(input: {
+  draftId: string;
+  expectedRevision: number;
+}): Promise<NativeTemplateDesignSaveResult | undefined> {
+  return window.agentWorkspace?.native.saveAgentLoopTemplateDesignDraft?.(input);
+}
+
+export async function discardNativeAgentLoopTemplateDesignDraft(input: {
+  draftId: string;
+  expectedRevision: number;
+}): Promise<NativeTemplateDesignDraft | undefined> {
+  return window.agentWorkspace?.native.discardAgentLoopTemplateDesignDraft?.(input);
+}
+
+export async function openNativeAgentLoopTemplateDesignSessionPage(input: {
+  draftId: string;
+}): Promise<NativeOpenCodeSessionPage | undefined> {
+  return window.agentWorkspace?.native.openAgentLoopTemplateDesignSessionPage?.(input);
+}
+
+export async function releaseNativeAgentLoopTemplateDesignSessionPage(input: {
+  draftId: string;
+  leaseId: string;
+}): Promise<boolean> {
+  return (await window.agentWorkspace?.native.releaseAgentLoopTemplateDesignSessionPage?.(input)) ?? false;
 }
 
 export async function readNativeAgentLoopWorkbenchLayout(runId: string): Promise<NativeAgentLoopWorkbenchLayout | undefined> {
@@ -1226,6 +1542,10 @@ export async function readNativeAgentLoopArtifact(runId: string, artifactPath: s
 
 export async function markNativeAgentLoopTaskAchieved(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined> {
   return window.agentWorkspace?.native.markAgentLoopTaskAchieved?.(input);
+}
+
+export async function resumeNativeAchievedAgentLoopTask(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopRunDetail | undefined> {
+  return window.agentWorkspace?.native.resumeAchievedAgentLoopTask?.(input);
 }
 
 export async function stopNativeAgentLoopTask(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined> {
@@ -1250,12 +1570,24 @@ export async function respondNativeAgentLoopQuestion(input: {
   return window.agentWorkspace?.native.respondAgentLoopQuestion?.(input);
 }
 
-export async function deleteNativeAgentLoopTask(input: NativeAgentLoopTaskCommandInput): Promise<{
-  deleted: boolean;
-  taskId: string;
-  runsDeleted: number;
-  runtimeDirectoryRemoved: boolean;
-} | undefined> {
+export async function moveNativeAgentLoopTaskToTrash(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined> {
+  return window.agentWorkspace?.native.moveAgentLoopTaskToRecycleBin?.(input);
+}
+
+export async function restoreNativeAgentLoopTask(input: NativeAgentLoopTaskCommandInput): Promise<NativeAgentLoopTask | undefined> {
+  return window.agentWorkspace?.native.restoreAgentLoopTaskFromRecycleBin?.(input);
+}
+
+export async function previewNativeAgentLoopTaskPermanentDeletion(input: { taskId: string }): Promise<NativeAgentLoopPermanentDeletionPreview | undefined> {
+  return window.agentWorkspace?.native.previewAgentLoopTaskPermanentDeletion?.(input);
+}
+
+export async function permanentlyDeleteNativeAgentLoopTask(input: NativeAgentLoopPermanentDeleteInput): Promise<NativeAgentLoopPermanentDeleteResult | undefined> {
+  return window.agentWorkspace?.native.permanentlyDeleteAgentLoopTask?.(input);
+}
+
+/** @deprecated Prefer permanentlyDeleteNativeAgentLoopTask. */
+export async function deleteNativeAgentLoopTask(input: NativeAgentLoopPermanentDeleteInput): Promise<NativeAgentLoopPermanentDeleteResult | undefined> {
   return window.agentWorkspace?.native.deleteAgentLoopTask?.(input);
 }
 

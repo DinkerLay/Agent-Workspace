@@ -18,6 +18,9 @@ function createDispatchCoordinator({
   resolveAgentSession,
   prepareDispatchContext,
   readTerminalSessionFact,
+  deliverProviderAssignment,
+  abortProviderDispatch,
+  resolveConductorSessionId,
 }) {
   const inFlightDeliveries = new Map();
   // Durable `validateDispatch` state closes the restart gap. This short-lived
@@ -127,7 +130,9 @@ function createDispatchCoordinator({
         });
       }
 
-      const conductorSessionId = resolveConductorSessionIdForDispatch({ taskId, toSessionId, ptyManager });
+      const conductorSessionId = typeof resolveConductorSessionId === "function"
+        ? String(resolveConductorSessionId({ taskId, toSessionId }) ?? "")
+        : resolveConductorSessionIdForDispatch({ taskId, toSessionId, ptyManager });
       const dispatch = sessionStore.recordDispatch({
         taskId,
         toSessionId,
@@ -139,6 +144,38 @@ function createDispatchCoordinator({
         expectedOutput: strictString(input?.expectedOutput),
         priority: input?.priority === "high" || input?.priority === "low" ? input.priority : "normal",
       });
+
+      if (typeof deliverProviderAssignment === "function") {
+        let delivery;
+        try {
+          delivery = await deliverProviderAssignment({ dispatch, text: formatWorkerAssignment(dispatch) });
+        } catch (error) {
+          return failDispatch(dispatch, {
+            errorCode: "provider_session_delivery_failed",
+            message: "OpenCode Server did not accept this Session dispatch. Inspect the durable failure fact before choosing another route.",
+            targetSessionState: "not_started",
+            error,
+          });
+        }
+        if (delivery?.notApplicable !== true) {
+          if (!delivery?.accepted) {
+            return failDispatch(dispatch, {
+              errorCode: "provider_session_delivery_rejected",
+              message: "OpenCode Server rejected this Session dispatch. Inspect the durable failure fact before choosing another route.",
+              targetSessionState: delivery?.targetSessionState ?? "not_started",
+            });
+          }
+          sessionStore.markDispatchInputAccepted?.({
+            taskId: dispatch.taskId,
+            sessionId: dispatch.toSessionId,
+            dispatchId: dispatch.dispatchId,
+            transport: "opencode_server",
+            provider: "opencode",
+            providerSessionId: delivery.providerSessionId,
+          });
+          return callSessionInputAccepted(dispatch, delivery.targetSessionState ?? "queued");
+        }
+      }
 
       let target = ptyManager.get?.(dispatch.toSessionId);
       let initialPromptSubmitted = false;
@@ -242,6 +279,40 @@ function createDispatchCoordinator({
       return { ok: false, taskId, dispatchId, agentId: dispatch.agentId, status: String(dispatch.status), errorCode: "dispatch_not_cancellable", message: "Only a pending worker dispatch can be cancelled." };
     }
     const reason = strictString(input?.reason) || "conductor_cancelled";
+    if (typeof abortProviderDispatch === "function") {
+      const requested = sessionStore.markDispatchCancellationRequested?.({
+        taskId,
+        sessionId: dispatch.toSessionId,
+        dispatchId,
+        reason,
+        message: `Conductor requested cancellation of Dispatch ${dispatchId}: ${reason}`,
+      });
+      if (!requested || requested.changed === false) {
+        return { ok: false, taskId, dispatchId, agentId: dispatch.agentId, status: requested?.status ?? "unknown", errorCode: "dispatch_cancellation_not_recorded", message: "Cancellation intent could not be recorded from durable Task state." };
+      }
+      try {
+        const aborted = await abortProviderDispatch({ dispatch });
+        if (!aborted?.accepted) throw new Error("opencode_server_abort_rejected");
+        const cancelled = sessionStore.markDispatchCancelled?.({
+          taskId,
+          sessionId: dispatch.toSessionId,
+          dispatchId,
+          reason,
+          confirmation: "provider_abort_accepted",
+          message: `OpenCode Server accepted cancellation of Dispatch ${dispatchId}.`,
+        });
+        return { ok: Boolean(cancelled), taskId, dispatchId, agentId: dispatch.agentId, status: cancelled?.status ?? "cancelled", providerStatus: "abort_accepted", message: "OpenCode Server accepted cancellation. Provider observation will reconcile the final Session state." };
+      } catch (error) {
+        const failed = sessionStore.markDispatchCancellationFailed?.({
+          taskId,
+          sessionId: dispatch.toSessionId,
+          dispatchId,
+          reason: "provider_abort_failed",
+          message: error instanceof Error ? error.message : "OpenCode Server could not abort this dispatch.",
+        });
+        return { ok: false, taskId, dispatchId, agentId: dispatch.agentId, status: failed?.status ?? "cancel_failed", errorCode: "provider_abort_failed", message: "OpenCode Server did not confirm cancellation; the Session remains occupied until Provider observation settles it." };
+      }
+    }
     const expectedIncarnationId = strictString(dispatch.terminalIncarnationId);
     const expectedGeneration = strictString(dispatch.terminalGeneration);
     // A queued dispatch has not reached a terminal, so it can be cancelled
@@ -574,7 +645,7 @@ function callSessionInputAccepted(dispatch, targetSessionState = "queued") {
     cannotReadResultUntil: "provider_result_available",
     nextAllowedAction: "dispatch_more_or_end_decision_turn",
     message:
-      "Dispatch command and terminal input were accepted. This is not Provider delivery yet. Continue dispatching bounded work or end this decision; Runtime will wake you only after a Provider receipt, result, attention, failure, or exit fact.",
+      "Dispatch command and Provider input were accepted. This is not Provider delivery yet. Continue dispatching bounded work or end this decision; Runtime will wake you only after a Provider receipt, result, attention, failure, or exit fact.",
   };
 }
 

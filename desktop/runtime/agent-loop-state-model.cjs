@@ -26,7 +26,10 @@ const TASK_TRANSITIONS = new Map([
   [TASK_STATUS.STOPPING, new Set([TASK_STATUS.STOPPED, TASK_STATUS.DELETING])],
   [TASK_STATUS.STOPPED, new Set([TASK_STATUS.RUNNING, TASK_STATUS.DELETING])],
   [TASK_STATUS.ACHIEVED, new Set([TASK_STATUS.RUNNING, TASK_STATUS.DELETING, TASK_STATUS.ARCHIVED])],
-  [TASK_STATUS.ARCHIVED, new Set([TASK_STATUS.DELETING])],
+  // Restore deliberately returns to achieved.  The original Run and Provider
+  // binding survive the recycle state, so the existing explicit resume path
+  // remains the sole way back to running.
+  [TASK_STATUS.ARCHIVED, new Set([TASK_STATUS.ACHIEVED, TASK_STATUS.DELETING])],
   [TASK_STATUS.DELETING, new Set()],
 ]);
 

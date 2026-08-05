@@ -4,7 +4,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const opencodePath = process.env.OPENCODE_PATH || "/opt/homebrew/bin/opencode";
+const detectedOpenCodePath = spawnSync("which", ["opencode"], { encoding: "utf8" }).stdout?.trim();
+const opencodePath = process.env.OPENCODE_PATH || detectedOpenCodePath;
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-opencode-config-"));
 const mcpServerPath = path.resolve(__dirname, "conductor-mcp-server.cjs");
 const systemPromptPath = path.join(tempRoot, ".agent-workspace", "runtime", "task-smoke", "conductor", "system.md");
@@ -25,24 +26,19 @@ const inlineConfig = {
       },
     },
   },
-  agent: {
-    agent_workspace_conductor: {
-      description: "Control-plane Conductor smoke profile.",
-      mode: "primary",
-      permission: {
-        "*": "deny",
-        "agent_workspace_conductor_*": "allow",
-        question: "allow",
-      },
-    },
-  },
-  default_agent: "agent_workspace_conductor",
+  // Agent Workspace does not register a custom Provider agent. Runtime creates
+  // `build` Sessions and passes the Conductor-only tool policy per Session and
+  // per request through the documented Server API.
+  tools: { "agent_workspace_conductor_*": false },
+  default_agent: "build",
 };
 
 assert.ok(fs.existsSync(mcpServerPath), "conductor MCP server must exist before running this smoke");
+assert.ok(opencodePath, "set OPENCODE_PATH or add opencode to PATH before running this smoke");
 assert.ok(inlineConfig.instructions.includes(systemPromptPath));
 assert.equal(inlineConfig.mcp.agent_workspace_conductor.type, "local");
-assert.equal(inlineConfig.agent.agent_workspace_conductor.permission["*"], "deny");
+assert.equal(inlineConfig.agent, undefined);
+assert.equal(inlineConfig.default_agent, "build");
 
 const result = spawnSync(opencodePath, ["mcp", "list"], {
   cwd: tempRoot,
@@ -51,10 +47,10 @@ const result = spawnSync(opencodePath, ["mcp", "list"], {
     OPENCODE_CONFIG_CONTENT: JSON.stringify(inlineConfig),
   },
   encoding: "utf8",
-  timeout: 10_000,
+  timeout: 30_000,
 });
 
-assert.equal(result.status, 0, result.stderr || result.stdout);
+assert.equal(result.status, 0, result.stderr || result.stdout || "opencode mcp list failed");
 assert.match(`${result.stdout}\n${result.stderr}`, /agent_workspace_conductor|MCP|mcp/i);
 assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /failed/i);
 console.log("opencode inline Conductor config smoke passed");

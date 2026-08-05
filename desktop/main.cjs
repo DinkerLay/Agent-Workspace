@@ -1,19 +1,28 @@
-const fs = require("node:fs");
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
 const {
   createConductorToolBridge,
   startConductorToolBridgeHttpServer,
 } = require("./conductor-tool-bridge.cjs");
+const {
+  createTemplateDesignToolBridge,
+  startTemplateDesignToolBridgeHttpServer,
+} = require("./template-design-tool-bridge.cjs");
 const { ensureNodePtySpawnHelperExecutable } = require("./node-pty-runtime.cjs");
 const { inspectOpencodeProcesses } = require("./opencode/process-inspector.cjs");
 const { createOpenCodeProviderObserver } = require("./opencode/opencode-provider-observer.cjs");
+const { createOpenCodeServerSessionPageResolver } = require("./opencode/server-session-page.cjs");
+const { createOpenCodeServerManager } = require("./opencode/server-manager.cjs");
+const { createOpenCodeHostRuntimeConfig } = require("./opencode/host-config.cjs");
+const { createOpencodeModelCapabilityRegistry } = require("./opencode/model-capability-registry.cjs");
 const { getRuntimeStatus, listOpencodeAgents, resolveOpencodePath, runOpencode } = require("./opencode-runner.cjs");
 const { resolveProjectWindowContext, withProjectWindowContext } = require("./project-window-context.cjs");
 const { createOrcaTerminalDaemonManager } = require("./runtime/orca-terminal-daemon-manager.cjs");
 const { createOrcaTerminalDaemonSupervisor } = require("./runtime/orca-terminal-daemon-supervisor.cjs");
 const { createOpenCodeHookService } = require("./runtime/opencode-hook-service.cjs");
 const { createAgentLoopV1Runtime } = require("./runtime/agent-loop-v1-runtime.cjs");
+const { createAgentLoopProjectDirectoryService } = require("./runtime/project-directory-service.cjs");
+const { createTemplateDesignSessionRuntime } = require("./runtime/template-design-session-runtime.cjs");
 const { createBrowserRuntimeBridge } = require("./runtime/browser-runtime-bridge.cjs");
 const { createSessionAuthority } = require("./runtime/session-authority.cjs");
 const { createSessionStoreCapabilities } = require("./runtime/session-store-capabilities.cjs");
@@ -24,6 +33,11 @@ const { generateTaskDraft } = require("./task-draft-assistant.cjs");
 const { runVerification } = require("./verification-runner.cjs");
 const { isCanonicalWorkspaceSessionId, taskIdFromWorkspaceSessionId } = require("./workspace-session-id.cjs");
 
+const OPENCODE_PROVIDER_VERSION = "1.18.13";
+const agentLoopProjectDirectories = createAgentLoopProjectDirectoryService({
+  homePath: () => app.getPath("home"),
+});
+
 let mainWindow;
 let ptyManager;
 let sessionAuthority;
@@ -32,14 +46,24 @@ let conductorToolBridge;
 let conductorToolBridgeHttpServer;
 let conductorToolBridgeRuntimeConfig = {};
 let conductorToolBridgeStartError;
+let templateDesignToolBridge;
+let templateDesignToolBridgeHttpServer;
+let templateDesignToolBridgeStartPromise;
+let templateDesignToolBridgeRuntimeConfig = {};
+let templateDesignToolBridgeStartError;
+let templateDesignRuntime;
 let sessionWakeupMonitor;
 let agentLoopRuntime;
 let openCodeHookService;
 let openCodeProviderObserver;
+let openCodeServerManager;
 let webRuntimeBridge;
 let realPtyAvailable = false;
 let ptyBackend = "process-fallback";
 const terminalClientAttachments = new Map();
+const opencodeModelCapabilityRegistry = createOpencodeModelCapabilityRegistry({
+  resolvePath: resolveOpencodePath,
+});
 
 const runtimeSessionStore = createSessionStore({
   root: ({ cwd }) => {
@@ -160,6 +184,9 @@ conductorToolBridge = createConductorToolBridge({
     if (!agentLoopRuntime?.hasTask(taskId)) return { contextRefs: contextRefs ?? [], contextPackets: [] };
     return agentLoopRuntime.prepareDispatchContext({ taskId, agentId, toSessionId, contextRefs });
   },
+  deliverProviderAssignment: (input) => agentLoopRuntime?.deliverOpenCodeWorkerAssignment(input) ?? { notApplicable: true },
+  abortProviderDispatch: (input) => agentLoopRuntime?.abortOpenCodeDispatch(input),
+  resolveConductorSessionId: ({ taskId }) => agentLoopRuntime?.resolveAgentSession({ taskId, agentId: "conductor" })?.sessionId,
   onCompletionClaim: ({ taskId, sessionId, message, summary }) => {
     if (!agentLoopRuntime?.hasTask(taskId)) return undefined;
     return agentLoopRuntime.recordCompletionClaim({ taskId, sessionId, message, summary });
@@ -262,10 +289,9 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  // Startup is eager so the UI can accurately report a daemon failure before
-  // a Task tries to create a Session. Session activation still awaits the
-  // same endpoint provider, so this does not introduce a second owner.
-  void terminalDaemonSupervisor.start().catch(() => undefined);
+  // The active Agent Loop uses OpenCode Server Sessions and the official Web
+  // UI. Legacy terminal IPC remains lazy for compatibility, but it must not
+  // create an Orca daemon merely because the desktop host opened.
   await startWebRuntimeBridge().catch((error) => {
     console.error(`Local browser Runtime Host failed to start: ${error instanceof Error ? error.message : "unknown error"}`);
   });
@@ -285,12 +311,14 @@ app.on("before-quit", () => {
   sessionWakeupMonitor?.stop?.();
   void openCodeProviderObserver?.close?.();
   agentLoopRuntime?.close?.();
+  void openCodeServerManager?.stopAll?.();
   void openCodeHookService?.close?.();
   void ptyManager?.close?.();
   void terminalDaemonSupervisor?.stop?.();
   void webRuntimeBridge?.close?.();
   sessionAuthority?.close?.();
   void conductorToolBridgeHttpServer?.close?.();
+  void templateDesignToolBridgeHttpServer?.close?.();
 });
 
 function registerIpc() {
@@ -317,6 +345,14 @@ function registerIpc() {
   );
 
   ipcMain.handle("native:list-opencode-agents", () => listOpencodeAgents());
+  ipcMain.handle("native:list-opencode-model-capabilities", (_event, input) =>
+    opencodeModelCapabilityRegistry.list({
+      historicalModelIds: Array.isArray(input?.historicalModelIds)
+        ? input.historicalModelIds.map((value) => String(value))
+        : undefined,
+      forceRefresh: input?.forceRefresh === true,
+    }),
+  );
 
   ipcMain.handle("native:inspect-opencode-processes", () => {
     try {
@@ -444,6 +480,10 @@ function registerIpc() {
   // registered as production IPC capabilities.
   ipcMain.handle("native:list-agent-loop-templates", () => ensureAgentLoopRuntime().listTemplates());
 
+  ipcMain.handle("native:list-agent-loop-template-versions", (_event, input) =>
+    ensureAgentLoopRuntime().listTemplateVersions({ templateId: String(input?.templateId ?? "") }),
+  );
+
   ipcMain.handle("native:generate-agent-loop-template", (_event, input) =>
     ensureAgentLoopRuntime().generateTemplateDraft({
       cwd: String(input?.cwd ?? process.cwd()),
@@ -469,11 +509,72 @@ function registerIpc() {
     ensureAgentLoopRuntime().deleteTemplate({ templateId: String(input?.templateId ?? "") }),
   );
 
+  // Template Design is a distinct Draft/Provider Session surface. It never
+  // creates a Task; only the explicit save command creates a new immutable
+  // Template Version through the Draft service.
+  ipcMain.handle("native:get-or-create-agent-loop-template-design-session", async (_event, input) => {
+    const project = await validateAgentLoopProjectDirectory({ path: input?.cwd });
+    const draft = await ensureTemplateDesignRuntime().getOrCreateDesignSession({
+      target: input?.target,
+      // Compatibility for renderer builds that predate the discriminated
+      // target. The Template Design Runtime normalizes it before provisioning.
+      templateId: input?.target ? undefined : String(input?.templateId ?? ""),
+      ...(input?.target || input?.templateVersion === undefined ? {} : { templateVersion: Number(input.templateVersion) }),
+      cwd: project.path,
+      model: input?.model ? String(input.model) : undefined,
+      ...(input?.modelVariant ? { modelVariant: String(input.modelVariant) } : {}),
+    });
+    return { draft, providerSessionId: draft.providerSessionId };
+  });
+  ipcMain.handle("native:list-active-agent-loop-template-design-sessions", async (_event, input) => {
+    const project = await validateAgentLoopProjectDirectory({ path: input?.cwd });
+    return ensureTemplateDesignRuntime().listActiveDesignSessions({ cwd: project.path });
+  });
+  ipcMain.handle("native:read-agent-loop-template-design-session", (_event, input) =>
+    ensureTemplateDesignRuntime().readDesignSession({ draftId: String(input?.draftId ?? "") }),
+  );
+  ipcMain.handle("native:save-agent-loop-template-design-draft", async (_event, input) => {
+    const saved = await ensureTemplateDesignRuntime().saveDesignDraft({
+      draftId: String(input?.draftId ?? ""),
+      expectedRevision: Number(input?.expectedRevision),
+    });
+    publishTemplateDesignChange({
+      draftId: saved.draft.draftId,
+      type: "template_design.draft_saved",
+      revision: saved.draft.revision,
+    });
+    return saved;
+  });
+  ipcMain.handle("native:discard-agent-loop-template-design-draft", async (_event, input) => {
+    const draft = await ensureTemplateDesignRuntime().discardDesignDraft({
+      draftId: String(input?.draftId ?? ""),
+      expectedRevision: Number(input?.expectedRevision),
+    });
+    publishTemplateDesignChange({
+      draftId: draft.draftId,
+      type: "template_design.draft_discarded",
+      revision: draft.revision,
+    });
+    return draft;
+  });
+  ipcMain.handle("native:open-agent-loop-template-design-session-page", (_event, input) =>
+    ensureTemplateDesignRuntime().openDesignSessionPage({ draftId: String(input?.draftId ?? "") }),
+  );
+  ipcMain.handle("native:release-agent-loop-template-design-session-page", (_event, input) =>
+    ensureTemplateDesignRuntime().releaseDesignSessionPage({
+      draftId: String(input?.draftId ?? ""),
+      leaseId: String(input?.leaseId ?? ""),
+    }),
+  );
+
   ipcMain.handle("native:validate-agent-loop-project-directory", (_event, input) =>
     validateAgentLoopProjectDirectory({ path: input?.path }),
   );
   ipcMain.handle("native:suggest-agent-loop-project-directories", (_event, input) =>
     suggestAgentLoopProjectDirectories({ prefix: input?.prefix }),
+  );
+  ipcMain.handle("native:create-agent-loop-project-directory", (_event, input) =>
+    createAgentLoopProjectDirectory({ parentPath: input?.parentPath, name: input?.name }),
   );
 
   ipcMain.handle("native:create-agent-loop-task", async (_event, input) => {
@@ -489,7 +590,9 @@ function registerIpc() {
     });
   });
 
-  ipcMain.handle("native:list-agent-loop-tasks", () => ensureAgentLoopRuntime().listTasks());
+  ipcMain.handle("native:list-agent-loop-tasks", (_event, input) =>
+    ensureAgentLoopRuntime().listTasks({ scope: input?.scope ? String(input.scope) : undefined }),
+  );
 
   ipcMain.handle("native:read-agent-loop-task", (_event, input) =>
     ensureAgentLoopRuntime().readTask({ taskId: String(input?.taskId ?? "") }),
@@ -507,6 +610,19 @@ function registerIpc() {
     const runId = String(input?.runId ?? "");
     return runId ? ensureAgentLoopRuntime().readRun({ runId }) : undefined;
   });
+  ipcMain.handle("native:open-agent-loop-opencode-session-page", (_event, input) =>
+    ensureAgentLoopRuntime().openOpenCodeSessionPage({
+      runId: String(input?.runId ?? ""),
+      sessionId: String(input?.sessionId ?? ""),
+    }),
+  );
+  ipcMain.handle("native:release-agent-loop-opencode-session-page", (_event, input) =>
+    ensureAgentLoopRuntime().releaseOpenCodeSessionPage({
+      runId: String(input?.runId ?? ""),
+      sessionId: String(input?.sessionId ?? ""),
+      leaseId: String(input?.leaseId ?? ""),
+    }),
+  );
   ipcMain.handle("native:read-agent-loop-workbench-layout", (_event, input) =>
     ensureAgentLoopRuntime().readWorkbenchLayout({ runId: String(input?.runId ?? "") }),
   );
@@ -520,6 +636,14 @@ function registerIpc() {
 
   ipcMain.handle("native:mark-agent-loop-task-achieved", (_event, input) =>
     ensureAgentLoopRuntime().markTaskAchieved({
+      taskId: String(input?.taskId ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+    }),
+  );
+
+  ipcMain.handle("native:resume-achieved-agent-loop-task", (_event, input) =>
+    ensureAgentLoopRuntime().resumeAchievedTask({
       taskId: String(input?.taskId ?? ""),
       commandId: String(input?.commandId ?? ""),
       expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
@@ -552,11 +676,41 @@ function registerIpc() {
     }),
   );
 
+  ipcMain.handle("native:move-agent-loop-task-to-recycle-bin", (_event, input) =>
+    ensureAgentLoopRuntime().moveTaskToRecycleBin({
+      taskId: String(input?.taskId ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+    }),
+  );
+
+  ipcMain.handle("native:restore-agent-loop-task-from-recycle-bin", (_event, input) =>
+    ensureAgentLoopRuntime().restoreTaskFromRecycleBin({
+      taskId: String(input?.taskId ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+    }),
+  );
+
+  ipcMain.handle("native:preview-agent-loop-task-permanent-deletion", (_event, input) =>
+    ensureAgentLoopRuntime().previewTaskPermanentDeletion({ taskId: String(input?.taskId ?? "") }),
+  );
+
+  ipcMain.handle("native:permanently-delete-agent-loop-task", (_event, input) =>
+    ensureAgentLoopRuntime().permanentlyDeleteTask({
+      taskId: String(input?.taskId ?? ""),
+      commandId: String(input?.commandId ?? ""),
+      expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+      artifactPaths: Array.isArray(input?.artifactPaths) ? input.artifactPaths.map(String) : [],
+    }),
+  );
+
   ipcMain.handle("native:delete-agent-loop-task", (_event, input) =>
     ensureAgentLoopRuntime().deleteTask({
       taskId: String(input?.taskId ?? ""),
       commandId: String(input?.commandId ?? ""),
       expectedRevision: Number.isSafeInteger(input?.expectedRevision) ? input.expectedRevision : undefined,
+      artifactPaths: Array.isArray(input?.artifactPaths) ? input.artifactPaths.map(String) : [],
     }),
   );
 
@@ -591,6 +745,21 @@ function publishAgentLoopRuntimeChange(change) {
   webRuntimeBridge?.publishAgentLoopRuntimeEvent(payload);
 }
 
+function publishTemplateDesignChange(change) {
+  const draftId = String(change?.draftId ?? "");
+  const revision = Number(change?.revision);
+  if (!draftId || !Number.isSafeInteger(revision) || revision < 1) return;
+  const payload = {
+    draftId,
+    type: String(change?.type ?? "template_design.draft_patched"),
+    revision,
+  };
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (isLiveWebContents(window.webContents)) window.webContents.send("native:agent-loop-template-design-event", payload);
+  }
+  webRuntimeBridge?.publishAgentLoopTemplateDesignEvent(payload);
+}
+
 async function startWebRuntimeBridge() {
   const token = String(process.env.AGENT_WORKSPACE_WEB_BRIDGE_TOKEN ?? "");
   const port = Number(process.env.AGENT_WORKSPACE_WEB_HOST_PORT);
@@ -601,13 +770,17 @@ async function startWebRuntimeBridge() {
     projectRoot: () => process.env.AGENT_WORKSPACE_PROJECT_PATH || process.cwd(),
     readRuntimeStatus,
     runOpencode,
+    listOpencodeModelCapabilities: (input) => opencodeModelCapabilityRegistry.list(input),
     sessionAuthority,
     ptyManager,
     getAgentLoopRuntime: ensureAgentLoopRuntime,
+    getTemplateDesignRuntime: ensureTemplateDesignRuntime,
+    publishTemplateDesignChange,
     readWorkspaceTerminalLog,
     appendTaskEvent,
     validateAgentLoopProjectDirectory,
     suggestAgentLoopProjectDirectories,
+    createAgentLoopProjectDirectory,
     terminalClientAttachments,
     terminalHostClientId,
   });
@@ -618,58 +791,15 @@ async function startWebRuntimeBridge() {
 }
 
 async function validateAgentLoopProjectDirectory({ path: inputPath } = {}) {
-  const value = String(inputPath ?? "").trim();
-  if (!value) throw new Error("请输入项目文件夹路径。");
-  const expanded = expandAgentLoopProjectPath(value);
-  const cwd = path.resolve(expanded);
-  let stat;
-  try {
-    stat = await fs.promises.stat(cwd);
-  } catch {
-    throw new Error("项目文件夹不存在或无法访问。");
-  }
-  if (!stat.isDirectory()) throw new Error("项目路径不是文件夹。");
-  return { path: cwd, name: path.basename(cwd) || cwd };
+  return agentLoopProjectDirectories.validate({ path: inputPath });
 }
 
 async function suggestAgentLoopProjectDirectories({ prefix } = {}) {
-  const value = String(prefix ?? "").trim();
-  if (!value) return [];
-  const expanded = expandAgentLoopProjectPath(value);
-  const resolved = path.resolve(expanded);
-  const hasTrailingSeparator = /[\\/]$/.test(value);
-  const openedDirectory = hasTrailingSeparator && await isDirectory(resolved);
-  const partialPath = hasTrailingSeparator && !openedDirectory
-    ? (expanded.replace(/[\\/]+$/, "") || path.parse(resolved).root)
-    : resolved;
-  const parent = openedDirectory ? resolved : path.dirname(partialPath);
-  const entryPrefix = openedDirectory ? "" : path.basename(partialPath).toLocaleLowerCase();
-  try {
-    const entries = await fs.promises.readdir(parent, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory() && entry.name.toLocaleLowerCase().startsWith(entryPrefix))
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, 40)
-      .map((entry) => `${path.join(parent, entry.name)}${path.sep}`);
-  } catch {
-    return [];
-  }
+  return agentLoopProjectDirectories.suggest({ prefix });
 }
 
-function expandAgentLoopProjectPath(value) {
-  return value === "~"
-    ? app.getPath("home")
-    : value.startsWith("~/") || value.startsWith("~\\")
-      ? path.join(app.getPath("home"), value.slice(2))
-      : value;
-}
-
-async function isDirectory(candidate) {
-  try {
-    return (await fs.promises.stat(candidate)).isDirectory();
-  } catch {
-    return false;
-  }
+async function createAgentLoopProjectDirectory({ parentPath, name } = {}) {
+  return agentLoopProjectDirectories.createChild({ parentPath, name });
 }
 
 async function readRuntimeStatus() {
@@ -732,13 +862,98 @@ async function appendTaskEvent(input) {
   return { ok: true, event, taskState: runtimeSessionCapabilities.readModel.readTaskState({ taskId }) };
 }
 
+function ensureOpenCodeServerManager() {
+  if (openCodeServerManager) return openCodeServerManager;
+  const resolvedOpencodePath = resolveOpencodePath();
+  if (!resolvedOpencodePath) throw new Error("OpenCode is required for the Agent Loop runtime.");
+  openCodeServerManager = createOpenCodeServerManager({
+    opencodePath: resolvedOpencodePath,
+    expectedProviderVersion: OPENCODE_PROVIDER_VERSION,
+  });
+  return openCodeServerManager;
+}
+
+async function ensureTemplateDesignToolBridgeConfig() {
+  if (templateDesignToolBridgeHttpServer) return templateDesignToolBridgeRuntimeConfig;
+  if (!templateDesignToolBridgeStartPromise) {
+    const templateDesignService = ensureAgentLoopRuntime().templateDesignService;
+    templateDesignToolBridge = createTemplateDesignToolBridge({
+      templateDesignService,
+      onDraftChanged: publishTemplateDesignChange,
+    });
+    templateDesignToolBridgeStartPromise = startTemplateDesignToolBridgeHttpServer({ bridge: templateDesignToolBridge })
+      .then((bridgeServer) => {
+        templateDesignToolBridgeHttpServer = bridgeServer;
+        templateDesignToolBridgeRuntimeConfig = {
+          templateDesignerToolBridgeUrl: bridgeServer.url,
+          templateDesignerToolBridgeToken: bridgeServer.token,
+          templateDesignerMcpServerPath: path.join(__dirname, "template-designer-mcp-server.cjs"),
+        };
+        return templateDesignToolBridgeRuntimeConfig;
+      })
+      .catch((error) => {
+        templateDesignToolBridgeStartError = error;
+        templateDesignToolBridgeStartPromise = undefined;
+        throw error;
+      });
+  }
+  return templateDesignToolBridgeStartPromise;
+}
+
+async function openCodeHostBridgeConfig() {
+  const [, templateDesignerBridge] = await Promise.all([
+    conductorToolBridgeHttpServerPromise,
+    ensureTemplateDesignToolBridgeConfig(),
+  ]);
+  if (conductorToolBridgeStartError) {
+    throw new Error(`conductor_bridge_not_ready:${conductorToolBridgeStartError instanceof Error ? conductorToolBridgeStartError.message : "unknown"}`);
+  }
+  if (templateDesignToolBridgeStartError) {
+    throw new Error(`template_design_bridge_not_ready:${templateDesignToolBridgeStartError instanceof Error ? templateDesignToolBridgeStartError.message : "unknown"}`);
+  }
+  return { ...conductorToolBridgeRuntimeConfig, ...templateDesignerBridge };
+}
+
+async function sharedOpenCodeHostConfig({ cwd } = {}) {
+  const bridge = await openCodeHostBridgeConfig();
+  return createOpenCodeHostRuntimeConfig({
+    cwd,
+    conductorBridge: bridge,
+    templateDesignerBridge: bridge,
+  });
+}
+
+function ensureTemplateDesignRuntime() {
+  if (templateDesignRuntime) return templateDesignRuntime;
+  const runtime = ensureAgentLoopRuntime();
+  templateDesignRuntime = createTemplateDesignSessionRuntime({
+    templateDesignService: runtime.templateDesignService,
+    openCodeServerManager: ensureOpenCodeServerManager(),
+    readTemplate: ({ templateId, templateVersion }) => runtime.templateById(templateId, templateVersion),
+    createHostConfig: sharedOpenCodeHostConfig,
+    resolveOpenCodeSessionPage: ({ server, ...input }) => {
+      if (!server?.origin) {
+        return {
+          presentation: "unavailable",
+          providerSessionId: input.providerSessionId,
+          reason: "opencode_server_template_design_not_ready",
+        };
+      }
+      return createOpenCodeServerSessionPageResolver({
+        serverOrigin: server.origin,
+        expectedProviderVersion: OPENCODE_PROVIDER_VERSION,
+      }).openSessionPage(input);
+    },
+  });
+  return templateDesignRuntime;
+}
+
 function ensureAgentLoopRuntime() {
   if (agentLoopRuntime) return agentLoopRuntime;
   const resolvedOpencodePath = resolveOpencodePath();
   if (!resolvedOpencodePath) throw new Error("OpenCode is required for the Agent Loop runtime.");
   agentLoopRuntime = createAgentLoopV1Runtime({
-    sessionAuthority,
-    ptyManager,
+    openCodeServerManager: ensureOpenCodeServerManager(),
     sessionStoreCapabilities: runtimeSessionCapabilities,
     opencodePath: resolvedOpencodePath,
     databasePath: path.join(app.getPath("userData"), "agent-workspace", "agent-loop-v1.sqlite"),
@@ -763,10 +978,27 @@ function ensureAgentLoopRuntime() {
     onProviderHookEvent: (event) => sessionWakeupMonitor?.handleProviderHookEvent(event),
     respondToPermission: (input) => sessionWakeupMonitor?.respondPermission(input),
     reconcileTaskCancellations: ({ taskId }) => conductorToolBridge.reconcileTaskCancellations({ taskId }),
-    getConductorBridgeConfig: async () => {
-      await conductorToolBridgeHttpServerPromise;
-      return conductorToolBridgeRuntimeConfig;
+    resolveOpenCodeSessionPage: (input) => {
+      const server = openCodeServerManager?.getRun?.({ taskId: input?.taskId, runId: input?.runId });
+      if (!server?.origin) return { presentation: "unavailable", providerSessionId: input?.providerSessionId, reason: "opencode_server_run_not_ready" };
+      return createOpenCodeServerSessionPageResolver({
+        serverOrigin: server.origin,
+        expectedProviderVersion: OPENCODE_PROVIDER_VERSION,
+        presentationGateway: {
+          registerPresentation: (presentation) => ensureOpenCodeServerManager().registerRunPresentationGateway({
+            taskId: String(input?.taskId ?? ""),
+            runId: String(input?.runId ?? ""),
+            ...presentation,
+          }),
+        },
+      }).openSessionPage(input);
     },
+    // The Runtime validates Task/Run/session ownership before it reaches this
+    // narrow Host release capability. Releasing the Server lease is separate
+    // from revoking the opaque official-WebUI presentation route.
+    releaseOpenCodeSessionPage: ({ taskId, runId, leaseId }) =>
+      ensureOpenCodeServerManager().releaseRunPresentationGateway({ taskId, runId, leaseId }),
+    getConductorBridgeConfig: openCodeHostBridgeConfig,
   });
   // Start/Stop/Delete persist their command intent before touching native
   // Sessions or runtime directories. Resume any prepared intent immediately

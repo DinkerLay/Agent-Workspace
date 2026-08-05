@@ -18,6 +18,9 @@ function createConductorToolBridge({
   onCompletionClaim,
   prepareDispatchContext,
   readTerminalSessionFact,
+  deliverProviderAssignment,
+  abortProviderDispatch,
+  resolveConductorSessionId,
 }) {
   const dispatchCoordinator = createDispatchCoordinator({
     sessionStore,
@@ -29,6 +32,9 @@ function createConductorToolBridge({
     resolveAgentSession,
     prepareDispatchContext,
     readTerminalSessionFact,
+    deliverProviderAssignment,
+    abortProviderDispatch,
+    resolveConductorSessionId,
   });
 
   async function callSession(input) {

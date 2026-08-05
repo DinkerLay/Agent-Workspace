@@ -23,6 +23,16 @@ function createRepository() {
       run_id TEXT NOT NULL, sequence INTEGER NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, data_json TEXT NOT NULL,
       created_at TEXT NOT NULL, PRIMARY KEY (run_id, sequence)
     ) STRICT;
+    CREATE TABLE agent_loop_workbench_layouts (
+      run_id TEXT PRIMARY KEY, layout_json TEXT NOT NULL, updated_at TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE agent_loop_user_messages (
+      message_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, run_id TEXT, message TEXT NOT NULL, status TEXT NOT NULL,
+      created_at TEXT NOT NULL, delivered_at TEXT
+    ) STRICT;
+    CREATE TABLE agent_loop_opencode_host_bindings (
+      run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL
+    ) STRICT;
   `);
   let tick = 0;
   const repository = createTaskRunRepository({
@@ -275,6 +285,84 @@ describe("Task/Run Repository", () => {
       [{ commandId: "command-stop-recover", kind: "task.stop", status: "prepared" }],
     );
     assert.deepStrictEqual(repository.listPreparedCommands({ kinds: ["task.delete"] }), []);
+    db.close();
+  });
+
+  it("permanently finalizes a prepared recycle-bin deletion without retaining Task-owned records", () => {
+    const { db, repository } = createRepository();
+    repository.insertRun({
+      runId: "run-delete-1",
+      taskId: "task-1",
+      status: "achieved",
+      conductorSessionId: "session-delete-1",
+    });
+    db.prepare("INSERT INTO agent_loop_workbench_layouts (run_id, layout_json, updated_at) VALUES (?, ?, ?)")
+      .run("run-delete-1", "{}", "2026-08-02T00:00:00.000Z");
+    repository.appendRunEvent({ runId: "run-delete-1", type: "task.achieved", summary: "Achieved.", data: {} });
+    repository.insertUserMessage({
+      messageId: "message-delete-1",
+      taskId: "task-1",
+      runId: "run-delete-1",
+      message: "Keep this Task conversation only until permanent deletion.",
+    });
+    repository.enqueueTaskEvent({
+      outboxId: "outbox-delete-1",
+      taskId: "task-1",
+      runId: "run-delete-1",
+      cwd: "/workspace",
+      type: "task.recycled",
+      summary: "Recycled.",
+    });
+    db.prepare("INSERT INTO agent_loop_opencode_host_bindings (run_id, task_id) VALUES (?, ?)")
+      .run("run-delete-1", "task-1");
+    repository.registerManagedArtifact({ taskId: "task-1", artifactPath: "reports/delivery.md" });
+    repository.prepareCommand({
+      commandId: "command-delete-1",
+      taskId: "task-1",
+      kind: "task.permanently_delete",
+      payload: { artifactPaths: ["reports/delivery.md"] },
+      expectedRevision: 1,
+      mutate({ task, updateTaskStatus }) {
+        return {
+          taskId: task.taskId,
+          runIds: ["run-delete-1"],
+          artifactPaths: ["reports/delivery.md"],
+          taskRevision: updateTaskStatus({ taskId: task.taskId, status: "deleting" }).revision,
+        };
+      },
+    });
+
+    const finalized = repository.finalizePreparedTaskDeletion({
+      commandId: "command-delete-1",
+      finalResult: {
+        runtimeDirectoryRemoved: true,
+        managedArtifactsDeleted: ["reports/delivery.md"],
+        managedArtifactsSkipped: [],
+      },
+    });
+    assert.equal(finalized.replayed, false);
+    assert.deepEqual(finalized.result, {
+      taskId: "task-1",
+      runsDeleted: 1,
+      deleted: true,
+      runtimeDirectoryRemoved: true,
+      managedArtifactsDeleted: ["reports/delivery.md"],
+      managedArtifactsSkipped: [],
+    });
+    assert.equal(repository.taskById("task-1"), undefined);
+    assert.equal(repository.runById("run-delete-1"), undefined);
+    assert.equal(repository.commandById("command-delete-1"), undefined, "the Task command is removed with its Task");
+    assert.deepEqual(repository.listManagedArtifacts("task-1"), []);
+    assert.deepEqual(repository.deletionTombstoneByCommandId("command-delete-1")?.result, finalized.result);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM agent_loop_workbench_layouts").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM agent_loop_events").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM agent_loop_user_messages").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM agent_loop_task_event_outbox").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM agent_loop_opencode_host_bindings").get().count, 0);
+
+    const replay = repository.finalizePreparedTaskDeletion({ commandId: "command-delete-1" });
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.result, finalized.result, "the deletion tombstone makes an ambiguous retry idempotent");
     db.close();
   });
 });

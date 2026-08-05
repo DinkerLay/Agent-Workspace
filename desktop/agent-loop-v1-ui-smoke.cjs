@@ -51,7 +51,7 @@ function installIpc({ runtime, sessionAuthority, ptyManager, sessionStore }) {
   ipcMain.handle("native:delete-agent-loop-template", (_event, input) => runtime.deleteTemplate(input));
   ipcMain.handle("native:choose-agent-loop-project-directory", (_event, input) => ({ path: String(input?.defaultPath ?? smokeRoot), name: "Agent Loop UI smoke" }));
   ipcMain.handle("native:create-agent-loop-task", (_event, input) => runtime.createTask(input));
-  ipcMain.handle("native:list-agent-loop-tasks", () => runtime.listTasks());
+  ipcMain.handle("native:list-agent-loop-tasks", (_event, input) => runtime.listTasks({ scope: input?.scope }));
   ipcMain.handle("native:read-agent-loop-task", (_event, input) => runtime.readTask(input));
   ipcMain.handle("native:start-agent-loop-run", (_event, input) => runtime.startRun(input));
   ipcMain.handle("native:read-agent-loop-run", (_event, input) => {
@@ -75,6 +75,10 @@ function installIpc({ runtime, sessionAuthority, ptyManager, sessionStore }) {
     questionId: String(input?.questionId ?? ""),
     answer: String(input?.answer ?? ""),
   }));
+  ipcMain.handle("native:move-agent-loop-task-to-recycle-bin", (_event, input) => runtime.moveTaskToRecycleBin(input));
+  ipcMain.handle("native:restore-agent-loop-task-from-recycle-bin", (_event, input) => runtime.restoreTaskFromRecycleBin(input));
+  ipcMain.handle("native:preview-agent-loop-task-permanent-deletion", (_event, input) => runtime.previewTaskPermanentDeletion(input));
+  ipcMain.handle("native:permanently-delete-agent-loop-task", (_event, input) => runtime.permanentlyDeleteTask(input));
   ipcMain.handle("native:delete-agent-loop-task", (_event, input) => runtime.deleteTask(input));
   ipcMain.handle("native:append-task-event", (_event, input) => runtime.recordUserMessage({
     taskId: String(input?.taskId ?? ""),

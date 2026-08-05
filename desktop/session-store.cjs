@@ -2,6 +2,23 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
+// A Provider turn completing proves that an earlier request no longer owns
+// that turn. It deliberately does not claim that Runtime observed a user
+// approval or denial; the official Provider UI remains the authority for that
+// answer. Keep this classification shared with the dispatch gate so a stored
+// historical fact cannot disagree with the Runtime projection.
+const NON_BLOCKING_PERMISSION_DISPATCH_STATUSES = new Set([
+  "approved",
+  "denied",
+  "resolved",
+  "reissued",
+  "provider_turn_completed",
+]);
+
+function isPermissionRecordBlockingDispatch(permission = {}) {
+  return !NON_BLOCKING_PERMISSION_DISPATCH_STATUSES.has(String(permission?.status ?? "requested"));
+}
+
 function createSessionStore({
   root,
   jsonlReadTailBytes = 2 * 1024 * 1024,
@@ -259,6 +276,7 @@ function createSessionStore({
     const record = {
       permissionId,
       requestId: boundedPermissionString(input.requestId, 200),
+      dispatchId: boundedPermissionString(input.dispatchId, 200),
       provider: boundedPermissionString(input.provider || "opencode", 80),
       permission: boundedPermissionString(input.permission || "unknown", 160),
       patterns: boundedPermissionStrings(input.patterns, 24, 400),
@@ -319,6 +337,7 @@ function createSessionStore({
     upsertPermissionRecord(file, permissionId, record);
     appendEvent(session, "permission.requested", undefined, record.summary, {
       permissionId: record.permissionId,
+      dispatchId: record.dispatchId || undefined,
       provider: record.provider,
       permission: record.permission,
       patterns: record.patterns,
@@ -339,7 +358,7 @@ function createSessionStore({
     const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
     if (!existing) return { permissionId, status: "missing", changed: false };
     if (String(existing.status) === "submitted" && String(existing.response) === response) return { ...existing, changed: false };
-    if (["approved", "denied", "resolved"].includes(String(existing.status))) return { ...existing, changed: false };
+    if (!isPermissionRecordBlockingDispatch(existing)) return { ...existing, changed: false };
     const record = { ...existing, status: "submitted", response, submittedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     upsertPermissionRecord(file, permissionId, record);
     appendEvent(session, "permission.response_submitted", undefined, "用户已提交 OpenCode 授权答复，等待 Provider 确认。", { permissionId, response });
@@ -360,7 +379,7 @@ function createSessionStore({
     const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
     if (!existing) return { permissionId, status: "missing", changed: false };
     if (String(existing.status) === "recovery_pending" && String(existing.response) === response) return { ...existing, changed: false };
-    if (["approved", "denied", "resolved"].includes(String(existing.status))) return { ...existing, changed: false };
+    if (!isPermissionRecordBlockingDispatch(existing)) return { ...existing, changed: false };
     const record = {
       ...existing,
       status: "recovery_pending",
@@ -380,6 +399,7 @@ function createSessionStore({
     const file = pathFor(session, "permissions.jsonl");
     const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
     if (!existing) return { permissionId, status: "missing", changed: false };
+    if (!isPermissionRecordBlockingDispatch(existing)) return { ...existing, changed: false };
     const record = {
       ...existing,
       status: "recovery_failed",
@@ -399,7 +419,7 @@ function createSessionStore({
     const file = pathFor(session, "permissions.jsonl");
     const existing = readJsonLines(file).find((record) => String(record.permissionId ?? "") === permissionId);
     if (!existing) return { permissionId, status: "missing", changed: false };
-    if (["approved", "denied", "resolved"].includes(String(existing.status))) return { ...existing, changed: false };
+    if (!isPermissionRecordBlockingDispatch(existing)) return { ...existing, changed: false };
     // Provider hook delivery and Runtime sampling can both observe the same
     // failed reply. A failed attempt is one user-visible fact, not a heartbeat:
     // keep the card actionable but do not grow the Timeline or refresh its
@@ -847,6 +867,24 @@ function createSessionStore({
       return { dispatchId: input.dispatchId, status: "missing" };
     }
 
+    // An official OpenCode Web UI permission can be answered directly in the
+    // Provider page. There is intentionally no Runtime approval callback in
+    // that path. A completed assistant result for this exact dispatch is the
+    // durable fact that the older request no longer occupies the Session.
+    // Close it before recording the result: a crash can then at worst retain
+    // the dispatch as outstanding, never unlock a still-active assignment.
+    if (input.providerTurnCompleted === true) {
+      recordPermissionsCompletedByProviderTurn({
+        ...session,
+        dispatchId: input.dispatchId,
+        provider: input.provider,
+        providerSessionId: input.providerSessionId,
+        providerMessageId: input.providerMessageId,
+        providerTurnCompletedResultId: resultRecord.resultId,
+        legacyPermissionBoundaryAt: input.legacyPermissionBoundaryAt,
+      });
+    }
+
     if (!existingResult) {
       appendJsonLine(resultsPath, resultRecord);
       appendJsonLine(taskMessagesPath, createMessageRecord(resultRecord));
@@ -867,6 +905,58 @@ function createSessionStore({
       });
     }
     return { ...resultRecord, status: updated.status, changed };
+  }
+
+  function recordPermissionsCompletedByProviderTurn(input = {}) {
+    const session = permissionSession(input);
+    const dispatchId = String(input.dispatchId ?? "").trim();
+    if (!dispatchId) throw new Error("Provider turn completion requires dispatchId.");
+    const file = pathFor(session, "permissions.jsonl");
+    const records = readJsonLines(file);
+    const provider = boundedPermissionString(input.provider, 80);
+    const completedAt = new Date().toISOString();
+    const completed = [];
+    const nextRecords = records.map((record) => {
+      if (!isPermissionRecordBlockingDispatch(record)) return record;
+      const permissionDispatchId = String(record.dispatchId ?? "").trim();
+      // New records are bound to the exact assignment. Legacy records did not
+      // carry that field, so a live result must never guess which historical
+      // turn they belonged to. They are only backfilled by the explicit
+      // rebind-reconciliation path, which supplies a durable result boundary.
+      if (permissionDispatchId && permissionDispatchId !== dispatchId) return record;
+      if (!permissionDispatchId) {
+        if (!input.legacyPermissionBoundaryAt || !permissionRequestedBefore(record, input.legacyPermissionBoundaryAt)) {
+          return record;
+        }
+      }
+      const permissionProvider = boundedPermissionString(record.provider, 80);
+      if (provider && permissionProvider && permissionProvider !== provider) return record;
+      const completedRecord = {
+        ...record,
+        status: "provider_turn_completed",
+        providerTurnCompletedAt: completedAt,
+        providerTurnCompletedDispatchId: dispatchId,
+        providerTurnCompletedResultId: boundedPermissionString(input.providerTurnCompletedResultId, 300) || undefined,
+        providerTurnCompletedProviderSessionId: boundedPermissionString(input.providerSessionId, 300) || undefined,
+        providerTurnCompletedProviderMessageId: boundedPermissionString(input.providerMessageId, 300) || undefined,
+        updatedAt: completedAt,
+      };
+      completed.push(completedRecord);
+      return completedRecord;
+    });
+    if (!completed.length) return { changed: false, permissionIds: [] };
+    writeJsonLines(file, nextRecords);
+    for (const record of completed) {
+      appendEvent(session, "permission.provider_turn_completed", undefined, "Provider 已返回本轮完成结果；此前授权请求保留为历史事实。", {
+        permissionId: record.permissionId,
+        dispatchId,
+        resultId: record.providerTurnCompletedResultId,
+        provider: record.provider,
+        providerSessionId: record.providerTurnCompletedProviderSessionId,
+        providerMessageId: record.providerTurnCompletedProviderMessageId,
+      });
+    }
+    return { changed: true, permissionIds: completed.map((record) => record.permissionId) };
   }
 
   function recordConductorWakeup(input) {
@@ -1332,7 +1422,7 @@ function buildTaskPendingDecisions({ sessions, dispatches, results, permissions,
   const resultIds = new Set(results.map((result) => result.resultId).filter(Boolean));
   const unresolvedPermissionSessionIds = new Set(
     permissions
-      .filter((permission) => !["resolved", "approved", "denied", "reissued"].includes(String(permission.status ?? "requested")))
+      .filter(isPermissionRecordBlockingDispatch)
       .map((permission) => String(permission.sessionId ?? ""))
       .filter(Boolean),
   );
@@ -1842,8 +1932,14 @@ function boundedPermissionStrings(value, maxItems, maxLength) {
     .slice(0, maxItems);
 }
 
+function permissionRequestedBefore(record, boundary) {
+  const requestedAt = Date.parse(String(record?.requestedAt ?? ""));
+  const boundaryAt = Date.parse(String(boundary ?? ""));
+  return Number.isFinite(requestedAt) && Number.isFinite(boundaryAt) && requestedAt <= boundaryAt;
+}
+
 function safeSegment(value) {
   return String(value || "unknown").replace(/[^a-zA-Z0-9._-]/g, "-");
 }
 
-module.exports = { createSessionStore, stripTerminalControls };
+module.exports = { createSessionStore, isPermissionRecordBlockingDispatch, stripTerminalControls };

@@ -12,26 +12,18 @@ export function defaultWorkbenchLayout(sessionIds: string[]): NativeAgentLoopWor
   return automaticWorkbenchLayout(uniqueSessionIds(sessionIds));
 }
 
-/** Deterministic first-use layout: at most four visible native terminal panes;
- * further Sessions become tabs.  Any explicit move/split freezes this policy. */
+/** Deterministic first-use layout: one focused official OpenCode page with
+ * Session tabs.  Agent Loop is a coordination surface, so its default must
+ * keep the Conductor legible instead of flattening it and Workers into a grid.
+ * Any explicit move/split freezes this policy. */
 export function automaticWorkbenchLayout(sessionIds: string[], sourceGroups: Record<string, Group> = {}): NativeAgentLoopWorkbenchLayout {
   const unique = uniqueSessionIds(sessionIds);
-  const groupIds = unique.length <= 1 ? ["primary"] : unique.length === 2 ? ["primary", "group-1"] : unique.length === 3 ? ["primary", "group-1", "group-2"] : ["primary", "group-1", "group-2", "group-3"];
-  const root: NativeAgentLoopWorkbenchLayoutNode = groupIds.length === 1
-    ? { type: "leaf", groupId: "primary" }
-    : groupIds.length === 2
-      ? { type: "split", direction: "horizontal", ratio: .5, first: { type: "leaf", groupId: "primary" }, second: { type: "leaf", groupId: "group-1" } }
-      : groupIds.length === 3
-        ? { type: "split", direction: "horizontal", ratio: .5, first: { type: "leaf", groupId: "primary" }, second: { type: "split", direction: "vertical", ratio: .5, first: { type: "leaf", groupId: "group-1" }, second: { type: "leaf", groupId: "group-2" } } }
-        : { type: "split", direction: "horizontal", ratio: .5, first: { type: "split", direction: "vertical", ratio: .5, first: { type: "leaf", groupId: "primary" }, second: { type: "leaf", groupId: "group-1" } }, second: { type: "split", direction: "vertical", ratio: .5, first: { type: "leaf", groupId: "group-2" }, second: { type: "leaf", groupId: "group-3" } } };
-  const groups = Object.fromEntries(groupIds.map((id) => [id, { id, sessionIds: [] as string[], fontSize: clampFontSize(sourceGroups[id]?.fontSize) }])) as Record<string, Group>;
-  unique.forEach((sessionId, index) => groups[groupIds[index % groupIds.length]].sessionIds.push(sessionId));
-  for (const group of Object.values(groups)) group.activeSessionId = group.sessionIds.includes(sourceGroups[group.id]?.activeSessionId ?? "") ? sourceGroups[group.id]?.activeSessionId : group.sessionIds[0];
+  const activeSessionId = unique.includes(sourceGroups.primary?.activeSessionId ?? "") ? sourceGroups.primary?.activeSessionId : unique[0];
   return {
     version: 1,
     placementMode: "auto",
-    root,
-    groups,
+    root: { type: "leaf", groupId: "primary" },
+    groups: { primary: { id: "primary", sessionIds: unique, activeSessionId, fontSize: clampFontSize(sourceGroups.primary?.fontSize) } },
     focusedGroupId: "primary",
   };
 }

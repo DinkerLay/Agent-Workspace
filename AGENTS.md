@@ -25,12 +25,14 @@ Shared instructions for Codex and other coding agents.
 - Before adding, moving, or coupling implementation code, read
   `docs/superworks/spec/code-ownership-and-layer-map.md`. It is the source of
   truth for module ownership, dependency direction, and state writers.
-- Before changing Task continuation, recovery, stopping, terminal layout, or
-  Timeline behavior, read
-  `docs/superworks/spec/task-run-continuity-and-terminal-experience.md`.
-- Before changing the Electron shell, browser renderer, local companion, or
-  remote deployment boundary, read
-  `docs/superworks/spec/browser-terminal-host-architecture.md`.
+- Before changing Task continuation, recovery, stopping, completion, deletion,
+  Task Session layout, or Timeline behavior, read
+  `docs/superworks/spec/task-template-runtime-model.md` and
+  `docs/superworks/spec/product-interaction-map.md`.
+- Before changing the Electron shell, browser renderer, OpenCode presentation
+  gateway, or local Server boundary, read
+  `docs/superworks/spec/code-ownership-and-layer-map.md` and
+  `docs/superworks/plans/opencode-server-webui-migration-v1.plan.md`.
 
 ## Product Guardrails
 

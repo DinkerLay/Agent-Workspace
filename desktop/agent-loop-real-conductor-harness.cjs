@@ -834,7 +834,32 @@ async function main() {
       // evidence of an Agent Loop result. The Provider receipts/results and
       // artifact assertions above are the durable acceptance evidence.
       if (SCENARIO === "deepsearch") {
-        deletion = await runtime.deleteTask({ taskId });
+        // The product never deletes a completed Task directly.  Exercise the
+        // same reversible lifecycle exposed by the browser: recycle it, put
+        // it back as the same Task/Run, then recycle and confirm deletion.
+        const recycled = await runtime.moveTaskToRecycleBin({
+          taskId,
+          commandId: `harness:recycle:${taskId}`,
+          expectedRevision: achieved.revision,
+        });
+        assert.equal(recycled.status, "archived");
+        const restored = await runtime.restoreTaskFromRecycleBin({
+          taskId,
+          commandId: `harness:restore:${taskId}`,
+          expectedRevision: recycled.revision,
+        });
+        assert.equal(restored.status, "achieved");
+        const recycledForDelete = await runtime.moveTaskToRecycleBin({
+          taskId,
+          commandId: `harness:recycle-for-delete:${taskId}`,
+          expectedRevision: restored.revision,
+        });
+        deletion = await runtime.permanentlyDeleteTask({
+          taskId,
+          commandId: `harness:permanently-delete:${taskId}`,
+          expectedRevision: recycledForDelete.revision,
+          artifactPaths: [],
+        });
         assert.equal(deletion.deleted, true);
         assert.equal(runtime.readTask({ taskId }), undefined, "explicit deletion removes Runtime-owned Task records after achieved");
       }

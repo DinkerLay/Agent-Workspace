@@ -207,7 +207,7 @@ function createSessionWakeupMonitor({
     const view = sessionStore.readSession?.({ taskId, sessionId, maxChars: 0 });
     const permission = view?.permissions?.find((item) => String(item.permissionId ?? "") === permissionId);
     if (!permission) return { ok: false, status: "missing", errorCode: "permission_request_not_found" };
-    if (["approved", "denied", "resolved"].includes(String(permission.status ?? ""))) {
+    if (["approved", "denied", "resolved", "provider_turn_completed"].includes(String(permission.status ?? ""))) {
       return { ok: true, status: String(permission.status), changed: false };
     }
     if (String(permission.status ?? "") === "submitted") {
@@ -365,6 +365,7 @@ function createSessionWakeupMonitor({
         sessionId: session.id,
         dispatchId: dispatch.dispatchId,
         reason: "provider-turn-completed",
+        providerTurnCompleted: true,
         cursor: status.cursor,
         provider: providerResult.provider,
         providerSessionId: providerResult.providerSessionId,
@@ -458,6 +459,7 @@ function createSessionWakeupMonitor({
           sessionId: session.id,
           dispatchId: dispatch.dispatchId,
           reason: "provider-turn-completed",
+          providerTurnCompleted: true,
           cursor: status.cursor,
           provider: fact.result.provider ?? fact.provider ?? "opencode",
           providerSessionId: fact.result.providerSessionId ?? receipt?.providerSessionId,

@@ -15,11 +15,20 @@ function createTaskRunRepository({
   migrateTaskRunRepository(db);
 
   function taskById(taskId) {
-    const row = db.prepare("SELECT * FROM agent_loop_tasks WHERE task_id = ?").get(String(taskId));
-    if (!row) return undefined;
-    const task = deserializeTask(row);
+    const task = rawTaskById(taskId);
+    if (!task) return undefined;
     bindTaskRoot?.({ taskId: task.taskId, cwd: task.cwd });
     return task;
+  }
+
+  // Most Task reads deliberately bind the Session Store root so a retained
+  // historical Task can still be opened after an app restart.  Permanent
+  // deletion is the exception: it removes that root immediately before its
+  // database transaction, so finalization must never perform a normal read
+  // that could recreate the directory it just removed.
+  function rawTaskById(taskId) {
+    const row = db.prepare("SELECT * FROM agent_loop_tasks WHERE task_id = ?").get(String(taskId));
+    return row ? deserializeTask(row) : undefined;
   }
 
   function listTasks() {
@@ -40,18 +49,111 @@ function createTaskRunRepository({
     return db.prepare("SELECT * FROM agent_loop_runs WHERE task_id = ? ORDER BY created_at ASC").all(String(taskId)).map(deserializeRun);
   }
 
-  function deleteTaskData({ taskId, runIds = listRuns(taskId).map((run) => run.runId) }) {
+  function deleteTaskData({ taskId, runIds = listRuns(taskId).map((run) => run.runId), deleteCommands = false }) {
     const ids = [...new Set(runIds.map(String).filter(Boolean))];
     if (ids.length) {
       const placeholders = ids.map(() => "?").join(", ");
-      db.prepare(`DELETE FROM agent_loop_workbench_layouts WHERE run_id IN (${placeholders})`).run(...ids);
+      if (tableExists("agent_loop_workbench_layouts")) {
+        db.prepare(`DELETE FROM agent_loop_workbench_layouts WHERE run_id IN (${placeholders})`).run(...ids);
+      }
       db.prepare(`DELETE FROM agent_loop_events WHERE run_id IN (${placeholders})`).run(...ids);
+      // Host bindings are owned by the OpenCode Runtime migration.  Keep the
+      // repository usable in its focused tests and older databases where that
+      // optional projection has not been created yet, while still removing it
+      // whenever it exists in a production Runtime database.
+      if (tableExists("agent_loop_opencode_host_bindings")) {
+        db.prepare(`DELETE FROM agent_loop_opencode_host_bindings WHERE run_id IN (${placeholders})`).run(...ids);
+      }
     }
-    db.prepare("DELETE FROM agent_loop_user_messages WHERE task_id = ?").run(taskId);
+    db.prepare("DELETE FROM agent_loop_managed_artifacts WHERE task_id = ?").run(taskId);
+    if (tableExists("agent_loop_user_messages")) {
+      db.prepare("DELETE FROM agent_loop_user_messages WHERE task_id = ?").run(taskId);
+    }
     db.prepare("DELETE FROM agent_loop_task_event_outbox WHERE task_id = ?").run(taskId);
     db.prepare("DELETE FROM agent_loop_runs WHERE task_id = ?").run(taskId);
+    if (deleteCommands) db.prepare("DELETE FROM agent_loop_commands WHERE task_id = ?").run(taskId);
     db.prepare("DELETE FROM agent_loop_tasks WHERE task_id = ?").run(taskId);
     return { taskId, runsDeleted: ids.length };
+  }
+
+  // A managed artifact is a narrow, explicit deletion candidate declared by
+  // the immutable Task architecture.  The Runtime still validates it against
+  // the Task cwd before it ever removes a filesystem entry; this registry
+  // merely prevents a permanent-delete UI from naming arbitrary project
+  // files.
+  function registerManagedArtifact({ taskId, artifactPath, source = "template_delivery", createdAt = now() }) {
+    const normalizedTaskId = requiredString(taskId, "taskId");
+    const normalizedPath = requiredString(artifactPath, "artifactPath");
+    db.prepare(
+      `INSERT INTO agent_loop_managed_artifacts (task_id, artifact_path, source, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(task_id, artifact_path) DO NOTHING`,
+    ).run(normalizedTaskId, normalizedPath, String(source || "template_delivery"), createdAt);
+    return db.prepare(
+      "SELECT task_id, artifact_path, source, created_at FROM agent_loop_managed_artifacts WHERE task_id = ? AND artifact_path = ?",
+    ).get(normalizedTaskId, normalizedPath);
+  }
+
+  function listManagedArtifacts(taskId) {
+    return db.prepare(
+      "SELECT task_id, artifact_path, source, created_at FROM agent_loop_managed_artifacts WHERE task_id = ? ORDER BY artifact_path ASC",
+    ).all(String(taskId)).map(deserializeManagedArtifact);
+  }
+
+  function deletionTombstoneByCommandId(commandId) {
+    const row = db.prepare(
+      "SELECT command_id, task_id, result_json, deleted_at FROM agent_loop_deleted_task_tombstones WHERE command_id = ?",
+    ).get(String(commandId));
+    return row ? deserializeDeletionTombstone(row) : undefined;
+  }
+
+  /**
+   * Permanent delete is different from normal command completion: its own
+   * command row must disappear with the Task, yet retrying the same command
+   * after an ambiguous IPC response must not repeat filesystem cleanup.  A
+   * minimal tombstone retains only the command id, Task id and final result.
+   */
+  function finalizePreparedTaskDeletion({ commandId, finalResult = {} }) {
+    return transaction(() => {
+      const tombstone = deletionTombstoneByCommandId(commandId);
+      if (tombstone) return { replayed: true, result: tombstone.result };
+      const command = required(commandById(commandId), "loop_command_not_found");
+      if (command.status !== "prepared") throw new Error("loop_command_not_prepared");
+      // `task.delete` is an in-flight intent from the prior direct-delete
+      // implementation.  It can only be finalized during startup recovery;
+      // no new UI path creates it.  Keeping that narrow migration avoids
+      // orphaning a durable pre-change deletion command.
+      if (!["task.permanently_delete", "task.delete"].includes(command.kind)) {
+        throw new Error("loop_command_kind_invalid");
+      }
+      const task = required(rawTaskById(command.taskId), "loop_task_not_found");
+      const deleted = deleteTaskData({
+        taskId: task.taskId,
+        runIds: command.result?.runIds ?? [],
+        deleteCommands: true,
+      });
+      // Do not copy the prepared command payload/result into the tombstone:
+      // it may contain the Task cwd, run ids, or artifact registry. The
+      // tombstone exists solely to make an ambiguous permanent-delete retry
+      // idempotent after all Task-owned records are gone.
+      const result = {
+        taskId: deleted.taskId,
+        runsDeleted: deleted.runsDeleted,
+        deleted: true,
+        runtimeDirectoryRemoved: Boolean(finalResult?.runtimeDirectoryRemoved),
+        managedArtifactsDeleted: Array.isArray(finalResult?.managedArtifactsDeleted)
+          ? finalResult.managedArtifactsDeleted.map(String)
+          : [],
+        managedArtifactsSkipped: Array.isArray(finalResult?.managedArtifactsSkipped)
+          ? finalResult.managedArtifactsSkipped
+          : [],
+      };
+      db.prepare(
+        `INSERT INTO agent_loop_deleted_task_tombstones (command_id, task_id, result_json, deleted_at)
+         VALUES (?, ?, ?, ?)`,
+      ).run(command.commandId, command.taskId, JSON.stringify(result), now());
+      return { replayed: false, result };
+    });
   }
 
   function insertTask(input) {
@@ -396,27 +498,37 @@ function createTaskRunRepository({
     }
   }
 
+  function tableExists(tableName) {
+    return Boolean(db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(String(tableName)));
+  }
+
   return {
     appendRunEvent,
     commandById,
     commitCommand,
     completePreparedCommand,
+    deletionTombstoneByCommandId,
     deleteTaskData,
     enqueueTaskEvent,
     flushTaskEventOutbox,
     failPreparedCommand,
     findPreparedCommand,
+    finalizePreparedTaskDeletion,
     insertRun,
     insertUserMessage,
     insertTask,
     latestRun,
     listPreparedCommands,
+    listManagedArtifacts,
     listPendingTaskEvents,
     listRunEvents,
     listRuns,
     listTasks,
     markTaskEventPublished,
     prepareCommand,
+    registerManagedArtifact,
     resetUserMessage,
     runById,
     taskById,
@@ -441,10 +553,19 @@ function migrateTaskRunRepository(db) {
       type TEXT NOT NULL, summary TEXT NOT NULL, data_json TEXT NOT NULL, status TEXT NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, published_at TEXT
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS agent_loop_managed_artifacts (
+      task_id TEXT NOT NULL, artifact_path TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (task_id, artifact_path)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS agent_loop_deleted_task_tombstones (
+      command_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, result_json TEXT NOT NULL, deleted_at TEXT NOT NULL
+    ) STRICT;
     CREATE INDEX IF NOT EXISTS agent_loop_commands_task_status_idx
       ON agent_loop_commands (task_id, kind, status, updated_at);
     CREATE INDEX IF NOT EXISTS agent_loop_task_event_outbox_status_idx
       ON agent_loop_task_event_outbox (status, created_at);
+    CREATE INDEX IF NOT EXISTS agent_loop_managed_artifacts_task_idx
+      ON agent_loop_managed_artifacts (task_id, artifact_path);
   `);
 }
 
@@ -516,6 +637,24 @@ function deserializeUserMessage(row) {
     status: row.status,
     createdAt: row.created_at,
     deliveredAt: row.delivered_at || undefined,
+  };
+}
+
+function deserializeManagedArtifact(row) {
+  return {
+    taskId: row.task_id,
+    path: row.artifact_path,
+    source: row.source,
+    createdAt: row.created_at,
+  };
+}
+
+function deserializeDeletionTombstone(row) {
+  return {
+    commandId: row.command_id,
+    taskId: row.task_id,
+    result: JSON.parse(row.result_json),
+    deletedAt: row.deleted_at,
   };
 }
 

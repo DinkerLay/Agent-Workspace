@@ -69,6 +69,7 @@ async function main() {
   const viteEntry = resolveViteEntry();
   const projectPath = process.cwd();
   const projectName = path.basename(projectPath);
+  const userDataDir = resolveUserDataDir(process.env.AGENT_WORKSPACE_USER_DATA_DIR);
   const runtimeBridgeEnv = {
     ...process.env,
     AGENT_WORKSPACE_WEB_HOST_PORT: String(runtimeHostPort),
@@ -83,10 +84,18 @@ async function main() {
 
   const electronBinary = resolveElectronBinary();
   console.log(`Starting Electron with ${devServerUrl}`);
-  spawnChild(electronBinary, ["desktop/main.cjs"], {
+  spawnChild(electronBinary, [
+    ...(userDataDir ? [`--user-data-dir=${userDataDir}`] : []),
+    "desktop/main.cjs",
+  ], {
     env: { ...runtimeBridgeEnv, AGENT_WORKSPACE_DEV_SERVER_URL: devServerUrl },
   });
   console.log(`Browser Runtime development URL: ${devServerUrl}?projectPath=${encodeURIComponent(projectPath)}&projectName=${encodeURIComponent(projectName)}`);
+}
+
+function resolveUserDataDir(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized ? path.resolve(normalized) : undefined;
 }
 
 function resolveViteEntry() {

@@ -7,6 +7,7 @@ import {
   getNativePtySession,
   getNativeRuntimeStatus,
   inspectNativeOpencodeProcesses,
+  listNativeAgentLoopTemplateVersions,
   appendNativeTaskEvent,
   callNativeSession,
   createNativeManualOrchestrationTemplateDraft,
@@ -20,19 +21,63 @@ import {
   runNativeOpencode,
   generateNativeTaskDraft,
   listNativeOpencodeAgents,
+  listNativeOpencodeModelCapabilities,
   listNativeOrchestrationTemplateBlueprints,
   enqueueNativeTerminalInput,
   registerNativeWorkspaceSessionProfile,
   subscribeNativePtyEvents,
   subscribeNativeAgentLoopRuntimeEvents,
+  subscribeNativeAgentLoopTemplateDesignEvents,
   stopNativePtySession,
   stopNativeAgentLoopTask,
+  resumeNativeAchievedAgentLoopTask,
   suggestNativeAgentLoopProjectDirectories,
   validateNativeAgentLoopProjectDirectory,
+  isNativePromptSplitSessionAgentCard,
   type NativePtyEvent,
+  type NativeSessionAgentCard,
 } from "./nativeBridge";
 
 describe("native runtime bridge", () => {
+  it("narrows explicit and legacy Session Agent Card contracts without interpreting legacy fields", () => {
+    const splitCard = {
+      id: "searcher-0",
+      name: "Searcher-0",
+      kind: "researcher",
+      model: "opencode-go/gpt-5.6-luna",
+      mcp: [],
+      skills: [],
+      dispatchProfile: {
+        title: "Evidence researcher",
+        description: "Find sources and report uncertainty to the Conductor.",
+      },
+      workerSystemPrompt: "Investigate the assigned question and return source-backed findings.",
+    } satisfies NativeSessionAgentCard;
+    const legacyCard = {
+      id: "reviewer",
+      name: "Reviewer",
+      kind: "reviewer",
+      role: "Quality reviewer",
+      model: "opencode-go/gpt-5.6-luna",
+      mcp: [],
+      skills: [],
+      instructions: "Review the reported evidence for gaps.",
+      expectedOutput: "A verdict and a list of unresolved issues.",
+    } satisfies NativeSessionAgentCard;
+
+    expect(isNativePromptSplitSessionAgentCard(splitCard)).toBe(true);
+    expect(isNativePromptSplitSessionAgentCard(legacyCard)).toBe(false);
+
+    if (isNativePromptSplitSessionAgentCard(splitCard)) {
+      expect(splitCard.workerSystemPrompt).toContain("source-backed");
+      expect(splitCard.dispatchProfile.title).toBe("Evidence researcher");
+    }
+    if (!isNativePromptSplitSessionAgentCard(legacyCard)) {
+      expect(legacyCard.instructions).toBe("Review the reported evidence for gaps.");
+      expect(legacyCard.expectedOutput).toBe("A verdict and a list of unresolved issues.");
+    }
+  });
+
   it("reports browser mode when the Electron preload bridge is unavailable", async () => {
     delete window.agentWorkspace;
 
@@ -72,6 +117,47 @@ describe("native runtime bridge", () => {
     };
 
     await expect(suggestNativeAgentLoopProjectDirectories("/tmp/pro")).resolves.toEqual(["/tmp/project/"]);
+  });
+
+  it("reads immutable Template Version history through the desktop preload bridge", async () => {
+    const requests: string[] = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
+        listAgentLoopTemplateVersions: async ({ templateId }) => {
+          requests.push(templateId);
+          return [{
+            id: templateId,
+            version: 2,
+            name: "Research Loop v2",
+            source: "manual",
+            conductor: { role: "Conductor", model: "opencode-go/gpt-5.6-luna" },
+            agents: [],
+            limits: { maxConcurrentSessions: 2, maxDispatchesPerDecision: 2 },
+            delivery: { artifactPath: "", ownerAgentId: "" },
+            createdAt: "2026-08-05T00:00:00.000Z",
+            updatedAt: "2026-08-05T00:00:00.000Z",
+          }];
+        },
+      },
+    };
+
+    await expect(listNativeAgentLoopTemplateVersions("research-loop")).resolves.toEqual([
+      {
+        id: "research-loop",
+        version: 2,
+        name: "Research Loop v2",
+        source: "manual",
+        conductor: { role: "Conductor", model: "opencode-go/gpt-5.6-luna" },
+        agents: [],
+        limits: { maxConcurrentSessions: 2, maxDispatchesPerDecision: 2 },
+        delivery: { artifactPath: "", ownerAgentId: "" },
+        createdAt: "2026-08-05T00:00:00.000Z",
+        updatedAt: "2026-08-05T00:00:00.000Z",
+      },
+    ]);
+    expect(requests).toEqual(["research-loop"]);
   });
 
   it("reads raw terminal diagnostics only through the desktop bridge", async () => {
@@ -193,6 +279,60 @@ describe("native runtime bridge", () => {
     expect(requests).toEqual([
       "/tmp/project:opencode-go/deepseek-v4-flash:调研 dynamic workflow",
     ]);
+  });
+
+  it("reads the Provider-owned model catalog without treating historical ids as selectable", async () => {
+    const requests: Array<{ historicalModelIds?: string[]; forceRefresh?: boolean }> = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
+        listOpencodeModelCapabilities: async (input) => {
+          requests.push(input ?? {});
+          return {
+            ok: true,
+            source: "opencode-cli-verbose" as const,
+            models: [
+              {
+                id: "opencode-go/gpt-5.6-luna",
+                providerId: "opencode-go",
+                modelId: "gpt-5.6-luna",
+                name: "GPT-5.6 Luna",
+                availability: "available" as const,
+                status: "active",
+                capabilities: { reasoning: true },
+                variants: [{ id: "high", reasoningEffort: "high" }],
+              },
+              {
+                id: "retired-provider/retired-model",
+                providerId: "retired-provider",
+                modelId: "retired-model",
+                name: "retired-provider/retired-model",
+                availability: "historical" as const,
+                status: "unknown",
+                capabilities: { reasoning: false },
+                variants: [],
+              },
+            ],
+          };
+        },
+      },
+    };
+
+    await expect(listNativeOpencodeModelCapabilities({
+      historicalModelIds: ["retired-provider/retired-model"],
+      forceRefresh: true,
+    })).resolves.toMatchObject({
+      ok: true,
+      models: [
+        { id: "opencode-go/gpt-5.6-luna", availability: "available", variants: [{ id: "high" }] },
+        { id: "retired-provider/retired-model", availability: "historical", variants: [] },
+      ],
+    });
+    expect(requests).toEqual([{
+      historicalModelIds: ["retired-provider/retired-model"],
+      forceRefresh: true,
+    }]);
   });
 
   it("delegates Template Blueprint listing and a hand-built Draft to the desktop preload bridge", async () => {
@@ -677,6 +817,28 @@ describe("native runtime bridge", () => {
     expect(events).toEqual([{ taskId: "task-1", runId: "run-1", type: "dispatch.result_available" }]);
   });
 
+  it("subscribes to Template Design Draft invalidations separately from Task Runs", () => {
+    const events: Array<{ draftId: string; type: string; revision: number }> = [];
+    const callbacks: Array<(event: { draftId: string; type: "template_design.draft_patched"; revision: number }) => void> = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async (input) => ({ ok: true, command: "opencode", cwd: input.cwd, stdout: "", stderr: "", exitCode: 0, durationMs: 1 }),
+        onAgentLoopTemplateDesignEvent: (callback) => {
+          callbacks.push(callback);
+          return () => callbacks.splice(callbacks.indexOf(callback), 1);
+        },
+      },
+    };
+
+    const unsubscribe = subscribeNativeAgentLoopTemplateDesignEvents((event) => events.push(event));
+    callbacks[0]?.({ draftId: "template-design-1", type: "template_design.draft_patched", revision: 2 });
+    unsubscribe();
+    callbacks[0]?.({ draftId: "template-design-1", type: "template_design.draft_patched", revision: 3 });
+
+    expect(events).toEqual([{ draftId: "template-design-1", type: "template_design.draft_patched", revision: 2 }]);
+  });
+
   it("delegates native verification command requests to the desktop preload bridge", async () => {
     const calls: string[] = [];
     window.agentWorkspace = {
@@ -810,5 +972,26 @@ describe("native runtime bridge", () => {
       expectedRevision: 4,
     })).resolves.toBeUndefined();
     expect(taskCommands).toEqual(["task-stop-1:command-stop-1:4"]);
+  });
+
+  it("delegates an explicit achieved-Task resume command with its revision fence", async () => {
+    const taskCommands: string[] = [];
+    window.agentWorkspace = {
+      native: {
+        getRuntimeStatus: async () => ({ available: true, mode: "desktop", message: "ready" }),
+        runOpencode: async () => ({ ok: true, command: "opencode", cwd: "/tmp", stdout: "", stderr: "", exitCode: 0, durationMs: 0 }),
+        resumeAchievedAgentLoopTask: async ({ taskId, commandId, expectedRevision }) => {
+          taskCommands.push(`${taskId}:${commandId}:${expectedRevision}`);
+          return undefined as never;
+        },
+      },
+    };
+
+    await expect(resumeNativeAchievedAgentLoopTask({
+      taskId: "task-resume-1",
+      commandId: "command-resume-1",
+      expectedRevision: 7,
+    })).resolves.toBeUndefined();
+    expect(taskCommands).toEqual(["task-resume-1:command-resume-1:7"]);
   });
 });

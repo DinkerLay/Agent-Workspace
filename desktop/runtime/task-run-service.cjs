@@ -19,11 +19,15 @@ function createTaskRunService({ repository, now = () => new Date().toISOString()
       expectedRevision,
       mutate({ task, latestRun, insertRun, updateTaskStatus }) {
         if (task.status === TASK_STATUS.ARCHIVED) throw new Error("loop_task_is_archived");
+        // An achieved Task keeps its original Run and Provider Session binding
+        // specifically so the user can explicitly pull that exact conversation
+        // back. Starting here would fabricate a new Run identity instead.
+        if (task.status === TASK_STATUS.ACHIEVED) throw new Error("loop_task_requires_resume_achieved");
         if ([TASK_STATUS.STOPPING, TASK_STATUS.DELETING].includes(task.status)) {
           throw new Error("loop_task_lifecycle_operation_in_progress");
         }
         const previousRun = latestRun(task.taskId);
-        if (task.status !== TASK_STATUS.ACHIEVED && [RUN_STATUS.RUNNING, RUN_STATUS.RECOVERY_REQUIRED].includes(String(previousRun?.status))) {
+        if ([RUN_STATUS.RUNNING, RUN_STATUS.RECOVERY_REQUIRED].includes(String(previousRun?.status))) {
           throw new Error(previousRun?.status === RUN_STATUS.RECOVERY_REQUIRED ? "loop_run_requires_recovery" : "loop_run_already_running");
         }
         assertTaskStatusTransition(task.status, TASK_STATUS.RUNNING, "loop_task_not_startable");
@@ -208,6 +212,72 @@ function createTaskRunService({ repository, now = () => new Date().toISOString()
     return committed.result;
   }
 
+  /**
+   * Resume is deliberately narrower than start: the Runtime has already
+   * reconciled the exact original Provider Session, then this one Task/Run
+   * transaction records the lifecycle decision.  The service never creates a
+   * Run or a Session while resuming an achieved Task.
+   */
+  function resumeAchieved({ taskId, commandId = newCommandId("resume-achieved"), expectedRevision, runId, conductorSessionId, providerSessionId }) {
+    if (!Number.isSafeInteger(Number(expectedRevision))) throw new Error("loop_task_expected_revision_required");
+    const normalizedRunId = requiredString(runId, "runId");
+    const normalizedConductorSessionId = requiredString(conductorSessionId, "conductorSessionId");
+    const normalizedProviderSessionId = requiredString(providerSessionId, "providerSessionId");
+    const task = repository.taskById(taskId);
+    if (!task) throw new Error("loop_task_not_found");
+    const committed = repository.commitCommand({
+      commandId,
+      taskId: task.taskId,
+      kind: "task.resume_achieved",
+      payload: {
+        runId: normalizedRunId,
+        conductorSessionId: normalizedConductorSessionId,
+        providerSessionId: normalizedProviderSessionId,
+      },
+      expectedRevision,
+      mutate({ appendRunEvent, enqueueTaskEvent, latestRun, task: currentTask, updateRunStatus, updateTaskStatus }) {
+        if (currentTask.status !== TASK_STATUS.ACHIEVED) throw new Error("loop_task_not_achieved");
+        const run = latestRun(currentTask.taskId);
+        if (!run || run.runId !== normalizedRunId) throw new Error("loop_achieved_run_is_not_current");
+        if (run.status !== RUN_STATUS.ACHIEVED) throw new Error("loop_achieved_run_not_resumable");
+        if (String(run.conductorSessionId ?? "") !== normalizedConductorSessionId) {
+          throw new Error("loop_achieved_conductor_session_mismatch");
+        }
+        assertTaskStatusTransition(currentTask.status, TASK_STATUS.RUNNING, "loop_task_not_resumable");
+        updateRunStatus({ runId: run.runId, status: RUN_STATUS.RUNNING });
+        const nextTask = updateTaskStatus({ taskId: currentTask.taskId, status: TASK_STATUS.RUNNING });
+        appendRunEvent({
+          runId: run.runId,
+          type: "task.resumed",
+          summary: "用户已拉回已完成任务；原 Conductor Provider Session 已验证可继续。",
+          data: {
+            cause: "user_resume_achieved",
+            conductorSessionId: normalizedConductorSessionId,
+            provider: "opencode",
+            providerSessionId: normalizedProviderSessionId,
+          },
+        });
+        enqueueTaskEvent({
+          outboxId: `${commandId}:task.resumed`,
+          taskId: nextTask.taskId,
+          runId: run.runId,
+          sessionId: normalizedConductorSessionId,
+          cwd: nextTask.cwd,
+          type: "task.resumed",
+          summary: "用户已拉回已完成 Task；原 Conductor Session 已恢复为运行中。",
+          data: {
+            runId: run.runId,
+            conductorSessionId: normalizedConductorSessionId,
+            provider: "opencode",
+            providerSessionId: normalizedProviderSessionId,
+          },
+        });
+        return { taskId: nextTask.taskId, runId: run.runId, taskRevision: nextTask.revision };
+      },
+    });
+    return committed.result;
+  }
+
   function prepareStop({ taskId, commandId = newCommandId("stop"), expectedRevision }) {
     const prepared = repository.prepareCommand({
       commandId,
@@ -247,7 +317,7 @@ function createTaskRunService({ repository, now = () => new Date().toISOString()
         appendRunEvent({
           runId: run.runId,
           type: "task.stopped",
-          summary: "用户已停止当前 Task Run；原生 Session 已停止并保留历史。",
+          summary: "用户已停止当前 Task Run；活动 Session 已中止并保留历史。",
           data: {},
         });
         enqueueTaskEvent({
@@ -264,25 +334,114 @@ function createTaskRunService({ repository, now = () => new Date().toISOString()
     });
   }
 
-  function prepareDelete({ taskId, commandId = newCommandId("delete"), expectedRevision }) {
+  /**
+   * Recycle is a synchronous Task lifecycle mutation.  It deliberately
+   * preserves the original Run, Session bindings and Session Store tree; the
+   * restore command returns to achieved so the existing exact-session resume
+   * gate remains unchanged.
+   */
+  function moveToRecycleBin({ taskId, commandId = newCommandId("move-to-recycle-bin"), expectedRevision }) {
+    const committed = repository.commitCommand({
+      commandId,
+      taskId,
+      kind: "task.move_to_recycle_bin",
+      payload: {},
+      expectedRevision,
+      mutate({ appendRunEvent, enqueueTaskEvent, latestRun, task, updateTaskStatus }) {
+        if (task.status !== TASK_STATUS.ACHIEVED) throw new Error("loop_task_not_recyclable");
+        assertTaskStatusTransition(task.status, TASK_STATUS.ARCHIVED, "loop_task_not_recyclable");
+        const nextTask = updateTaskStatus({ taskId: task.taskId, status: TASK_STATUS.ARCHIVED });
+        const run = latestRun(task.taskId);
+        if (run) {
+          appendRunEvent({
+            runId: run.runId,
+            type: "task.recycled",
+            summary: "Task 已移入回收站；原 Task、Run 与 Session 绑定仍可放回。",
+            data: {},
+          });
+        }
+        enqueueTaskEvent({
+          outboxId: `${commandId}:task.recycled`,
+          taskId: nextTask.taskId,
+          runId: run?.runId,
+          cwd: nextTask.cwd,
+          type: "task.recycled",
+          summary: "Task 已移入回收站；不会删除项目文件或原 Session 绑定。",
+          data: { runId: run?.runId },
+        });
+        return { taskId: nextTask.taskId, runId: run?.runId, taskRevision: nextTask.revision };
+      },
+    });
+    return committed.result;
+  }
+
+  function restoreFromRecycleBin({ taskId, commandId = newCommandId("restore-from-recycle-bin"), expectedRevision }) {
+    const committed = repository.commitCommand({
+      commandId,
+      taskId,
+      kind: "task.restore_from_recycle_bin",
+      payload: {},
+      expectedRevision,
+      mutate({ appendRunEvent, enqueueTaskEvent, latestRun, task, updateTaskStatus }) {
+        if (task.status !== TASK_STATUS.ARCHIVED) throw new Error("loop_task_not_in_recycle_bin");
+        assertTaskStatusTransition(task.status, TASK_STATUS.ACHIEVED, "loop_task_not_restorable");
+        const nextTask = updateTaskStatus({ taskId: task.taskId, status: TASK_STATUS.ACHIEVED });
+        const run = latestRun(task.taskId);
+        if (run) {
+          appendRunEvent({
+            runId: run.runId,
+            type: "task.restored_from_recycle_bin",
+            summary: "Task 已从回收站放回已完成历史；可按原 Session 拉回继续。",
+            data: {},
+          });
+        }
+        enqueueTaskEvent({
+          outboxId: `${commandId}:task.restored`,
+          taskId: nextTask.taskId,
+          runId: run?.runId,
+          cwd: nextTask.cwd,
+          type: "task.restored_from_recycle_bin",
+          summary: "Task 已放回已完成历史；未创建新的 Run 或 Provider Session。",
+          data: { runId: run?.runId },
+        });
+        return { taskId: nextTask.taskId, runId: run?.runId, taskRevision: nextTask.revision };
+      },
+    });
+    return committed.result;
+  }
+
+  function preparePermanentDelete({ taskId, commandId = newCommandId("permanently-delete"), expectedRevision, artifactPaths = [], artifactSnapshots = [] }) {
+    const normalizedArtifactPaths = uniqueArtifactPaths(artifactPaths);
+    // Artifact identities are an internal Runtime capability, never Renderer
+    // command input. They are written beside the selected paths so a prepared
+    // permanent-delete command can be retried without re-authorizing a path.
+    const normalizedArtifactSnapshots = normalizeArtifactSnapshots(artifactSnapshots, normalizedArtifactPaths);
     const prepared = repository.prepareCommand({
       commandId,
       taskId,
-      kind: "task.delete",
-      payload: {},
+      kind: "task.permanently_delete",
+      payload: {
+        artifactPaths: normalizedArtifactPaths,
+        artifactSnapshots: normalizedArtifactSnapshots,
+      },
       expectedRevision,
       mutate({ task, updateTaskStatus }) {
-        if (task.status !== TASK_STATUS.DELETING) {
-          assertTaskStatusTransition(task.status, TASK_STATUS.DELETING, "loop_task_not_deletable");
+        if (task.status === TASK_STATUS.DELETING) throw new Error("loop_task_lifecycle_operation_in_progress");
+        if (task.status !== TASK_STATUS.ARCHIVED) throw new Error("loop_task_not_in_recycle_bin");
+        assertTaskStatusTransition(task.status, TASK_STATUS.DELETING, "loop_task_not_deletable");
+        const registeredArtifacts = repository.listManagedArtifacts(task.taskId);
+        const registeredPaths = new Set(registeredArtifacts.map((artifact) => artifact.path));
+        for (const artifactPath of normalizedArtifactPaths) {
+          if (!registeredPaths.has(artifactPath)) throw new Error("loop_managed_artifact_not_registered");
         }
-        const deleting = task.status === TASK_STATUS.DELETING
-          ? task
-          : updateTaskStatus({ taskId: task.taskId, status: TASK_STATUS.DELETING });
+        const deleting = updateTaskStatus({ taskId: task.taskId, status: TASK_STATUS.DELETING });
         const runs = repository.listRuns(task.taskId);
         return {
           taskId: deleting.taskId,
           cwd: deleting.cwd,
           runIds: runs.map((run) => run.runId),
+          artifactPaths: normalizedArtifactPaths,
+          managedArtifacts: registeredArtifacts,
           taskRevision: deleting.revision,
         };
       },
@@ -290,13 +449,10 @@ function createTaskRunService({ repository, now = () => new Date().toISOString()
     return { ...prepared, commandId };
   }
 
-  function completeDelete({ commandId }) {
-    return repository.completePreparedCommand({
+  function completePermanentDelete({ commandId, cleanup }) {
+    return repository.finalizePreparedTaskDeletion({
       commandId,
-      mutate({ command, deleteTaskData }) {
-        const result = deleteTaskData({ taskId: command.taskId, runIds: command.result?.runIds ?? [] });
-        return { ...command.result, ...result, deleted: true };
-      },
+      finalResult: cleanup,
     });
   }
 
@@ -378,22 +534,75 @@ function createTaskRunService({ repository, now = () => new Date().toISOString()
   return {
     achieve,
     claimDelivery,
-    completeDelete,
+    completePermanentDelete,
     completeStart,
     completeStop,
     failStart,
     markRecovered,
     markRecoveryRequired,
-    prepareDelete,
+    moveToRecycleBin,
+    preparePermanentDelete,
     prepareStart,
     prepareStop,
+    resumeAchieved,
     resumeForConductorInput,
+    restoreFromRecycleBin,
   };
+}
+
+function uniqueArtifactPaths(value) {
+  if (!Array.isArray(value)) throw new Error("loop_managed_artifact_paths_invalid");
+  const paths = value.map((item) => String(item ?? "").trim()).filter(Boolean);
+  if (paths.some((item) => item.split(/[\\/]+/).includes("..") || item.startsWith("/") || item.includes("\0"))) {
+    throw new Error("loop_managed_artifact_path_invalid");
+  }
+  return [...new Set(paths)].sort();
+}
+
+function normalizeArtifactSnapshots(value, artifactPaths) {
+  if (!Array.isArray(value)) throw new Error("loop_managed_artifact_snapshots_invalid");
+  const selectedPaths = new Set(artifactPaths);
+  const snapshots = new Map();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("loop_managed_artifact_snapshot_invalid");
+    }
+    const artifactPath = String(item.path ?? "").trim();
+    if (!selectedPaths.has(artifactPath) || snapshots.has(artifactPath)) {
+      throw new Error("loop_managed_artifact_snapshot_path_invalid");
+    }
+    if (item.state === "missing") {
+      snapshots.set(artifactPath, { path: artifactPath, state: "missing" });
+      continue;
+    }
+    if (item.state !== "present" || !["file", "symlink"].includes(item.kind)) {
+      throw new Error("loop_managed_artifact_snapshot_invalid");
+    }
+    const snapshot = { path: artifactPath, state: "present", kind: item.kind };
+    for (const field of ["dev", "ino", "size", "mtimeMs", "ctimeMs"]) {
+      if (!Object.prototype.hasOwnProperty.call(item, field)) continue;
+      if (typeof item[field] !== "number" || !Number.isFinite(item[field])) {
+        throw new Error("loop_managed_artifact_snapshot_invalid");
+      }
+      snapshot[field] = item[field];
+    }
+    snapshots.set(artifactPath, snapshot);
+  }
+  return artifactPaths.flatMap((artifactPath) => {
+    const snapshot = snapshots.get(artifactPath);
+    return snapshot ? [snapshot] : [];
+  });
 }
 
 function safeKey(value) {
   const result = String(value ?? "").trim().replace(/[^A-Za-z0-9:_-]+/g, "-").slice(0, 240);
   return result || "input";
+}
+
+function requiredString(value, field) {
+  const result = String(value ?? "").trim();
+  if (!result) throw new Error(`Task/Run Service requires ${field}.`);
+  return result;
 }
 
 module.exports = { createTaskRunService };

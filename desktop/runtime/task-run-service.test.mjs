@@ -132,4 +132,111 @@ describe("Task/Run Service", () => {
     assert.ok(repository.listPendingTaskEvents().some((event) => event.type === "task.achieved"));
     db.close();
   });
+
+  it("moves an achieved Task through recycle, restore, and a guarded permanent-delete preparation", () => {
+    const { db, repository, service } = fixture();
+    service.prepareStart({
+      taskId: "task-1",
+      commandId: "command-start-recycle",
+      expectedRevision: 1,
+      run: { runId: "run-recycle", conductorSessionId: "session-recycle", sessionScope: "" },
+    });
+    service.completeStart({
+      commandId: "command-start-recycle",
+      task: repository.taskById("task-1"),
+      run: repository.runById("run-recycle"),
+    });
+    service.claimDelivery({ taskId: "task-1", sessionId: "session-recycle", message: "Delivery ready." });
+    service.achieve({
+      taskId: "task-1",
+      commandId: "command-achieve-recycle",
+      expectedRevision: repository.taskById("task-1").revision,
+    });
+
+    const achieved = repository.taskById("task-1");
+    const recycled = service.moveToRecycleBin({
+      taskId: "task-1",
+      commandId: "command-recycle",
+      expectedRevision: achieved.revision,
+    });
+    assert.equal(repository.taskById("task-1").status, "archived");
+    assert.equal(repository.runById("run-recycle").status, "achieved", "recycle keeps the original Run");
+    assert.equal(recycled.runId, "run-recycle");
+    assert.equal(service.moveToRecycleBin({
+      taskId: "task-1",
+      commandId: "command-recycle",
+      expectedRevision: achieved.revision,
+    }).taskRevision, recycled.taskRevision, "the same recycle command is safe to retry");
+
+    const restored = service.restoreFromRecycleBin({
+      taskId: "task-1",
+      commandId: "command-restore",
+      expectedRevision: repository.taskById("task-1").revision,
+    });
+    assert.equal(repository.taskById("task-1").status, "achieved");
+    assert.equal(restored.runId, "run-recycle");
+    assert.equal(repository.listRuns("task-1").length, 1, "restore does not create a replacement Run");
+
+    assert.throws(
+      () => service.preparePermanentDelete({
+        taskId: "task-1",
+        commandId: "command-delete-from-history",
+        expectedRevision: repository.taskById("task-1").revision,
+      }),
+      /loop_task_not_in_recycle_bin/,
+    );
+
+    service.moveToRecycleBin({
+      taskId: "task-1",
+      commandId: "command-recycle-again",
+      expectedRevision: repository.taskById("task-1").revision,
+    });
+    repository.registerManagedArtifact({ taskId: "task-1", artifactPath: "reports/delivery.md" });
+    assert.throws(
+      () => service.preparePermanentDelete({
+        taskId: "task-1",
+        commandId: "command-delete-unknown-artifact",
+        expectedRevision: repository.taskById("task-1").revision,
+        artifactPaths: ["keep-me.md"],
+      }),
+      /loop_managed_artifact_not_registered/,
+    );
+    assert.equal(repository.taskById("task-1").status, "archived", "invalid selection must not start deletion");
+
+    const prepared = service.preparePermanentDelete({
+      taskId: "task-1",
+      commandId: "command-delete-recycle",
+      expectedRevision: repository.taskById("task-1").revision,
+      artifactPaths: ["reports/delivery.md"],
+      artifactSnapshots: [{
+        path: "reports/delivery.md",
+        state: "present",
+        kind: "file",
+        dev: 1,
+        ino: 2,
+        size: 3,
+        mtimeMs: 4,
+        ctimeMs: 5,
+      }],
+    });
+    assert.equal(prepared.status, "prepared");
+    assert.deepEqual(prepared.result.artifactPaths, ["reports/delivery.md"]);
+    assert.equal(repository.taskById("task-1").status, "deleting");
+    const preparedCommand = repository.commandById("command-delete-recycle");
+    assert.equal(preparedCommand.status, "prepared");
+    assert.deepEqual(preparedCommand.payload, {
+      artifactPaths: ["reports/delivery.md"],
+      artifactSnapshots: [{
+        path: "reports/delivery.md",
+        state: "present",
+        kind: "file",
+        dev: 1,
+        ino: 2,
+        size: 3,
+        mtimeMs: 4,
+        ctimeMs: 5,
+      }],
+    });
+    db.close();
+  });
 });

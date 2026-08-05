@@ -24,6 +24,47 @@ function createAgentLoopV1Runtime(input) {
 }
 
 describe("Agent Loop v1 runtime", () => {
+  it("gives Template Design Draft save the same SQLite writer as Template Version persistence", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-template-design-save-"));
+    const runtime = createAgentLoopV1Runtime({
+      opencodePath: "/usr/local/bin/opencode",
+      databasePath: path.join(root, "runtime.sqlite"),
+      getConductorBridgeConfig: async () => ({ conductorToolBridgeUrl: "http://127.0.0.1:4567", conductorToolBridgeToken: "test-token", conductorMcpServerPath: "/workspace/desktop/conductor-mcp-server.cjs" }),
+      sessionAuthority: { registerLaunchProfile() {}, async activateSession({ workspaceSessionId }) { return { session: { id: workspaceSessionId, status: "running" } }; } },
+      ptyManager: { read: () => undefined },
+      sessionStore: { recordTaskEvent() {}, readTaskState: () => ({ sessions: [], dispatches: [], results: [], pendingDecisions: [] }) },
+    });
+    const source = runtime.templateById("opencode-agent-loop-v1");
+    const latest = runtime.saveTemplate({ ...source, name: "OpenCode Agent Loop current" });
+    assert.equal(latest.version, source.version + 1);
+    const { draft } = runtime.templateDesignService.createOrGetDraft({
+      draftId: "template-design-shared-writer",
+      templateId: source.id,
+      baseTemplateVersion: source.version,
+      cwd: root,
+      model: source.conductor.model,
+      draftJson: {
+        id: source.id,
+        name: "OpenCode Agent Loop revised",
+        source: source.source,
+        conductor: source.conductor,
+        agents: source.agents,
+        limits: source.limits,
+        delivery: source.delivery,
+      },
+    });
+
+    const saved = runtime.templateDesignService.saveDraft({ draftId: draft.draftId, expectedRevision: draft.revision });
+
+    assert.equal(saved.draft.status, "active", "saving creates a Version checkpoint without closing the Draft");
+    assert.equal(saved.savedTemplate.id, source.id);
+    assert.equal(saved.savedTemplate.version, latest.version + 1, "saving a Draft based on an older Version appends after the current latest Version");
+    assert.equal(runtime.templateById(source.id).name, "OpenCode Agent Loop revised");
+    assert.equal(runtime.templateById(source.id, source.version).name, source.name, "saving the Draft never overwrites its historical base Version");
+    assert.equal(runtime.templateById(source.id, latest.version).name, latest.name, "saving the Draft never overwrites an intervening Version");
+    runtime.close();
+  });
+
   it("merges legacy template descriptions into Charter and removes the field from persisted templates and Task snapshots", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-charter-migration-"));
     const databasePath = path.join(root, "runtime.sqlite");
@@ -83,6 +124,92 @@ describe("Agent Loop v1 runtime", () => {
     assert.equal(Object.hasOwn(JSON.parse(migratedDb.prepare("SELECT conductor_json FROM agent_loop_template_versions WHERE template_id = ?").get("legacy-loop").conductor_json), "reviewPolicy"), false);
     assert.equal(Object.hasOwn(JSON.parse(migratedDb.prepare("SELECT architecture_json FROM agent_loop_tasks WHERE task_id = ?").get("legacy-task").architecture_json).template.conductor, "reviewPolicy"), false);
     migratedDb.close();
+  });
+
+  it("keeps a legacy Card contract in an existing Task snapshot while a later Template Version uses the split contract", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-card-contract-"));
+    const databasePath = path.join(root, "runtime.sqlite");
+    const runtime = createAgentLoopV1Runtime({
+      opencodePath: "/usr/local/bin/opencode",
+      databasePath,
+      getConductorBridgeConfig: async () => ({ conductorToolBridgeUrl: "http://127.0.0.1:4567", conductorToolBridgeToken: "test-token", conductorMcpServerPath: "/workspace/desktop/conductor-mcp-server.cjs" }),
+      sessionAuthority: { registerLaunchProfile() {}, async activateSession({ workspaceSessionId }) { return { session: { id: workspaceSessionId, status: "running" } }; } },
+      ptyManager: { read: () => undefined },
+      sessionStore: { recordTaskEvent() {}, readTaskState: () => ({ sessions: [], dispatches: [], results: [], pendingDecisions: [] }) },
+    });
+    const legacyTemplate = runtime.saveTemplate({
+      id: "card-contract",
+      name: "Card contract",
+      source: "manual",
+      conductor: { role: "Conductor", model: DEFAULT_MODEL, charter: "Choose a bounded dispatch." },
+      agents: [{
+        id: "researcher",
+        name: "Researcher",
+        kind: "researcher",
+        role: "Find evidence.",
+        model: DEFAULT_MODEL,
+        mcp: [],
+        skills: [],
+        instructions: "Cite dates.",
+        expectedOutput: "Evidence memo.",
+      }],
+      limits: { maxConcurrentSessions: 1, maxDispatchesPerDecision: 1 },
+      delivery: { artifactPath: "" },
+    });
+    const legacyTask = runtime.createTask({
+      taskId: "legacy-card-task",
+      cwd: root,
+      title: "Legacy card task",
+      goal: "Keep the existing contract.",
+      templateId: legacyTemplate.id,
+    });
+    const beforeDb = new DatabaseSync(databasePath);
+    const before = beforeDb
+      .prepare("SELECT architecture_json FROM agent_loop_tasks WHERE task_id = ?")
+      .get(legacyTask.taskId)
+      .architecture_json;
+    beforeDb.close();
+
+    const splitTemplate = runtime.saveTemplate({
+      ...legacyTemplate,
+      agents: [{
+        id: "researcher",
+        name: "Researcher",
+        kind: "researcher",
+        model: DEFAULT_MODEL,
+        mcp: [],
+        skills: [],
+        dispatchProfile: {
+          title: "Evidence research",
+          description: "Use for independently verifiable research when the Conductor needs source-backed facts.",
+        },
+        workerSystemPrompt: "Collect primary evidence, cite dates, and separate facts from inference.",
+      }],
+    });
+    const splitTask = runtime.createTask({
+      taskId: "split-card-task",
+      cwd: root,
+      title: "Split card task",
+      goal: "Use the explicit contract.",
+      templateId: splitTemplate.id,
+    });
+
+    assert.equal(runtime.readTask({ taskId: legacyTask.taskId }).architecture.agentCards[0].instructions, "Cite dates.");
+    assert.equal(Object.hasOwn(runtime.readTask({ taskId: legacyTask.taskId }).architecture.agentCards[0], "dispatchProfile"), false);
+    assert.deepEqual(runtime.readTask({ taskId: splitTask.taskId }).architecture.agentCards[0].dispatchProfile, {
+      title: "Evidence research",
+      description: "Use for independently verifiable research when the Conductor needs source-backed facts.",
+    });
+    assert.equal(runtime.readTask({ taskId: splitTask.taskId }).architecture.agentCards[0].workerSystemPrompt, "Collect primary evidence, cite dates, and separate facts from inference.");
+
+    const afterDb = new DatabaseSync(databasePath);
+    const after = afterDb
+      .prepare("SELECT architecture_json FROM agent_loop_tasks WHERE task_id = ?")
+      .get(legacyTask.taskId)
+      .architecture_json;
+    afterDb.close();
+    assert.equal(after, before, "saving a new Template Version must not rewrite an existing Task snapshot");
+    runtime.close();
   });
 
   it("records a Conductor delivery claim without imposing a reviewer or publisher route", async () => {
@@ -399,6 +526,20 @@ describe("Agent Loop v1 runtime", () => {
       "readRun must not persist a projected default layout",
     );
     checked.close();
+
+    const saved = runtime.saveWorkbenchLayout({
+      runId: started.run.runId,
+      layout: {
+        ...projected.workbenchLayout,
+        taskPage: { taskListWidth: 336, inspectorWidth: 312 },
+      },
+    });
+    assert.deepEqual(saved.taskPage, { taskListWidth: 336, inspectorWidth: 312 });
+    assert.deepEqual(
+      runtime.readRun({ runId: started.run.runId }).workbenchLayout.taskPage,
+      { taskListWidth: 336, inspectorWidth: 312 },
+      "Task page pane widths must round-trip through the one Run-owned layout record",
+    );
     runtime.close();
   });
 
@@ -954,7 +1095,7 @@ describe("Agent Loop v1 runtime", () => {
     runtime.close();
   });
 
-  it("does not dispatch into a Publisher while its recovered permission reply is pending", async () => {
+  it("keeps a Publisher reserved until an exact Provider completion result closes its recovered permission", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-permission-dispatch-fence-"));
     const store = createSessionStore({ root });
     const runtime = createAgentLoopV1Runtime({
@@ -969,16 +1110,31 @@ describe("Agent Loop v1 runtime", () => {
       sessionStore: store,
     });
     const task = runtime.createTask({ cwd: root, projectId: "project", taskId: "permission-dispatch-fence", title: "Permission dispatch fence", goal: "Keep a recovered Publisher terminal reserved for its permission answer." });
-    await runtime.startRun({ taskId: task.taskId });
+    const started = await runtime.startRun({ taskId: task.taskId });
     const publisherSessionId = Object.entries(runtime.taskAgentMap({ taskId: task.taskId })).find(([, agentId]) => agentId === "publisher")?.[0];
     assert.ok(publisherSessionId);
     store.startSession({ taskId: task.taskId, sessionId: publisherSessionId, command: "opencode", cwd: root });
+    const dispatch = store.recordDispatch({
+      taskId: task.taskId,
+      conductorSessionId: started.run.conductorSessionId,
+      toSessionId: publisherSessionId,
+      agentId: "publisher",
+      assignment: "Complete the approved report.",
+    });
+    store.markDispatchDelivered({
+      taskId: task.taskId,
+      sessionId: publisherSessionId,
+      dispatchId: dispatch.dispatchId,
+      provider: "opencode",
+      providerSessionId: "ses-publisher-permission-fence",
+    });
     store.recordPermissionRequested({
       taskId: task.taskId,
       sessionId: publisherSessionId,
       cwd: root,
       permissionId: "opencode:publisher-copy",
       requestId: "publisher-copy",
+      dispatchId: dispatch.dispatchId,
       provider: "opencode",
       permission: "external_directory",
       patterns: ["/tmp/report"],
@@ -991,19 +1147,33 @@ describe("Agent Loop v1 runtime", () => {
       permissionId: "opencode:publisher-copy",
       response: "once",
     });
+    store.recordProviderSessionState(
+      { taskId: task.taskId, sessionId: publisherSessionId, cwd: root },
+      "ready",
+      "OpenCode reconnected but has not returned the current dispatch result.",
+    );
 
     assert.deepEqual(
       runtime.validateDispatch({ taskId: task.taskId, agentId: "publisher", toSessionId: publisherSessionId }),
       { ok: false, reason: "loop_session_permission_decision_pending", permissionId: "opencode:publisher-copy" },
     );
 
-    store.recordPermissionResolved({
+    const completed = store.recordDispatchResult({
       taskId: task.taskId,
       sessionId: publisherSessionId,
       cwd: root,
-      permissionId: "opencode:publisher-copy",
-      response: "once",
+      dispatchId: dispatch.dispatchId,
+      reason: "provider-turn-completed",
+      providerTurnCompleted: true,
+      provider: "opencode",
+      providerSessionId: "ses-publisher-permission-fence",
+      providerMessageId: "msg-publisher-permission-fence",
+      answerText: "The approved report is complete.",
+      source: "fixture-provider",
     });
+    assert.equal(completed.status, "result_available");
+    const permission = store.readSession({ taskId: task.taskId, sessionId: publisherSessionId, cwd: root }).permissions[0];
+    assert.equal(permission.status, "provider_turn_completed");
     assert.deepEqual(runtime.validateDispatch({ taskId: task.taskId, agentId: "publisher", toSessionId: publisherSessionId }), { ok: true });
     runtime.close();
   });
@@ -1247,7 +1417,8 @@ describe("Agent Loop v1 runtime", () => {
     assert.ok(conductor?.env?.PATH?.split(path.delimiter).includes("/usr/local/bin"));
     assert.equal(conductor?.env?.AGENT_WORKSPACE_HOOK_SESSION_ID, undefined);
     assert.ok(conductor?.runtimeFiles?.[0]?.contents.includes("call_sessions"));
-    assert.ok(conductor?.runtimeFiles?.[0]?.contents.includes("Native MCP scope: all provider-native MCP"));
+    assert.ok(conductor?.runtimeFiles?.[0]?.contents.includes("Evidence research"));
+    assert.equal(conductor?.runtimeFiles?.[0]?.contents.includes("Research the assigned question with primary or otherwise verifiable sources."), false);
     assert.ok(conductor?.runtimeFiles?.[0]?.contents.includes("Task lifecycle is outside your authority"));
     assert.ok(conductor?.runtimeFiles?.[0]?.contents.includes(`Task project root: ${root}`));
     assert.ok(conductor?.runtimeFiles?.[0]?.contents.includes(".agent-workspace contains Runtime metadata only"));
@@ -1341,8 +1512,9 @@ describe("Agent Loop v1 runtime", () => {
     runtime.close();
   });
 
-  it("keeps Delete prepared until Runtime-owned state is removed, then retries it idempotently", async () => {
+  it("retries a prepared permanent delete without removing replacement artifacts or trusting an old path-only command", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-delete-retry-"));
+    const databasePath = path.join(root, "runtime.sqlite");
     const rawStore = createSessionStore({ root: ({ cwd }) => path.join(cwd, ".agent-workspace", "runtime") });
     let rejectDelete = true;
     const sessionStore = {
@@ -1352,9 +1524,9 @@ describe("Agent Loop v1 runtime", () => {
         return rawStore.deleteTask(input);
       },
     };
-    const runtime = createAgentLoopV1Runtime({
+    const runtimeInput = {
       opencodePath: "/usr/local/bin/opencode",
-      databasePath: path.join(root, "runtime.sqlite"),
+      databasePath,
       getConductorBridgeConfig: async () => ({ conductorToolBridgeUrl: "http://127.0.0.1:4567", conductorToolBridgeToken: "test-token", conductorMcpServerPath: "/workspace/desktop/conductor-mcp-server.cjs" }),
       sessionAuthority: {
         registerLaunchProfile() {},
@@ -1362,22 +1534,137 @@ describe("Agent Loop v1 runtime", () => {
         releaseTask() {},
       },
       ptyManager: { read: () => undefined, get: () => undefined },
+    };
+    const runtime = createAgentLoopV1Runtime({
+      ...runtimeInput,
       sessionStore,
     });
-    const task = runtime.createTask({ cwd: root, projectId: "project", taskId: "delete-retry-task", title: "Delete retry", goal: "Do not orphan Runtime state." });
+    const managedArtifactPath = "artifacts/delete-retry.md";
+    const legacyArtifactPath = "artifacts/delete-retry-legacy.md";
+    const template = runtime.saveTemplate({
+      ...runtime.templateById("opencode-agent-loop-v1"),
+      id: "delete-retry-template",
+      name: "Delete retry template",
+      delivery: { artifactPath: managedArtifactPath },
+    });
+    const task = runtime.createTask({
+      cwd: root,
+      projectId: "project",
+      taskId: "delete-retry-task",
+      title: "Delete retry",
+      goal: "Do not orphan Runtime state.",
+      templateId: template.id,
+    });
+    // A second registered artifact lets this regression cover both recovery
+    // cases: a persisted identity that no longer matches, and an older
+    // prepared command that has only a selected path.
+    const fixtureDb = new DatabaseSync(databasePath);
+    fixtureDb.prepare(
+      `INSERT INTO agent_loop_managed_artifacts (task_id, artifact_path, source, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(task.taskId, legacyArtifactPath, "test_fixture", "2026-08-05T00:00:00.000Z");
+    fixtureDb.close();
+    const managedArtifactAbsolutePath = path.join(root, managedArtifactPath);
+    const legacyArtifactAbsolutePath = path.join(root, legacyArtifactPath);
+    const keptNotePath = path.join(root, "user-kept-note.md");
+    fs.mkdirSync(path.dirname(managedArtifactAbsolutePath), { recursive: true });
+    fs.writeFileSync(managedArtifactAbsolutePath, "# Managed delete retry artifact\n", "utf8");
+    fs.writeFileSync(legacyArtifactAbsolutePath, "# Legacy managed delete retry artifact\n", "utf8");
+    fs.writeFileSync(keptNotePath, "# User-owned note\n", "utf8");
     await runtime.startRun({ taskId: task.taskId });
+    runtime.recordCompletionClaim({ taskId: task.taskId });
+    const deliveryReady = runtime.readTask({ taskId: task.taskId });
+    await runtime.markTaskAchieved({
+      taskId: task.taskId,
+      commandId: "command-achieve-delete-retry",
+      expectedRevision: deliveryReady.revision,
+    });
+    const achieved = runtime.readTask({ taskId: task.taskId });
+    const archived = await runtime.moveTaskToRecycleBin({
+      taskId: task.taskId,
+      commandId: "command-recycle-delete-retry",
+      expectedRevision: achieved.revision,
+    });
+    assert.equal(archived.status, "archived");
 
-    await assert.rejects(() => runtime.deleteTask({ taskId: task.taskId }), /runtime-directory-busy/);
+    await assert.rejects(
+      () => runtime.permanentlyDeleteTask({
+        taskId: task.taskId,
+        commandId: "command-permanently-delete-retry",
+        expectedRevision: archived.revision,
+        artifactPaths: [managedArtifactPath, legacyArtifactPath],
+      }),
+      /runtime-directory-busy/,
+    );
     assert.equal(runtime.readTask({ taskId: task.taskId }).status, "deleting");
-    rejectDelete = false;
-    const reconciliation = await runtime.reconcilePreparedLifecycleCommands();
+    assert.equal(fs.existsSync(managedArtifactAbsolutePath), false, "the selected managed artifact is removed before a later Runtime-directory failure");
+    assert.equal(fs.existsSync(legacyArtifactAbsolutePath), false, "each explicitly selected managed artifact is removed before the later failure");
+    assert.equal(fs.existsSync(keptNotePath), true, "the failure must not affect an unmanaged user file");
+    runtime.close();
+
+    const preparedDb = new DatabaseSync(databasePath);
+    const preparedRow = preparedDb.prepare(
+      "SELECT payload_json FROM agent_loop_commands WHERE command_id = ?",
+    ).get("command-permanently-delete-retry");
+    const preparedPayload = JSON.parse(preparedRow.payload_json);
+    assert.deepEqual(preparedPayload.artifactPaths, [managedArtifactPath, legacyArtifactPath].sort());
+    assert.equal(preparedPayload.artifactSnapshots.length, 2, "first preflight persists Runtime-owned identities beside the selected paths");
+    const retainedSnapshot = preparedPayload.artifactSnapshots.find((snapshot) => snapshot.path === managedArtifactPath);
+    assert.equal(retainedSnapshot.state, "present");
+    assert.equal(retainedSnapshot.kind, "file");
+    assert.equal(typeof retainedSnapshot.dev, "number");
+    assert.equal(typeof retainedSnapshot.ino, "number");
+    // Simulate a command written by the preceding version: it has the selected
+    // path but no identity for the legacy artifact. Recovery must not treat it
+    // as permission to remove whatever now exists at that path.
+    preparedPayload.artifactSnapshots = [retainedSnapshot];
+    preparedDb.prepare("UPDATE agent_loop_commands SET payload_json = ? WHERE command_id = ?").run(
+      JSON.stringify(preparedPayload),
+      "command-permanently-delete-retry",
+    );
+    preparedDb.close();
+    const replacementContent = "# Replacement after confirmation\n";
+    const legacyReplacementContent = "# Replacement from old path-only command\n";
+    fs.writeFileSync(managedArtifactAbsolutePath, replacementContent, "utf8");
+    fs.writeFileSync(legacyArtifactAbsolutePath, legacyReplacementContent, "utf8");
+
+    const restartedRuntime = createAgentLoopV1Runtime({
+      ...runtimeInput,
+      sessionStore: createSessionStore({ root: ({ cwd }) => path.join(cwd, ".agent-workspace", "runtime") }),
+    });
+    const reconciliation = await restartedRuntime.reconcilePreparedLifecycleCommands();
     assert.equal(reconciliation.attempted, 1);
     assert.equal(reconciliation.results[0].status, "committed");
-    assert.equal(runtime.readTask({ taskId: task.taskId }), undefined);
-    runtime.close();
+    assert.equal(restartedRuntime.readTask({ taskId: task.taskId }), undefined);
+    const replay = await restartedRuntime.permanentlyDeleteTask({
+      taskId: task.taskId,
+      commandId: "command-permanently-delete-retry",
+      expectedRevision: archived.revision,
+    });
+    assert.equal(replay.deleted, true, "a same-command retry uses the deletion tombstone after Task records are gone");
+    assert.equal(fs.readFileSync(managedArtifactAbsolutePath, "utf8"), replacementContent, "a replacement at the same selected path survives identity-mismatched recovery");
+    assert.equal(fs.readFileSync(legacyArtifactAbsolutePath, "utf8"), legacyReplacementContent, "an old path-only prepared command cannot remove a replacement artifact");
+    assert.equal(fs.existsSync(keptNotePath), true, "the user-owned file remains after the recovered delete");
+    assert.equal(fs.existsSync(root), true, "permanent deletion never removes the project cwd");
+    restartedRuntime.close();
+
+    const tombstoneDb = new DatabaseSync(databasePath);
+    const tombstone = tombstoneDb.prepare(
+      "SELECT result_json FROM agent_loop_deleted_task_tombstones WHERE command_id = ?",
+    ).get("command-permanently-delete-retry");
+    const finalResult = JSON.parse(tombstone.result_json);
+    assert.deepEqual(finalResult.managedArtifactsDeleted, []);
+    assert.deepEqual(
+      [...finalResult.managedArtifactsSkipped].sort((left, right) => left.path.localeCompare(right.path)),
+      [
+        { path: legacyArtifactPath, reason: "changed_since_confirmation" },
+        { path: managedArtifactPath, reason: "changed_since_confirmation" },
+      ].sort((left, right) => left.path.localeCompare(right.path)),
+    );
+    tombstoneDb.close();
   });
 
-  it("moves achieved Tasks out of the active Run, starts an isolated re-run, and deletes only Runtime state", async () => {
+  it("keeps Task/Run history in the recycle bin, then permanently deletes only selected managed artifacts", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-lifecycle-"));
     const sessionStore = createSessionStore({ root: ({ cwd }) => path.join(cwd, ".agent-workspace", "runtime") });
     const released = [];
@@ -1394,36 +1681,102 @@ describe("Agent Loop v1 runtime", () => {
       ptyManager: { read: () => undefined, get: () => undefined },
       sessionStore,
     });
-    const task = runtime.createTask({ cwd: projectRoot, projectId: "project", taskId: "lifecycle-task", title: "Lifecycle", goal: "Keep the project delivery while deleting Runtime state." });
+    const seed = runtime.templateById("opencode-agent-loop-v1");
+    const template = runtime.saveTemplate({
+      ...seed,
+      id: "lifecycle-managed-delivery-template",
+      name: "Lifecycle managed delivery",
+      delivery: { ...seed.delivery, artifactPath: "reports/managed-delivery.md" },
+    });
+    const task = runtime.createTask({
+      cwd: projectRoot,
+      projectId: "project",
+      taskId: "lifecycle-task",
+      title: "Lifecycle",
+      goal: "Keep user-kept project files while deleting selected managed delivery and Runtime state.",
+      templateId: template.id,
+    });
     const first = await runtime.startRun({ taskId: task.taskId });
     runtime.recordCompletionClaim({ taskId: task.taskId });
-    assert.equal((await runtime.markTaskAchieved({ taskId: task.taskId })).status, "achieved");
+    const deliveryReady = runtime.readTask({ taskId: task.taskId });
+    assert.equal((await runtime.markTaskAchieved({
+      taskId: task.taskId,
+      commandId: "command-achieve-lifecycle",
+      expectedRevision: deliveryReady.revision,
+    })).status, "achieved");
     assert.equal(runtime.readRun({ runId: first.run.runId }).run.status, "achieved");
 
-    const second = await runtime.startRun({ taskId: task.taskId });
-    assert.notEqual(second.run.runId, first.run.runId);
-    assert.notEqual(second.run.conductorSessionId, first.run.conductorSessionId, "a re-run must not adopt the prior native terminal identity");
-    assert.equal(runtime.readRun({ runId: first.run.runId }).run.status, "achieved", "prior Run remains durable history");
-
-    runtime.recordCompletionClaim({ taskId: task.taskId });
-    await runtime.markTaskAchieved({ taskId: task.taskId });
-    const deliveryPath = path.join(projectRoot, "delivery.md");
-    fs.writeFileSync(deliveryPath, "# User delivery\n", "utf8");
-    const deleted = await runtime.deleteTask({ taskId: task.taskId });
-    assert.deepEqual(deleted, {
-      deleted: true,
+    await assert.rejects(
+      () => runtime.startRun({ taskId: task.taskId }),
+      /loop_task_requires_resume_achieved/,
+    );
+    assert.equal(runtime.readRun({ runId: first.run.runId }).run.status, "achieved", "the original Run remains durable history");
+    const managedDeliveryPath = path.join(projectRoot, "reports", "managed-delivery.md");
+    const keptNotePath = path.join(projectRoot, "user-kept-note.md");
+    fs.mkdirSync(path.dirname(managedDeliveryPath), { recursive: true });
+    fs.writeFileSync(managedDeliveryPath, "# Managed delivery\n", "utf8");
+    fs.writeFileSync(keptNotePath, "# Keep this user note\n", "utf8");
+    const achieved = runtime.readTask({ taskId: task.taskId });
+    await assert.rejects(
+      () => runtime.permanentlyDeleteTask({
+        taskId: task.taskId,
+        commandId: "command-delete-without-recycle",
+        expectedRevision: achieved.revision,
+      }),
+      /loop_task_not_in_recycle_bin/,
+    );
+    const archived = await runtime.moveTaskToRecycleBin({
       taskId: task.taskId,
-      runsDeleted: 2,
-      runtimeDirectoryRemoved: true,
+      commandId: "command-recycle-lifecycle",
+      expectedRevision: achieved.revision,
     });
+    assert.equal(archived.status, "archived");
+    assert.equal(runtime.listTasks().some((item) => item.taskId === task.taskId), false, "normal list hides recycled Tasks");
+    assert.equal(runtime.listTasks({ scope: "trash" }).find((item) => item.taskId === task.taskId)?.status, "archived");
+    assert.equal(runtime.readRun({ runId: first.run.runId }).run.status, "achieved", "recycle retains the original Run");
+    assert.ok(fs.existsSync(path.join(projectRoot, ".agent-workspace", "runtime", task.taskId)), "recycle retains the Session Store tree");
+
+    const restored = await runtime.restoreTaskFromRecycleBin({
+      taskId: task.taskId,
+      commandId: "command-restore-lifecycle",
+      expectedRevision: archived.revision,
+    });
+    assert.equal(restored.status, "achieved");
+    assert.equal(runtime.readTask({ taskId: task.taskId }).latestRun.runId, first.run.runId, "restore keeps the same Run identity");
+
+    const archivedAgain = await runtime.moveTaskToRecycleBin({
+      taskId: task.taskId,
+      commandId: "command-recycle-lifecycle-again",
+      expectedRevision: restored.revision,
+    });
+    assert.deepEqual(runtime.previewTaskPermanentDeletion({ taskId: task.taskId }).managedArtifacts, [{
+      path: "reports/managed-delivery.md",
+      source: "template_delivery",
+      exists: true,
+      size: Buffer.byteLength("# Managed delivery\n"),
+      deletable: true,
+    }]);
+    const deleted = await runtime.permanentlyDeleteTask({
+      taskId: task.taskId,
+      commandId: "command-permanently-delete-lifecycle",
+      expectedRevision: archivedAgain.revision,
+      artifactPaths: ["reports/managed-delivery.md"],
+    });
+    assert.equal(deleted.deleted, true);
+    assert.equal(deleted.taskId, task.taskId);
+    assert.equal(deleted.runsDeleted, 1);
+    assert.equal(deleted.runtimeDirectoryRemoved, true);
+    assert.deepEqual(deleted.managedArtifactsDeleted, ["reports/managed-delivery.md"]);
     assert.equal(runtime.readTask({ taskId: task.taskId }), undefined);
     assert.equal(runtime.readRun({ runId: first.run.runId }), undefined);
-    assert.equal(fs.existsSync(deliveryPath), true, "Task deletion must not delete the project delivery");
+    assert.equal(fs.existsSync(managedDeliveryPath), false, "only the explicitly selected managed artifact is deleted");
+    assert.equal(fs.existsSync(keptNotePath), true, "an unmanaged user note is never deleted");
+    assert.equal(fs.existsSync(projectRoot), true, "permanent deletion never removes the project cwd");
     assert.deepEqual(released, [task.taskId]);
     runtime.close();
   });
 
-  it("stops a live Task for a later isolated restart and permits direct Runtime-only deletion", async () => {
+  it("stops a live Task for a later isolated restart and rejects permanent deletion outside the recycle bin", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-stop-"));
     const sessionStore = createSessionStore({ root: ({ cwd }) => path.join(cwd, ".agent-workspace", "runtime") });
     const liveSessions = new Map();
@@ -1467,15 +1820,20 @@ describe("Agent Loop v1 runtime", () => {
       { ok: true },
       "a new Run must address its own worker Session rather than the stopped Run's Session",
     );
-    const deleted = await runtime.deleteTask({ taskId: task.taskId });
-    assert.equal(deleted.deleted, true);
-    assert.equal(deleted.runsDeleted, 2);
-    assert.equal(runtime.readTask({ taskId: task.taskId }), undefined);
-    assert.deepEqual(stoppedSessions, [first.run.conductorSessionId, restarted.run.conductorSessionId]);
+    await assert.rejects(
+      () => runtime.deleteTask({
+        taskId: task.taskId,
+        commandId: "command-delete-running-task",
+        expectedRevision: runtime.readTask({ taskId: task.taskId }).revision,
+      }),
+      /loop_task_not_in_recycle_bin/,
+    );
+    assert.equal(runtime.readTask({ taskId: task.taskId }).status, "running");
+    assert.deepEqual(stoppedSessions, [first.run.conductorSessionId]);
     runtime.close();
   });
 
-  it("serializes concurrent re-runs so only one replacement Run is created", async () => {
+  it("rejects concurrent Start attempts after achievement instead of creating replacement Runs", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-v1-rerun-race-"));
     const sessionStore = createSessionStore({ root: ({ cwd }) => path.join(cwd, ".agent-workspace", "runtime") });
     const runtime = createAgentLoopV1Runtime({
@@ -1500,11 +1858,12 @@ describe("Agent Loop v1 runtime", () => {
     ]);
     const successes = outcomes.filter((outcome) => outcome.status === "fulfilled");
     const failures = outcomes.filter((outcome) => outcome.status === "rejected");
-    assert.equal(successes.length, 1);
-    assert.equal(failures.length, 1);
-    assert.match(String(failures[0].reason), /loop_run_already_running/);
-    assert.notEqual(successes[0].value.run.runId, first.run.runId);
-    assert.equal(runtime.listTasks()[0].latestRun.runId, successes[0].value.run.runId);
+    assert.equal(successes.length, 0);
+    assert.equal(failures.length, 2);
+    assert.match(String(failures[0].reason), /loop_task_requires_resume_achieved/);
+    assert.match(String(failures[1].reason), /loop_task_requires_resume_achieved/);
+    assert.equal(runtime.listTasks()[0].latestRun.runId, first.run.runId);
+    assert.equal(runtime.listTasks()[0].latestRun.status, "achieved");
     runtime.close();
   });
 

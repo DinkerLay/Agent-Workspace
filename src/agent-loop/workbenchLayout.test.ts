@@ -12,24 +12,20 @@ import {
 } from "./workbenchLayout";
 
 describe("Agent Loop Workbench Group Layout", () => {
-  it("automatically opens a second Group when a second native Session arrives", () => {
+  it("keeps a second Server Session as a tab beside the Conductor", () => {
     const base = defaultWorkbenchLayout(["conductor"]);
     const reconciled = reconcileWorkbenchLayout(base, ["conductor", "researcher"]);
 
-    expect(reconciled.groups.primary.sessionIds).toEqual(["conductor"]);
-    expect(reconciled.groups["group-1"].sessionIds).toEqual(["researcher"]);
-    expect(leafGroupIds(reconciled.root)).toEqual(["primary", "group-1"]);
+    expect(reconciled.groups.primary.sessionIds).toEqual(["conductor", "researcher"]);
+    expect(leafGroupIds(reconciled.root)).toEqual(["primary"]);
   });
 
-  it("automatically opens up to four first Sessions and then uses tabs", () => {
+  it("keeps all automatically placed Sessions in one focused official UI", () => {
     const layout = reconcileWorkbenchLayout(defaultWorkbenchLayout(["conductor"]), ["conductor", "search-0", "search-1", "reviewer", "publisher"]);
 
     expect(layout.placementMode).toBe("auto");
-    expect(leafGroupIds(layout.root)).toEqual(["primary", "group-1", "group-2", "group-3"]);
-    expect(layout.groups.primary.sessionIds).toEqual(["conductor", "publisher"]);
-    expect(layout.groups["group-1"].sessionIds).toEqual(["search-0"]);
-    expect(layout.groups["group-2"].sessionIds).toEqual(["search-1"]);
-    expect(layout.groups["group-3"].sessionIds).toEqual(["reviewer"]);
+    expect(leafGroupIds(layout.root)).toEqual(["primary"]);
+    expect(layout.groups.primary.sessionIds).toEqual(["conductor", "search-0", "search-1", "reviewer", "publisher"]);
   });
 
   it("preserves a manual arrangement when a later Session arrives", () => {

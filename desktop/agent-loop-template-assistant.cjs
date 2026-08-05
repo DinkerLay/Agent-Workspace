@@ -69,17 +69,7 @@ async function generateLegacyTaskDraftTemplate({ input, brief, cwd, model, gener
 
 function buildTemplateResult({ input, brief, model, result }) {
   const title = String(result.name || input?.name || describeName(brief)).trim();
-  const agents = result.agents.slice(0, 8).map((worker, index) => ({
-    id: uniqueId(worker.id || worker.idSeed || worker.name || `agent-${index + 1}`, index),
-    name: String(worker.name || `Session Agent ${index + 1}`).trim(),
-    kind: normalizeCardKind(worker.kind) || inferCardKind(worker),
-    role: String(worker.role || "Carry out bounded work dispatched by Conductor.").trim(),
-    model: String(worker.model || model),
-    mcp: stringList(worker.mcp),
-    skills: stringList(worker.skills),
-    instructions: String(worker.instructions || "").trim(),
-    expectedOutput: String(worker.expectedOutput || "Return the bounded result, evidence, artifact paths, and remaining risks.").trim(),
-  }));
+  const agents = result.agents.slice(0, 8).map((worker, index) => buildPromptSplitAgent({ worker, index, model }));
 
   return {
     template: {
@@ -131,19 +121,21 @@ function buildAgentLoopTemplatePrompt({ brief, model }) {
           id: "lowercase-kebab-case",
           name: "Session Agent 名称",
           kind: "researcher|reviewer|publisher|general",
-          role: "单一能力说明",
           model,
           mcp: [],
           skills: [],
-          instructions: "由 Conductor 派发边界清晰的工作；不自行派发其他 Agent。",
-          expectedOutput: "Markdown 或文本结果、证据、产物路径与剩余风险。",
+          dispatchProfile: {
+            title: "给 Conductor 的简短能力名称",
+            description: "只供 Conductor 判断何时派发此 Card；说明可承担的工作和边界，不写 Worker 内部工作指令。",
+          },
+          workerSystemPrompt: "只注入该 Worker Session 的稳定角色、约束和工作方式。不要写某次 Dispatch 的目标、输入、验收条件或 expected output。",
         }],
         limits: { maxConcurrentSessions: 3, maxDispatchesPerDecision: 3 },
         delivery: { artifactPath: "" },
       },
       assumptions: [],
     }, null, 2),
-    "Rules: conductor.charter is the only Template-level human-readable orchestration field. It must fold the user's intended use, suitable task context, Session Agent collaboration, and Conductor decision preferences into one editable Charter. Do not emit a description or purpose field. All agents are native OpenCode Session Agents and are capabilities, not an execution sequence. Keep mcp and skills empty unless the user explicitly limits them (empty means unrestricted). The Conductor may select exact prior Session results with contextRefs instead of paraphrasing. A Reviewer's pass or needs changes is natural-language material; the Conductor decides whether to dispatch further evidence work and which complete materials to hand to a Publisher. Never emit a review policy or other Runtime prerequisite; every next dispatch remains a Conductor decision.",
+    "Rules: conductor.charter is the only Template-level human-readable orchestration field. It must fold the user's intended use, suitable task context, Session Agent collaboration, and Conductor decision preferences into one editable Charter. Do not emit a description or purpose field. Every Agent Card must use dispatchProfile plus workerSystemPrompt; never emit role, instructions, or expectedOutput. dispatchProfile is visible only to Conductor and describes when that Card can be dispatched. workerSystemPrompt is visible only to that Worker Session and contains stable role, constraints, and working guidance. The Conductor supplies every per-dispatch goal, inputs, acceptance criteria, and expected output in the Dispatch message. All agents are native OpenCode Session Agents and are capabilities, not an execution sequence. Keep mcp and skills empty unless the user explicitly limits them (empty means unrestricted). The Conductor may select exact prior Session results with contextRefs instead of paraphrasing. A Reviewer's pass or needs changes is natural-language material; the Conductor decides whether to dispatch further evidence work and which complete materials to hand to a Publisher. Never emit a review policy or other Runtime prerequisite; every next dispatch remains a Conductor decision.",
     "User's desired collaboration:",
     brief,
   ].join("\n\n");
@@ -155,7 +147,7 @@ function parseGeneratedTemplate(stdout) {
     const agents = Array.isArray(payload?.agents) ? payload.agents : Array.isArray(payload?.workers) ? payload.workers : [];
     if (!payload?.conductor || !agents.length) continue;
     const normalizedAgents = agents.map(normalizeAgent).filter(Boolean);
-    if (!normalizedAgents.length) continue;
+    if (normalizedAgents.length !== agents.length) continue;
     return {
       name: stringValue(payload.name),
       conductor: normalizeConductor(payload.conductor),
@@ -181,8 +173,31 @@ function normalizeConductor(value) {
 function normalizeAgent(value) {
   if (!value || typeof value !== "object") return undefined;
   const name = stringValue(value.name);
-  const role = stringValue(value.role);
-  return name && role ? value : undefined;
+  const dispatchProfile = value.dispatchProfile && typeof value.dispatchProfile === "object" ? value.dispatchProfile : undefined;
+  const title = stringValue(dispatchProfile?.title);
+  const description = stringValue(dispatchProfile?.description);
+  const workerSystemPrompt = stringValue(value.workerSystemPrompt);
+  return name && title && description && workerSystemPrompt ? value : undefined;
+}
+
+function buildPromptSplitAgent({ worker, index, model }) {
+  const dispatchProfile = worker?.dispatchProfile && typeof worker.dispatchProfile === "object" ? worker.dispatchProfile : undefined;
+  const title = stringValue(dispatchProfile?.title);
+  const description = stringValue(dispatchProfile?.description);
+  const workerSystemPrompt = stringValue(worker?.workerSystemPrompt);
+  if (!title || !description || !workerSystemPrompt) {
+    throw new Error("opencode_template_generation_agent_prompt_contract_missing");
+  }
+  return {
+    id: uniqueId(worker.id || worker.idSeed || worker.name || `agent-${index + 1}`, index),
+    name: String(worker.name || `Session Agent ${index + 1}`).trim(),
+    kind: normalizeCardKind(worker.kind) || inferCardKind(worker),
+    model: String(worker.model || model),
+    mcp: stringList(worker.mcp),
+    skills: stringList(worker.skills),
+    dispatchProfile: { title, description },
+    workerSystemPrompt,
+  };
 }
 
 function normalizeCardKind(value) {
@@ -200,7 +215,8 @@ function stringList(value) { return Array.isArray(value) ? value.map(stringValue
 
 function uniqueId(value, index) { return `${slug(value) || "agent"}${index ? `-${index + 1}` : ""}`; }
 function inferCardKind(worker = {}) {
-  const description = `${worker.idSeed || ""} ${worker.name || ""} ${worker.role || ""} ${worker.instructions || ""}`.toLowerCase();
+  const dispatchProfile = worker.dispatchProfile && typeof worker.dispatchProfile === "object" ? worker.dispatchProfile : {};
+  const description = `${worker.idSeed || ""} ${worker.name || ""} ${dispatchProfile.title || ""} ${dispatchProfile.description || ""}`.toLowerCase();
   if (/(review|reviewer|validator|审查|校验|验收)/i.test(description)) return "reviewer";
   if (/(publish|publisher|consolidat|writer|author|synthesi[sz]|交付|整合|汇总|发布|撰写)/i.test(description)) return "publisher";
   if (/(research|search|analyst|researcher|调研|搜索|研究|分析)/i.test(description)) return "researcher";

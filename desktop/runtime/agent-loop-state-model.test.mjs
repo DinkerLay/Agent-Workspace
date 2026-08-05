@@ -26,6 +26,13 @@ describe("Agent Loop state model", () => {
     assert.equal(isTaskUnavailableForContinuation(TASK_STATUS.DELIVERY_READY), false);
   });
 
+  it("uses archived Task state as a reversible recycle bin", () => {
+    assert.equal(canTransitionTaskStatus(TASK_STATUS.ACHIEVED, TASK_STATUS.ARCHIVED), true);
+    assert.equal(canTransitionTaskStatus(TASK_STATUS.ARCHIVED, TASK_STATUS.ACHIEVED), true);
+    assert.equal(canTransitionTaskStatus(TASK_STATUS.ARCHIVED, TASK_STATUS.DELETING), true);
+    assert.equal(isTaskUnavailableForContinuation(TASK_STATUS.ARCHIVED), true);
+  });
+
   it("permits a failed native start to compensate running back to queued", () => {
     assert.equal(canTransitionTaskStatus(TASK_STATUS.RUNNING, TASK_STATUS.QUEUED), true);
   });

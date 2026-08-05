@@ -128,6 +128,24 @@ describe("buildTimeline", () => {
     ]));
   });
 
+  it("renders an explicit achieved-Task resume as the same Run, not a new run", () => {
+    const task = { taskId: "task-1", goal: "继续任务", createdAt: "2026-07-29T03:00:00.000Z" } as NativeAgentLoopTask;
+    const run = {
+      events: [
+        { sequence: 3, type: "task.resumed", summary: "用户已拉回已完成任务；原 Conductor Provider Session 已验证可继续。", data: { cause: "user_resume_achieved" }, createdAt: "2026-07-29T03:03:00.000Z" },
+      ],
+      runtimeState: { events: [], dispatches: [], results: [], messages: [], pendingDecisions: [] },
+    } as unknown as NativeAgentLoopRunDetail;
+
+    expect(buildTimeline(task, run)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "runtime",
+        title: "已拉回同一 Task Run",
+        detail: expect.stringContaining("没有创建新的 Session"),
+      }),
+    ]));
+  });
+
   it("shows the exact Provider input receipt before the next Conductor reply", () => {
     const task = { taskId: "task-1", goal: "继续任务", createdAt: "2026-07-29T03:00:00.000Z" } as NativeAgentLoopTask;
     const run = {

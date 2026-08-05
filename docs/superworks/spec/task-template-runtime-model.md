@@ -1,201 +1,89 @@
-# Task, Template, And Runtime Model: Agent Loop v1
+# Task, Template, And Runtime Model: onlyopencode
 
-Date: 2026-07-26
+日期：2026-08-05
+状态：当前数据与生命周期来源
 
-Status: Accepted current data and lifecycle contract.
+本文件是 Template、Task、Run、Session 和生命周期的唯一详细定义。页面、Gateway
+和测试计划只能引用它，不能各自创造另一套状态规则。
 
-## Purpose
+## 持久对象
 
-This document defines the durable objects that connect user intent to the
-native Agent Loop Runtime. It removes a recurring confusion:
-
-> Agent Loop is a session-management orchestration policy. Workflow is a
-> graph-execution policy. They are both reusable template families, but only
-> Agent Loop is implemented or selectable today.
-
-Workflow vocabulary remains a future compatibility boundary only. It must not
-be introduced into the v1 UI, persistence schema, terminal tabs, or Conductor
-prompt as a hidden route. Agent Loop Template cannot be serialized as a Workflow graph.
-
-## Durable Objects
-
-| Object | Owner | Meaning |
+| 对象 | 含义 | Owner |
 | --- | --- | --- |
-| Template Draft | user/editor | generated or manual, editable and not yet reusable |
-| Loop Template identity | Template store | stable id plus mutable archive metadata |
-| Loop Template Version | Template store | immutable versioned Charter, Agent Cards, and defaults |
-| Task Architecture | Task store | task-owned snapshot of one saved Loop Template Version |
-| Task | Task store | user-visible work item and lifecycle owner |
-| Task Run | Runtime store | fresh realization of one Task Architecture |
-| Session | Terminal Runtime | logical provider-native execution identity with current PTY incarnation |
-| Dispatch | Coordinator | immutable Conductor command plus transport/provider receipts |
-| Provider Result | Provider Adapter | exact semantic result/attention/failure associated with a dispatch |
-| Artifact reference | Runtime index | safe task-relative file confirmed to exist before user inspection |
+| Template Design Draft | 可连续修改、尚未复用的模板草案 | Template Design service |
+| Template Design Session | 专用于一个 Draft 的 Meta Agent OpenCode Session | Template Design service + OpenCode Server |
+| Loop Template / Version | 稳定 identity 与不可变版本 | Template store |
+| Task Architecture | Task 对已保存 Version、用户目标和项目目录的快照 | Task store |
+| Task | 用户可见的工作项和生命周期 owner | Task store |
+| Task Run | 一次明确开始的 Task 执行身份 | Task/Run service |
+| Session binding | Task Run 中逻辑 Conductor/Worker 与 Provider Session 的绑定 | Runtime projection |
+| Dispatch | Conductor 的一次 Card assignment 及其回执 | Dispatch Coordinator |
+| Artifact reference | 已验证、可追溯的项目内交付物 | Runtime index |
 
-Template creation belongs to **Template Builder**, not the Task dialog. A
-Task dialog may link to Template Builder, but cannot silently create a reusable
-Template through an incomplete Task form.
+Draft 和 Template Design Session 不能创建 Task、Run、Dispatch 或 artifact。只有用户
+显式保存 Draft，才产生新的不可变 Version。
 
-## Template Draft And Version
+## Template、Card 与上下文注入
 
-```text
-natural-language Charter brief or manual editor
-  -> Template Draft
-  -> user review/edit
-  -> explicit save
-  -> immutable Loop Template Version
-```
+每个 Card 保存两份不同内容：
 
-A generated or manual Draft is not task execution. It creates no Run, native
-Session, terminal, Provider Session, dispatch, or artifact.
+| 内容 | 注入对象 | 时机 |
+| --- | --- | --- |
+| Dispatch profile | Conductor | Task Architecture 被读取、Conductor 作派发决定时 |
+| Worker system prompt | 该 Card 的 Worker Provider Session | 此 Card 首次在某个 Task Run 被实际派发时 |
 
-A Loop Template Version contains:
+Conductor Charter 与用户 Task 目标作为 Conductor 的任务上下文。Conductor 能看见 Card
+的 Dispatch profile，不能把 Worker system prompt 当作派发说明改写。每次 dispatch 的
+具体 assignment、输入和验收标准由 Conductor 决定。模型、MCP、Skills 是 Provider
+配置，不构成新的 Agent 类型或固定编排。
 
-- Conductor role, model, and one editable Charter. The Charter captures the
-  Template's suitable task context, collaboration intent, and decision
-  preferences; it is snapshotted and supplied to each Conductor incarnation
-  as dynamic orchestration context;
-- native Session Agent Cards, each with an identity, display name, capability
-  guidance, model, optional MCP/Skills configuration, and default output
-  guidance;
-- default concurrency / dispatch bounds;
-- no required delivery path or output kind. Legacy path data is retained only
-  as a passive lookup candidate for an already existing project file; it is not
-  supplied to Conductor and never becomes a Runtime route or completion
-  condition.
-
-It cannot contain graph nodes, edges, declared role order, fixed worker count,
-remediation chain, retry route, dispatch prerequisite, or automatic achieved
-rule. A Charter may recommend review, evidence collection, or publication, but
-every next dispatch remains the Conductor's decision. Empty MCP/Skill lists
-mean the native provider capabilities are unrestricted by the Template.
-
-Version operations are explicit: save an edited version, copy, archive, and
-delete an unreferenced identity. Archiving hides normal selection but never
-changes existing Task Architecture snapshots. Delete is rejected once a Task
-references the Template.
-
-Archive metadata belongs to Template identity, not a version body. The current
-tables reflect that boundary: `agent_loop_templates` stores identity metadata,
-while `agent_loop_template_versions` stores immutable reusable definitions.
-
-## Task Architecture And Task Run
+## 创建 Task
 
 ```text
-saved Loop Template Version + user title/goal + selected writable project root
-  -> confirm Task Architecture snapshot
+saved Template Version + title + goal + explicit writable project cwd
+  -> Task Architecture snapshot
   -> queued Task
-  -> explicit Start
-  -> fresh Task Run + logical Conductor Session
+  -> user Start
+  -> fresh Task Run + Conductor Provider Session binding
 ```
 
-The Task Architecture records Template id/version, copied Charter, copied
-Agent Cards, the user-selected project
-`cwd`, and user goal. Native Sessions, relative artifacts, and Session Store
-metadata are rooted at that `cwd`; the global Task list does not change this
-ownership. Later Template edits cannot change the snapshot. A separate Start action begins runtime execution.
+项目目录是用户明确选择或通过受控“新建文件夹”命令创建的 cwd；不得默认为 Agent
+Workspace 仓库。不同 Task 可以选择同一 cwd，但 Task identity 不同就必须有不同的
+Run、Session binding、Dispatch 和 artifact 索引。
 
-Every start creates a fresh Task Run and fresh logical Session identities. It
-must not reuse another Task's terminal, dispatch, Provider context, result,
-artifact index, or layout state. A resumed run attaches to its own existing
-logical Sessions through the Terminal Runtime's claim/attach protocol.
+## 生命周期
 
-Stopping a Task ends the current Run's native Sessions but preserves its
-history. The later **restart** action creates a new Run and new Conductor
-identity; it does not ask OpenCode to resume an old provider Session. A desktop
-process restart is distinct: Runtime may reconnect to a still-live Terminal
-Host for the same Run, but it must not silently replace a missing native Session
-with a new Run. A missing Conductor terminal puts the Run into explicit
-`recovery_required`; Send/Runtime wakeup may recover a new terminal incarnation
-inside the same Run only when it can continue the exact Provider Session.
-Otherwise the user uses Stop and Start to create a fresh Run. A Task-page
-follow-up remains pending until an exact Provider receipt is observed. The
-human-facing contract is defined in
-`task-run-continuity-and-terminal-experience.md`.
-
-Every Task and Run carries an optimistic `revision`. User commands carry both
-`commandId` and `expectedRevision`. The Task/Run Repository commits command
-intent, lifecycle mutation, Run event, and Timeline outbox in one SQLite
-transaction. Cross-store Timeline publication is retried and deduplicated by
-the outbox `sourceEventId`; the Session Store copy is a projection, not a
-second Task lifecycle writer.
-
-Start, Stop and Delete are two-phase lifecycle commands: their durable command
-becomes `prepared` before a native Session or Runtime-directory side effect.
-Runtime construction reconciles any prepared command after a Main-process
-restart. Delete removes the replay-safe Runtime directory before committing
-the Task DB deletion, so a filesystem failure leaves a visible, retryable
-`deleting` Task instead of an orphaned Session Store directory. Delivery Claim
-uses the same Task/Run transaction and outbox; the Conductor bridge never
-writes a parallel completion state.
-
-Run detail is a rebuildable `TaskRunReadModel`. Runtime gathers Task/Run,
-Coordinator, Terminal, and Provider facts through owner-scoped capabilities,
-then passes them to a pure projector. Projection may filter facts to the
-current Run and synthesize an unsaved default layout, but it must not write a
-store, acknowledge input, repair lifecycle state, or launch a Session.
-Renderer caches this model only as presentation state and refreshes it from
-command results or semantic Runtime invalidations, not polling or PTY output.
-
-## Agent Loop Control Cycle
-
-```text
-user message or start
-  -> Conductor reads durable Task state
-  -> Conductor may dispatch zero or more approved cards
-  -> Coordinator records dispatch/Provider facts
-  -> meaningful result, failure, attention, or user message wakes Conductor
-  -> Conductor chooses the next action
-```
-
-Only Conductor receives Workspace dispatch tools. A native worker can use
-normal OpenCode tools but cannot route another Workspace Session.
-
-The Coordinator can transfer a completed result when Conductor explicitly
-cites it through a task-scoped result reference. It snapshots the exact
-semantic answer into the next dispatch record; it does not expose raw PTY
-output or let workers communicate directly.
-
-## States And Completion
-
-| Entity | States / meaning |
+| 用户动作 / 条件 | 正确结果 |
 | --- | --- |
-| Task | `queued`, `running`, `delivery_ready`, `stopping`, `stopped`, `deleting`, `achieved`, `archived` |
-| Run | `running`, `recovery_required`, `stopped`, `achieved`, or `failed` |
-| Dispatch | `queued`, `input_accepted`, `delivered`, `result_available`, `waiting_input`, `cancellation_requested`, `cancelled`, `cancel_failed`, `failed` |
-| Session | separate Terminal lifecycle and Provider semantic facts, plus a rebuildable presentation state |
+| Start queued Task | 创建该 Task 的新 Run 与新的 Conductor Provider Session。 |
+| delivery_ready 后发送消息 | 同一 Task、同一 Run、同一 Conductor Provider Session 继续。 |
+| Achieve | 记录用户接受当前交付；Task/Run 与 Conductor Session binding 保留，不停止 Server。 |
+| 拉回继续 | 用户明确操作后，Runtime 先验证原 Provider Session 可恢复；成功则 `Task achieved → running`、`Run achieved → running`，所有 identity 不变。 |
+| 原 Session 不可恢复 | 保持原 Task/Run 为历史；不自动创建 Run 或伪造新会话。用户可显式“基于历史新建 Task”。 |
+| 基于历史新建 Task | 创建新的 Task ID，再 Start 创建新的 Run/Conductor Session；即使 cwd 相同也不复用旧身份。 |
+| Stop 后 Restart | Stop 结束当前 Run；Restart 创建新 Run，不恢复旧 Provider Session。 |
 
-`delivery_ready` is Conductor's recorded delivery claim, not a quality verdict.
-`achieved` is an explicit user action after accepting the current delivery; an
-artifact is optional supporting evidence, not a requirement. Neither a file,
-a worker's “done”, nor raw terminal text can make a Task achieved.
+`Achieve` 不是删除，也不是资源泄漏：闲置页面 lease 可释放，Provider Session binding
+作为历史身份保留；共享 OpenCode Server 按 cwd 管理，不按 Task 常驻进程。
 
-`stopping` and `deleting` are durable command-in-progress projections used to
-serialize destructive lifecycle work. They are not completion states and do
-not permit Task continuation. Code must use the canonical state model instead
-of creating additional free-form status strings.
+## 删除
 
-An achieved Task's later follow-up explicitly creates a new Run with preserved
-Task history as context. It does not pretend that the accepted Run's old native
-provider Session is still a continuation target.
+回收与彻底删除是待实施的两步产品能力：
 
-If legacy path data names a relative artifact, Runtime resolves it from the
-Task project root only after the file exists. `.agent-workspace/` is Runtime
-metadata and is never an artifact root. This passive lookup does not enter the
-Conductor prompt or a worker dispatch.
+1. **移入回收站**：从普通列表隐藏，但保留 Task、Run、Session binding、历史和受管
+   artifact；放回后仍是同一 Task。
+2. **彻底删除**：仅在回收站中明确确认；清理 Task、Run、Session binding、presentation
+   lease、Runtime 数据与用户选择删除的受管 artifact。
 
-## Future Workflow Boundary
+无论哪一步，均不得隐式删除用户项目目录中的未受管文件。永久删除后不得再“拉回”
+原 Session。
 
-A future Workflow Template may be a persisted graph-execution policy. It will
-be introduced only under a separate specification and migration. It must be a
-single Execution Unit from the perspective of an outer Agent Loop and it must
-not give Runtime a reason to turn Agent Card labels into a route.
+## 交付与状态写入
 
-If introduced, A Workflow aggregate never masquerades as a PTY-owning Session.
-It may expose graph state and child native Sessions, but has no terminal of its
-own. Until then, v1 stores no Workflow Template, Blueprint composition, Graph
-layout, or Workflow Instance.
+Conductor 可以决定是否派发 Publisher/Reviewer，但如果 Template 已声明 Publisher 为
+最终交付 owner，artifact 必须可追溯为 `artifact → Dispatch → Card → Provider Session`。
+Conductor 不得把自己写出的文件伪装成 Publisher 交付。
 
-The term **Template Blueprint** is retained only for migration/readability: it
-described an old composition of multiple template families. It is not a v1
-persisted object or user-facing selection surface.
+Task/Run service 是生命周期的唯一 writer；Coordinator 写 Dispatch/Wakeup，Provider
+Adapter 投影 Provider 事实，Gateway 只校验已授权的 presentation lease。Renderer 只保留
+视图状态并提交携带 `commandId` 与 `expectedRevision` 的 typed command。

@@ -6,6 +6,39 @@ const testApi = isVitest ? await import("vitest") : await import("node:test");
 const { describe, it } = testApi;
 
 describe("Dispatch coordinator", () => {
+  it("delivers an Agent Card assignment through the OpenCode Server without a PTY", async () => {
+    const accepted = [];
+    const delivered = [];
+    const coordinator = createDispatchCoordinator({
+      sessionStore: {
+        recordDispatch(input) { return { ...input, dispatchId: "D-server", status: "queued" }; },
+        markDispatchInputAccepted(input) { accepted.push(input); },
+      },
+      validateDispatch: () => ({ ok: true }),
+      resolveAgentSession: () => ({ agentId: "researcher", sessionId: "opencode:task-1:researcher" }),
+      resolveConductorSessionId: () => "opencode:task-1:conductor",
+      prepareDispatchContext: () => ({ contextRefs: [], contextPackets: [] }),
+      deliverProviderAssignment: async (input) => {
+        delivered.push(input);
+        return { accepted: true, providerSessionId: "ses_worker1", targetSessionState: "queued" };
+      },
+    });
+
+    const result = await coordinator.callSession({ taskId: "task-1", agentId: "researcher", assignment: "Find primary sources." });
+
+    assert.equal(result.ok, true);
+    assert.equal(delivered.length, 1);
+    assert.match(delivered[0].text, /\[Agent Workspace\] Dispatch ID D-server/);
+    assert.deepEqual(accepted, [{
+      taskId: "task-1",
+      sessionId: "opencode:task-1:researcher",
+      dispatchId: "D-server",
+      transport: "opencode_server",
+      provider: "opencode",
+      providerSessionId: "ses_worker1",
+    }]);
+  });
+
   it("serializes concurrent intents for one native Session before a durable receipt exists", async () => {
     const dispatches = [];
     let releaseContext;

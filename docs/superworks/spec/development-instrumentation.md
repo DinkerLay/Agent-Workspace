@@ -1,107 +1,32 @@
-# Development Instrumentation And E2E Evidence
+# Development Instrumentation and E2E Evidence: onlyopencode
 
-Date: 2026-07-26
+日期：2026-08-05
+状态：当前诊断与验收规则
 
-Status: Accepted current diagnostics contract.
+## 记录什么
 
-## Purpose
+| 事实 | 记录者 |
+| --- | --- |
+| Task/Run 命令、revision、状态迁移 | Task/Run service |
+| dispatch、输入回执、wakeup、取消 | Dispatch Coordinator |
+| Provider Session、message、result、attention | Provider Adapter 投影 |
+| presentation lease 与 Gateway 拒绝原因 | Gateway（不含凭据） |
+| artifact 路径与 owner chain | Runtime artifact index |
 
-Agent Workspace records small durable facts so a Task can be explained without
-turning terminal output into task truth. There are two distinct records:
+Timeline 只展示语义事实与用户可见的 Conductor 结果，不存 Provider 凭据、完整隐藏
+prompt 或无界原始输出。所有事件带 Task/Run identity、时间、actor 和可追溯引用。
 
-1. **Semantic Task evidence** — the user-facing Timeline and Task Run facts.
-2. **Transport diagnostics** — bounded daemon terminal snapshots/logs and
-   low-level traces for debugging a terminal attachment or Provider adapter.
+## 真实浏览器 E2E
 
-The first is readable product history; the second never drives a business
-decision and is redacted before broad export.
+浏览器验收以
+[`../plans/opencode-server-webui-browser-e2e-v1.plan.md`](../plans/opencode-server-webui-browser-e2e-v1.plan.md)
+为准：必须通过当前产品的官方 OpenCode Web UI 完成真实 Template、Task、Conductor
+对话、Worker dispatch、交付和生命周期操作。
 
-## Semantic Event Families
+每个案例将截图、console/network、状态快照、artifact 和 `result.md` 写到
+`/Users/dingyujie/Desktop/tempreport/agent-workspace-e2e/<case-id>/`；文档和代码只留在
+仓库。页面截图、mock、手工 API 请求或模型一句“done”均不能单独证明通过。
 
-| Family | Examples | Owner |
-| --- | --- | --- |
-| Task | `task.created`, `task.user_message`, `task.achieved`, `task.archived` | Task store / user |
-| Conductor | `conductor.started`, `conductor.decision`, `conductor.delivery_claim` | Conductor tool bridge |
-| Dispatch | `dispatch.command.accepted`, `dispatch.input_accepted`, `dispatch.provider.received` | Coordinator |
-| Provider | `dispatch.provider.result`, `dispatch.provider.attention`, `dispatch.provider.failed` | Provider Adapter + Coordinator |
-| Wakeup | `conductor.wakeup.sent` | Coordinator |
-| Terminal | `terminal.created`, `terminal.attached`, `terminal.exited`, `terminal.restore_required` | Orca-style daemon |
-| Artifact | `artifact.indexed`, `artifact.opened` | Runtime index / user |
-
-Every event has Task/Run identity, timestamp, actor, compact summary, and a
-reference to any durable detail. Events are append-only and idempotent by the
-underlying dispatch/session transition. Do not store a raw terminal chunk as a
-Timeline event.
-
-## Sensitive Data
-
-- Never persist API keys, environment values, credentials, full hidden prompts,
-  or unrestricted shell history in Timeline events.
-- Provider result references remain Task-scoped; cross-session transfer occurs
-  only from an explicit Conductor result reference.
-- Raw PTY diagnostic logs are bounded (currently per Session), local, and
-  separate from semantic events. Alternate-screen snapshots are not copied into
-  Timeline or Markdown.
-- Artifact previews are limited to safe project-relative paths and explicit
-  size/type boundaries.
-
-## Required E2E Evidence
-
-The real Agent Loop E2E is not a synthetic state-machine test. It must prove:
-
-```text
-one-sentence description
-  -> generated editable Template Draft
-  -> explicit saved Template Version
-  -> Task Architecture snapshot
-  -> real Conductor OpenCode Session
-  -> real native Worker OpenCode Session
-  -> Host input receipt
-  -> Provider receipt and Provider result
-  -> indexed/checked artifact
-  -> user-visible Task state
-```
-
-The harness command is:
-
-```sh
-npm run desktop:agent-loop-real-generated-e2e
-```
-
-It uses `opencode-go/deepseek-v4-flash`, creates a fresh canonical temporary
-workspace, generates one Publisher-card Loop Template, explicitly saves it,
-starts a Task, verifies the Provider result plus `final.md`, verifies that the
-Provider receipt precedes the Conductor delivery claim, and then simulates the
-explicit user `achieved` action after inspecting that artifact.
-
-Related focused proofs:
-
-```sh
-npm run desktop:agent-loop-real-provider-harness
-npm run desktop:agent-loop-real-conductor-harness
-AGENT_LOOP_REAL_CONDUCTOR_SCENARIO=correction npm run desktop:agent-loop-real-conductor-harness
-npm run desktop:orca-terminal-contract-harness
-npm run desktop:orca-terminal-daemon-harness
-npm run desktop:orca-terminal-manager-harness
-npm run desktop:orca-terminal-electron-harness
-npm run desktop:orca-terminal-provider-coordinator-harness
-```
-
-Harness time limits are liveness guards for test processes only. They do not
-constitute production Task timeouts or retries.
-
-## Failure Recording
-
-When a harness fails, record:
-
-- test command and model/provider version;
-- isolated workspace root and Task/Run/Session/dispatch ids;
-- the latest semantic events and Provider state, not a huge terminal dump;
-- daemon lifecycle/stream diagnostic if the failure is transport-related;
-- whether the failure was a Provider-native permission/question, Provider API
-  problem, Coordinator reducer problem, Conductor decision, or UI issue.
-
-For an actual native permission/question, the correct conclusion is
-`attention`, not “retry automatically”. The E2E must either use a canonical
-workspace that needs no permission or model the explicit user response through
-the same controlled terminal input surface.
+失败记录至少包含：案例目录、产品/OpenCode 版本、Template Version、Task/Run/Provider
+Session identity、用户浏览器步骤、实际错误、状态快照和是否存在受管 artifact。不得把
+测试项目或真实产物写入仓库根目录。

@@ -147,6 +147,104 @@ describe("Shell Session Store", () => {
     expect(state.pendingDecisions).toEqual([]);
   });
 
+  it("closes only the completed dispatch's direct-WebUI permission after a durable Provider result", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-provider-turn-permission-"));
+    const store = createSessionStore({ root });
+    const session = { taskId: "task-provider-turn", sessionId: "task-provider-turn-publisher", command: "opencode", cwd: root };
+    store.startSession(session);
+    const dispatch = store.recordDispatch({
+      taskId: session.taskId,
+      toSessionId: session.sessionId,
+      assignment: "Write the approved report.",
+    });
+    store.markDispatchDelivered({ ...session, dispatchId: dispatch.dispatchId, provider: "opencode", providerSessionId: "ses-publisher" });
+    store.recordPermissionRequested({
+      ...session,
+      permissionId: "opencode:per-write-report",
+      requestId: "per-write-report",
+      dispatchId: dispatch.dispatchId,
+      provider: "opencode",
+      permission: "external_directory",
+      patterns: ["/tmp/report.md"],
+      summary: "OpenCode requests report-write access.",
+    });
+
+    // A rebind/ready fact alone is never proof that the official WebUI answer
+    // was consumed by the Provider.
+    store.recordProviderSessionState(session, "ready", "OpenCode Session is ready after reconnect.");
+    let state = store.readTaskState({ taskId: session.taskId });
+    assert.equal(state.permissions[0].status, "requested");
+    assert.ok(state.pendingDecisions.some((decision) => decision.type === "permission_requested"));
+
+    const completed = store.recordDispatchResult({
+      ...session,
+      dispatchId: dispatch.dispatchId,
+      reason: "provider-turn-completed",
+      providerTurnCompleted: true,
+      provider: "opencode",
+      providerSessionId: "ses-publisher",
+      providerMessageId: "msg-publisher-final",
+      answerText: "The report is complete.",
+      source: "opencode-server-event",
+    });
+    const repeated = store.recordDispatchResult({
+      ...session,
+      dispatchId: dispatch.dispatchId,
+      reason: "provider-turn-completed",
+      providerTurnCompleted: true,
+      provider: "opencode",
+      providerSessionId: "ses-publisher",
+      providerMessageId: "msg-publisher-final",
+      answerText: "The report is complete.",
+      source: "opencode-server-event",
+    });
+
+    state = store.readTaskState({ taskId: session.taskId });
+    assert.equal(completed.status, "result_available");
+    assert.equal(repeated.changed, false);
+    assert.deepEqual(state.permissions[0], {
+      ...state.permissions[0],
+      permissionId: "opencode:per-write-report",
+      status: "provider_turn_completed",
+      providerTurnCompletedDispatchId: dispatch.dispatchId,
+      providerTurnCompletedResultId: completed.resultId,
+      providerTurnCompletedProviderSessionId: "ses-publisher",
+      providerTurnCompletedProviderMessageId: "msg-publisher-final",
+    });
+    assert.equal(state.pendingDecisions.some((decision) => decision.type === "permission_requested"), false);
+    const events = store.readSession(session).events;
+    assert.equal(events.filter((event) => event.type === "permission.provider_turn_completed").length, 1);
+    assert.equal(events.filter((event) => event.type === "dispatch.result_available").length, 1);
+
+    // A new prompt request bound to a later dispatch remains actionable; a
+    // duplicate completion of the old dispatch cannot clear it.
+    const laterDispatch = store.recordDispatch({ taskId: session.taskId, toSessionId: session.sessionId, assignment: "Add one appendix." });
+    store.recordPermissionRequested({
+      ...session,
+      permissionId: "opencode:per-later-write",
+      requestId: "per-later-write",
+      dispatchId: laterDispatch.dispatchId,
+      provider: "opencode",
+      permission: "external_directory",
+      patterns: ["/tmp/report.md"],
+      summary: "OpenCode requests follow-up access.",
+    });
+    store.recordDispatchResult({
+      ...session,
+      dispatchId: dispatch.dispatchId,
+      reason: "provider-turn-completed",
+      providerTurnCompleted: true,
+      provider: "opencode",
+      providerSessionId: "ses-publisher",
+      providerMessageId: "msg-publisher-final",
+      answerText: "The report is complete.",
+      source: "opencode-server-event",
+    });
+    state = store.readTaskState({ taskId: session.taskId });
+    assert.equal(state.permissions.find((permission) => permission.permissionId === "opencode:per-later-write")?.status, "requested");
+    assert.ok(state.pendingDecisions.some((decision) => decision.permissionId === "opencode:per-later-write"));
+  });
+
   it("records one durable native-question answer and does not resurrect it from a stale waiting_input state", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-workspace-session-store-question-"));
     const store = createSessionStore({ root });

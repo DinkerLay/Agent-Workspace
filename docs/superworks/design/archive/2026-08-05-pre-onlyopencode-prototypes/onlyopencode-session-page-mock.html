@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenCode Session Workbench · Prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #111113;
+        --panel: #19191c;
+        --panel-raised: #202024;
+        --line: #303034;
+        --line-soft: #28282c;
+        --text: #f2f1ed;
+        --muted: #a3a19e;
+        --quiet: #73716e;
+        --lime: #d7f77d;
+        --lime-ink: #1c2509;
+        --blue: #91b8ff;
+        --lavender: #c8b5ff;
+        --peach: #ffc7a3;
+        --cyan: #8ee6df;
+        --shadow: 0 20px 60px rgba(0, 0, 0, .32);
+      }
+      * { box-sizing: border-box; }
+      body {
+        min-width: 1080px;
+        margin: 0;
+        background: var(--canvas);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: -.01em;
+      }
+      button { font: inherit; }
+      .app {
+        display: grid;
+        grid-template-columns: 70px 238px minmax(500px, 1fr) 286px;
+        height: 100vh;
+        overflow: hidden;
+      }
+      .icon-rail, .session-rail, .timeline { border-right: 1px solid var(--line); }
+      .icon-rail {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 18px 0;
+        background: #151517;
+      }
+      .logo {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        margin-bottom: 22px;
+        border-radius: 11px;
+        place-items: center;
+        background: var(--lime);
+        color: #182000;
+        font-size: 19px;
+        font-weight: 900;
+        box-shadow: 0 4px 20px rgba(215, 247, 125, .15);
+      }
+      .rail-button {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        border: 0;
+        border-radius: 12px;
+        place-items: center;
+        background: transparent;
+        color: #92918e;
+        cursor: pointer;
+        font-size: 19px;
+      }
+      .rail-button.active { background: #2a2a2d; color: var(--lime); }
+      .rail-spacer { flex: 1; }
+      .avatar { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(140deg, #dfadff, #896be8); }
+
+      .session-rail { background: #19191b; }
+      .session-head { padding: 22px 16px 16px; border-bottom: 1px solid var(--line); }
+      .eyebrow { margin-bottom: 8px; color: var(--quiet); font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+      .task-name { font-size: 15px; font-weight: 750; line-height: 1.35; }
+      .session-caption { margin-top: 6px; color: var(--muted); font-size: 12px; }
+      .sessions { padding: 10px; }
+      .section-label { padding: 10px 7px 8px; color: var(--quiet); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+      .session-card {
+        display: flex;
+        width: 100%;
+        gap: 10px;
+        align-items: center;
+        margin: 2px 0;
+        padding: 10px;
+        border: 1px solid transparent;
+        border-radius: 11px;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        text-align: left;
+      }
+      .session-card:hover { background: #242427; }
+      .session-card.selected { border-color: #48484d; background: #29292d; box-shadow: inset 3px 0 0 var(--lime); }
+      .session-mark { display: grid; width: 28px; height: 28px; flex: 0 0 auto; border-radius: 9px; place-items: center; color: #161616; font-size: 12px; font-weight: 900; }
+      .conductor { background: var(--lime); }
+      .search { background: var(--blue); }
+      .review { background: var(--lavender); }
+      .session-copy { min-width: 0; flex: 1; }
+      .session-title { overflow: hidden; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+      .session-status { display: flex; gap: 5px; align-items: center; margin-top: 3px; color: var(--muted); font-size: 11px; }
+      .dot { width: 6px; height: 6px; border-radius: 999px; background: #6a6966; }
+      .dot.live { background: var(--lime); box-shadow: 0 0 0 3px rgba(215,247,125,.12); }
+      .dot.waiting { background: var(--blue); }
+      .session-more { color: #888; font-size: 16px; }
+      .session-foot { margin: 14px 10px; padding: 12px; border: 1px dashed #3a3a3e; border-radius: 10px; color: #aaa; font-size: 12px; line-height: 1.45; }
+      .session-foot strong { display: block; margin-bottom: 3px; color: var(--text); font-size: 12px; }
+
+      .workspace { display: flex; min-width: 0; flex-direction: column; background: #1d1d20; }
+      .topbar { display: flex; height: 66px; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid var(--line); background: #1a1a1d; }
+      .crumb { display: flex; gap: 9px; align-items: center; color: var(--muted); font-size: 12px; }
+      .crumb .slash { color: #555; }
+      .crumb strong { color: var(--text); font-weight: 700; }
+      .top-actions { display: flex; gap: 8px; align-items: center; }
+      .mini-button { padding: 8px 11px; border: 1px solid #3a3a3e; border-radius: 8px; background: #252528; color: #ddd; cursor: pointer; font-size: 12px; }
+      .mini-button:hover { border-color: #707076; }
+      .mini-button.primary { border-color: transparent; background: var(--lime); color: var(--lime-ink); font-weight: 800; }
+      .provider-shell {
+        display: grid;
+        min-height: 0;
+        flex: 1;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        margin: 18px;
+        border: 1px solid #3b3b3f;
+        border-radius: 14px;
+        background: #111112;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .provider-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px; border-bottom: 1px solid #2c2c30; background: #171719; }
+      .provider-brand { display: flex; gap: 10px; align-items: center; }
+      .opencode-emblem { display: grid; width: 25px; height: 25px; border-radius: 8px; place-items: center; background: #f6f4ee; color: #131313; font-size: 13px; font-weight: 900; }
+      .provider-title { font-size: 13px; font-weight: 760; }
+      .provider-title small { display: block; margin-top: 2px; color: #858480; font-size: 10px; font-weight: 600; letter-spacing: .02em; }
+      .live-chip { display: flex; gap: 6px; align-items: center; padding: 6px 8px; border: 1px solid #444449; border-radius: 999px; color: #bab9b4; font-size: 10px; }
+      .live-chip .dot { background: var(--lime); }
+      .conversation { display: flex; min-height: 0; flex-direction: column; gap: 22px; padding: 28px clamp(24px, 6vw, 86px); overflow: auto; }
+      .message { max-width: 750px; }
+      .message-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; color: #a7a6a1; font-size: 11px; font-weight: 750; }
+      .message-meta .tag { padding: 3px 7px; border-radius: 5px; background: #2c2c2f; color: #c8c7c1; font-size: 9px; letter-spacing: .05em; }
+      .message-body { color: #e1e0dc; font-size: 14px; line-height: 1.7; }
+      .message-body p { margin: 0 0 10px; }
+      .message-body strong { color: #fffefa; }
+      .tool-row { display: flex; width: fit-content; gap: 9px; align-items: center; margin: 13px 0; padding: 9px 10px; border: 1px solid #303034; border-radius: 8px; background: #1d1d1f; color: #c2c1bb; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+      .tool-icon { color: var(--lime); }
+      .result-card { margin-top: 12px; padding: 13px 15px; border: 1px solid #454549; border-left: 3px solid var(--lime); border-radius: 8px; background: #202023; }
+      .result-card .result-title { margin-bottom: 6px; color: var(--lime); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+      .result-card p { color: #cac9c4; font-size: 13px; line-height: 1.55; }
+      .thinking { color: #84827e; font-size: 12px; font-style: italic; }
+      .composer-wrap { padding: 14px 18px 18px; border-top: 1px solid #2b2b2f; background: #171719; }
+      .composer { display: flex; gap: 12px; align-items: flex-end; padding: 10px 10px 10px 14px; border: 1px solid #454549; border-radius: 11px; background: #212124; }
+      .composer textarea { min-height: 22px; flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: #e9e8e3; font: inherit; font-size: 13px; }
+      .composer textarea::placeholder { color: #777671; }
+      .send { width: 31px; height: 31px; border: 0; border-radius: 8px; background: var(--lime); color: #1d250b; cursor: pointer; font-weight: 900; }
+      .composer-help { display: flex; justify-content: space-between; margin: 8px 2px 0; color: #74736f; font-size: 10px; }
+
+      .timeline { overflow: auto; border-right: 0; background: #18181a; }
+      .timeline-head { display: flex; align-items: center; justify-content: space-between; padding: 23px 17px 16px; border-bottom: 1px solid var(--line); }
+      .timeline-head h2 { margin: 0; font-size: 14px; letter-spacing: -.02em; }
+      .timeline-head span { color: var(--muted); font-size: 11px; }
+      .timeline-list { padding: 18px 17px; }
+      .timeline-row { position: relative; display: grid; grid-template-columns: 24px 1fr; gap: 11px; padding-bottom: 25px; }
+      .timeline-row:not(:last-child)::before { position: absolute; top: 22px; bottom: 2px; left: 10px; width: 1px; background: #454549; content: ""; }
+      .event-icon { position: relative; z-index: 1; display: grid; width: 21px; height: 21px; border: 1px solid #454549; border-radius: 50%; place-items: center; background: #212124; color: #bbb; font-size: 10px; }
+      .event-icon.dispatch { border-color: #7594ce; color: var(--blue); }
+      .event-icon.return { border-color: #8fb25a; color: var(--lime); }
+      .event-icon.wake { border-color: #b5a2e6; color: var(--lavender); }
+      .event-time { margin-bottom: 5px; color: #767570; font-size: 10px; }
+      .event-title { color: #e4e3df; font-size: 12px; font-weight: 730; }
+      .event-detail { margin-top: 4px; color: #9d9c98; font-size: 11px; line-height: 1.45; }
+      .contract { margin: 8px 17px 20px; padding: 13px; border: 1px solid #3a3a3e; border-radius: 10px; background: #202023; }
+      .contract .contract-title { display: flex; gap: 7px; align-items: center; margin-bottom: 8px; color: #f1f0ec; font-size: 11px; font-weight: 800; }
+      .contract p { margin: 0; color: #9e9d99; font-size: 11px; line-height: 1.5; }
+      .contract code { color: var(--cyan); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
+      .toast { position: fixed; z-index: 10; right: 304px; bottom: 28px; padding: 10px 13px; border: 1px solid #525257; border-radius: 9px; background: #29292d; color: #eeece7; box-shadow: var(--shadow); font-size: 12px; opacity: 0; pointer-events: none; transform: translateY(8px); transition: .2s ease; }
+      .toast.show { opacity: 1; transform: translateY(0); }
+      @media (max-width: 1180px) { .app { grid-template-columns: 62px 215px minmax(480px, 1fr) 260px; } .conversation { padding-inline: 34px; } }
+    </style>
+  </head>
+  <body>
+    <main class="app" aria-label="OpenCode Session Workbench prototype">
+      <nav class="icon-rail" aria-label="主导航">
+        <div class="logo" aria-label="Agent Workspace">A</div>
+        <button class="rail-button active" title="任务会话">◫</button>
+        <button class="rail-button" title="模板">◇</button>
+        <button class="rail-button" title="项目">⌘</button>
+        <div class="rail-spacer"></div>
+        <button class="rail-button" title="设置">⚙</button>
+        <div class="avatar" title="Ding"></div>
+      </nav>
+
+      <aside class="session-rail">
+        <div class="session-head">
+          <div class="eyebrow">Task session · loop</div>
+          <div class="task-name">Pi Agent 架构调研</div>
+          <div class="session-caption">来自 Template · Research &amp; Synthesis</div>
+        </div>
+        <div class="sessions">
+          <div class="section-label">Agent sessions</div>
+          <button class="session-card selected" data-session="conductor">
+            <span class="session-mark conductor">C</span>
+            <span class="session-copy"><span class="session-title">Conductor</span><span class="session-status"><i class="dot live"></i>正在编排</span></span>
+            <span class="session-more">···</span>
+          </button>
+          <button class="session-card" data-session="search">
+            <span class="session-mark search">S</span>
+            <span class="session-copy"><span class="session-title">search-0</span><span class="session-status"><i class="dot waiting"></i>等待结果</span></span>
+            <span class="session-more">···</span>
+          </button>
+          <button class="session-card" data-session="review">
+            <span class="session-mark review">R</span>
+            <span class="session-copy"><span class="session-title">reviewer-0</span><span class="session-status"><i class="dot"></i>尚未调用</span></span>
+            <span class="session-more">···</span>
+          </button>
+        </div>
+        <div class="session-foot"><strong>这不是 terminal 列表</strong>每张卡片是一个由 OpenCode 托管的 Agent Session；只在真正被调用后才产生 Provider session。</div>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div class="crumb"><span>Tasks</span><span class="slash">/</span><strong>Pi Agent 架构调研</strong><span class="slash">/</span><span id="crumb-session">Conductor</span></div>
+          <div class="top-actions">
+            <button class="mini-button" id="copy-session">复制 Session ID</button>
+            <button class="mini-button primary" id="browser-action">在浏览器打开 ↗</button>
+          </div>
+        </header>
+
+        <section class="provider-shell" aria-label="OpenCode Web UI session">
+          <header class="provider-head">
+            <div class="provider-brand"><span class="opencode-emblem">O</span><div class="provider-title"><span id="provider-name">OpenCode · Conductor</span><small id="provider-id">provider session · ses_conductor_8da1</small></div></div>
+            <div class="live-chip"><i class="dot"></i><span id="provider-status">已连接到 OpenCode Server</span></div>
+          </header>
+          <div class="conversation" id="conversation"></div>
+          <div class="composer-wrap">
+            <div class="composer"><textarea id="prompt" rows="1" placeholder="向这个 Agent Session 发送消息…"></textarea><button class="send" id="send" title="发送">↑</button></div>
+            <div class="composer-help"><span>OpenCode Web UI（原型嵌入）</span><span>⌘ ↵ 发送</span></div>
+          </div>
+        </section>
+      </section>
+
+      <aside class="timeline" aria-label="Task timeline">
+        <div class="timeline-head"><h2>Task Timeline</h2><span>6 events</span></div>
+        <div class="timeline-list" id="timeline-list"></div>
+        <div class="contract"><div class="contract-title"><span>◌</span>运行时边界</div><p>工作台只保存 <code>TaskSession</code>、Invocation 和状态投影。对话、工具调用、模型上下文都由 <code>OpenCode Server</code> 负责。</p></div>
+      </aside>
+    </main>
+    <div class="toast" id="toast" role="status"></div>
+    <script>
+      const sessions = {
+        conductor: {
+          title: 'Conductor', id: 'ses_conductor_8da1', status: '已连接到 OpenCode Server',
+          messages: [
+            { who: '任务输入', tag: 'TASK SESSION', body: '<p>梳理基于 session 的 agent 调用框架：先定义调用目标，再讨论 runtime。</p>' },
+            { who: 'Conductor', tag: 'OPENCODE', body: '<p>我会把 Template 视为 <strong>Task Session 的创建入口</strong>；把 Agent Card 视为可解析或创建 Agent Session 的声明。</p><div class="tool-row"><span class="tool-icon">↳</span><span>call_session(agent: "search-0", invocation: "research")</span></div><p class="thinking">正在等待 search-0 的 Provider session 返回结果…</p>' },
+            { who: '系统', tag: 'ORCHESTRATION', body: '<div class="result-card"><div class="result-title">Dispatch recorded</div><p>Invocation <strong>inv_017</strong> 已被持久化；Provider 已确认接受输入。此处不出现 PTY，也不把 terminal 输出当成真相。</p></div>' }
+          ],
+          timeline: [
+            ['09:41:02', 'dispatch', '调用 search-0', 'Conductor 创建 Invocation inv_017，并请求 Provider session。'],
+            ['09:41:03', 'dispatch', 'Provider 已接收', 'OpenCode Server 接受异步 prompt。'],
+            ['09:41:04', 'wake', 'Conductor 继续等待', 'Coordinator 订阅该 invocation 的结果或注意力事件。']
+          ]
+        },
+        search: {
+          title: 'search-0', id: 'ses_search_21f0', status: '运行中 · 等待 Provider 结果',
+          messages: [
+            { who: 'Conductor', tag: 'INVOCATION', body: '<p>调研官方 OpenCode 的 Session / Server / Web UI 能力。请给出哪些状态可作为 Provider 事实，哪些不能。</p>' },
+            { who: 'search-0', tag: 'OPENCODE', body: '<p>已定位到 Server API 的 session、message、permission 和 event 能力。下一步会区分<strong> 可重建的 Provider 事实</strong>与只可作为触发器的 SSE 事件。</p><div class="tool-row"><span class="tool-icon">↳</span><span>web.search(query: "OpenCode server session API")</span></div>' },
+            { who: 'OpenCode', tag: 'STATUS', body: '<p class="thinking">正在执行工具调用。该过程由 Provider Web UI 呈现；上层只投影受编排关心的状态。</p>' }
+          ],
+          timeline: [
+            ['09:41:02', 'dispatch', '由 Conductor 派发', '调用目标为 Agent Card search-0；实际运行实体是该 Agent Session。'],
+            ['09:41:03', 'dispatch', '创建 / 复用 Provider Session', '映射记录：AgentSession → ses_search_21f0。'],
+            ['09:41:08', 'return', '执行中', '等待 OpenCode 报告最终消息或需要人工注意。']
+          ]
+        },
+        review: {
+          title: 'reviewer-0', id: '尚未创建', status: '未调用 · 无 Provider session',
+          messages: [
+            { who: '系统', tag: 'LAZY SESSION', body: '<p>这个 Agent Card 已存在于 Task Session 的架构快照中，但尚未被 Conductor 调用。</p><div class="result-card"><div class="result-title">没有运行时实例</div><p>因此没有 OpenCode session、没有 terminal、也没有需要恢复的 PTY。调用发生时才创建或解析 Agent Session。</p></div>' }
+          ],
+          timeline: [
+            ['09:40:57', 'wake', 'Task Session 已创建', 'Template 的不可变版本被快照到任务。'],
+            ['现在', 'wake', '等待调用', 'Conductor 可以调用 reviewer-0，也可以永远不调用。']
+          ]
+        }
+      };
+      let active = 'conductor';
+      const $ = (selector) => document.querySelector(selector);
+      const toast = (message) => { const el = $('#toast'); el.textContent = message; el.classList.add('show'); clearTimeout(window.toastTimer); window.toastTimer = setTimeout(() => el.classList.remove('show'), 2200); };
+      const render = () => {
+        const data = sessions[active];
+        $('#crumb-session').textContent = data.title;
+        $('#provider-name').textContent = `OpenCode · ${data.title}`;
+        $('#provider-id').textContent = data.id === '尚未创建' ? 'Provider session · 尚未创建' : `provider session · ${data.id}`;
+        $('#provider-status').textContent = data.status;
+        $('#conversation').innerHTML = data.messages.map((m) => `<article class="message"><div class="message-meta"><span>${m.who}</span><span class="tag">${m.tag}</span></div><div class="message-body">${m.body}</div></article>`).join('');
+        $('#timeline-list').innerHTML = data.timeline.map(([time, kind, title, detail]) => `<div class="timeline-row"><span class="event-icon ${kind}">${kind === 'dispatch' ? '→' : kind === 'return' ? '✓' : '◌'}</span><div><div class="event-time">${time}</div><div class="event-title">${title}</div><div class="event-detail">${detail}</div></div></div>`).join('');
+        document.querySelectorAll('.session-card').forEach((card) => card.classList.toggle('selected', card.dataset.session === active));
+      };
+      document.querySelectorAll('.session-card').forEach((card) => card.addEventListener('click', () => { active = card.dataset.session; render(); }));
+      $('#browser-action').addEventListener('click', () => toast('原型：由主进程根据已探测的 Web UI 能力打开对应 session。'));
+      $('#copy-session').addEventListener('click', async () => { const value = sessions[active].id; try { await navigator.clipboard.writeText(value); } catch (_) {} toast(value === '尚未创建' ? '该 Agent 尚未被调用，因此没有 Session ID。' : `已复制 ${value}`); });
+      const send = () => { const input = $('#prompt'); const text = input.value.trim(); if (!text) return; sessions[active].messages.push({ who: '你', tag: 'MESSAGE', body: `<p>${text.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c])}</p>` }); input.value = ''; render(); toast('原型中已追加消息；正式版会调用 OpenCode Server prompt API。'); };
+      $('#send').addEventListener('click', send);
+      $('#prompt').addEventListener('keydown', (event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') send(); });
+      render();
+    </script>
+  </body>
+</html>
