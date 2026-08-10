@@ -8,7 +8,7 @@ Tradeoff: these guidelines bias toward caution over speed. For trivial tasks, us
 
 ## Scope And Priority
 
-- These instructions apply to work in `/Users/dinker/CODES/Agent-Workspace`.
+- These instructions apply to work in `/Users/dingyujie/CODES/Agent-WorkSpace`.
 - Direct user instructions override this file.
 - More specific nested Claude instructions or rules override broader guidance for their subtree.
 - Keep durable guidance concise and concrete. If a workflow becomes long or task-specific, move it to a skill, plan, or path-scoped rule instead of bloating this file.
@@ -17,17 +17,35 @@ Tradeoff: these guidelines bias toward caution over speed. For trivial tasks, us
 ## Project Context
 
 - This workspace is exploring an AgentsRoom-like multi-agent workbench.
-- Before changing product direction, inspect the current `docs/research/`, `docs/superworks/spec/`, and `docs/superworks/plans/` files.
-- Treat those files as durable product intent: research facts, accepted specs, and executable plans.
+- Before changing product direction, read `docs/architecture.md` and
+  `docs/implementation-plan.md`.
+- Treat `docs/architecture.md` as durable product truth and
+  `docs/implementation-plan.md` as the sole executable plan. Historical
+  material is recovered from VCS only as evidence and is never copied into the
+  working-tree archive.
 - Keep runtime orchestration state out of product-intent files; use the storage location defined by the current spec or plan.
 
 ## Product Guardrails
 
 - Do not reduce the product to a repeated prompt loop. Preserve the goal of a stateful multi-agent workbench.
-- Before proposing architecture, read the current `docs/research/`, `docs/superworks/spec/`, and `docs/superworks/plans/` sources and reflect their latest decisions.
+- Before proposing architecture, read `docs/architecture.md` and
+  `docs/implementation-plan.md`; inspect VCS history only when directly
+  relevant as evidence.
 - Keep scheduler responsibilities separate from agent reasoning responsibilities.
-- Treat `done` as a claim that still needs review, verification, and recorded context.
+- Treat an Agent-reported `done` as evidence/context only; never turn it into a user
+  acceptance gate. `Achieve` is an explicit user command independent of Provider/Run lifecycle.
 - Do not promote advanced surfaces such as browser automation, teams, or mobile sync into current scope unless a spec or user instruction selects them.
+- Conductor is the only Agent-to-Agent router, but authenticated users may
+  target a Card explicitly. Direct human Card input must be attributed, copied
+  in full to Conductor, never broadcast, and never settled as a Conductor
+  Invocation result; busy Card input uses interrupt-then-send with no queue.
+- Meta Agent is a configuration-time Draft assistant, not a Task Run
+  LogicalSession or second Conductor. It cannot publish, create/start Tasks,
+  route messages, read Task transcripts, or write lifecycle state.
+- Collaboration `SessionMessage` and human-only Provider activity are separate
+  read-model layers. Tool/stream/terminal items cannot become RelayBlock or
+  Agent context. Durable Inbox, not an independent Wakeup record, is recovery
+  truth for Conductor delivery.
 
 ## Operating Rules
 
@@ -70,11 +88,17 @@ Turn work into verifiable goals.
 - For features, define the observable behavior and verification command.
 - For refactors, verify behavior before and after when feasible.
 - For multi-step tasks, use a short plan where each step has a check.
+- For Message/Intervention/Turn, scoped interrupt, Session Tab/Chat, Meta/Task
+  Setup, Binding/Handoff, or lifecycle changes, write the focused failing
+  contract/harness first and run the current plan's Runtime Host, Bridge,
+  Browser/Electron, or native Provider gate as applicable.
 
 ## Workspace Workflow
 
 - Start by reading relevant files. Use `rg` and `rg --files` before slower search tools.
-- For AgentsRoom-like product work, read the research file before creating specs, plans, or implementation.
+- For AgentsRoom-like product work, start at `docs/README.md`, then read the
+  Architecture and Plan. Historical VCS material is never current product
+  authority and must not be copied into `docs/archive/`.
 - Keep user-readable intent in files, not only in chat.
 - Do not mix runtime machine state with product intent.
 - Before editing files, state what will be edited and why.
@@ -97,7 +121,7 @@ Do not treat a loop as repeated prompting. A useful loop changes durable state a
 
 For document-only work, use a review loop with these dimensions:
 
-- source alignment with current research files,
+- alignment with `docs/architecture.md` and `docs/implementation-plan.md`,
 - Claude Code memory, rules, skills, hooks, and settings semantics,
 - assumptions, simplicity, surgical-change, and verification rules,
 - product architecture consistency,
@@ -111,8 +135,8 @@ For document-only work, use a review loop with these dimensions:
 
 Use these loops as the organizing model:
 
-1. Research/spec loop: maintain durable product facts in `docs/research/` and `docs/superworks/spec/`.
-2. Planner loop: convert `docs/research/` and `docs/superworks/spec/` changes into self-consistent plans in `docs/superworks/plans/`.
+1. Research/spec loop: maintain durable product facts only in `docs/architecture.md`; recover historical evidence from VCS only when needed, without recreating an archive payload in the checkout.
+2. Planner loop: convert approved Architecture changes into the single self-consistent `docs/implementation-plan.md`.
 3. Executor loop: convert plan steps into task runs, code changes, verification, diff review, and commit context.
 
 Plan steps should include:

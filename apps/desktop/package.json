@@ -1,0 +1,6 @@
+{
+  "name": "@agent-workspace/desktop",
+  "private": true,
+  "type": "commonjs",
+  "main": "./main.cjs"
+}

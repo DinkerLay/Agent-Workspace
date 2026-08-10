@@ -1,21 +1,36 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "strict": true,
     "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
-    "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-    "strict": true,
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.tsbuildinfo",
     "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "types": ["node", "vitest/globals"],
+    "baseUrl": ".",
+    "paths": {
+      "@agent-workspace/runtime-contracts": ["packages/runtime-contracts/src/index.ts"],
+      "@agent-workspace/runtime-domain": ["packages/runtime-domain/src/index.ts"],
+      "@agent-workspace/runtime-application": ["packages/runtime-application/src/index.ts"],
+      "@agent-workspace/runtime-store": ["packages/runtime-store/src/index.ts"],
+      "@agent-workspace/runtime-client": ["packages/runtime-client/src/index.ts"],
+      "@agent-workspace/provider-port": ["packages/provider-port/src/index.ts"],
+      "@agent-workspace/provider-opencode": ["packages/provider-opencode/src/index.ts"],
+      "@agent-workspace/provider-codex": ["packages/provider-codex/src/index.ts"],
+      "@agent-workspace/provider-claude-code": ["packages/provider-claude-code/src/index.ts"],
+      "@agent-workspace/conductor-tools": ["packages/conductor-tools/src/index.ts"],
+      "@agent-workspace/workbench-ui": ["packages/workbench-ui/src/index.ts"],
+      "@agent-workspace/test-kit": ["packages/test-kit/src/index.ts"]
+    }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["apps", "packages", "tests", "vite.runtime.config.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"]
 }

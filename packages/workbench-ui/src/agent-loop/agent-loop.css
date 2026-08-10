@@ -1,0 +1,4224 @@
+/*
+ * Formal AgentLoop renderer shell.
+ *
+ * This is intentionally scoped to the AgentLoop runtime surface. It carries
+ * the product's existing dark, dense three-pane interaction into the formal
+ * renderer without importing a second global or generic Workbench presentation.
+ */
+
+:where(.awb-agent-loop-app) {
+  --awb-loop-bg: #101317;
+  --awb-loop-sidebar: #11161b;
+  --awb-loop-panel: #151b22;
+  --awb-loop-panel-raised: #1a2129;
+  --awb-loop-terminal: #0b1015;
+  --awb-loop-text: #ecf2f7;
+  --awb-loop-muted: #8e9aa7;
+  --awb-loop-faint: #63707e;
+  --awb-loop-line: #2a343f;
+  --awb-loop-blue: #4385ff;
+  --awb-loop-blue-soft: rgb(67 133 255 / 14%);
+  --awb-loop-green: #54c878;
+  --awb-loop-amber: #e6ab43;
+  --awb-loop-red: #ec6565;
+  --awb-loop-violet: #a986ff;
+  --awb-loop-radius: 6px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  color: var(--awb-loop-text);
+  background: var(--awb-loop-bg);
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+:where(.awb-agent-loop-app)[data-theme="light"] {
+  --awb-loop-bg: #f6f8fb;
+  --awb-loop-sidebar: #ffffff;
+  --awb-loop-panel: #ffffff;
+  --awb-loop-panel-raised: #f4f7fa;
+  --awb-loop-terminal: #f8fafc;
+  --awb-loop-text: #17212b;
+  --awb-loop-muted: #627080;
+  --awb-loop-faint: #8b98a7;
+  --awb-loop-line: #dce3eb;
+  --awb-loop-blue: #2563eb;
+  --awb-loop-blue-soft: rgb(37 99 235 / 10%);
+  --awb-loop-green: #16803c;
+  --awb-loop-amber: #b77912;
+  --awb-loop-red: #bd3c45;
+  --awb-loop-violet: #7a54d6;
+  color-scheme: light;
+}
+
+:where(.awb-agent-loop-app),
+:where(.awb-agent-loop-app) *,
+:where(.awb-agent-loop-app) *::before,
+:where(.awb-agent-loop-app) *::after {
+  box-sizing: border-box;
+}
+
+:where(.awb-agent-loop-app) button,
+:where(.awb-agent-loop-app) input,
+:where(.awb-agent-loop-app) select,
+:where(.awb-agent-loop-app) textarea {
+  font: inherit;
+}
+
+:where(.awb-agent-loop-app) button {
+  cursor: pointer;
+}
+
+:where(.awb-agent-loop-app) button:focus-visible,
+:where(.awb-agent-loop-app) input:focus-visible,
+:where(.awb-agent-loop-app) select:focus-visible,
+:where(.awb-agent-loop-app) textarea:focus-visible {
+  outline: 2px solid var(--awb-loop-blue);
+  outline-offset: 2px;
+}
+
+:where(.awb-agent-loop-app) * {
+  scrollbar-color: #3e4b59 transparent;
+  scrollbar-width: thin;
+}
+
+:where(.awb-agent-loop-app) *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+:where(.awb-agent-loop-app) *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:where(.awb-agent-loop-app) *::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #3e4b59;
+  background-clip: padding-box;
+}
+
+:where(.awb-agent-loop-app) *::-webkit-scrollbar-thumb:hover {
+  background-color: #556678;
+}
+
+/* App rail and global header. */
+.awb-agent-loop-shell {
+  display: grid;
+  grid-template-columns: 206px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.awb-agent-loop-shell.awb-agent-loop-rail-collapsed {
+  grid-template-columns: 58px minmax(0, 1fr);
+}
+
+.awb-agent-loop-rail-collapsed .awb-agent-loop-brand {
+  justify-content: center;
+  padding: 0;
+}
+
+.awb-agent-loop-rail-collapsed .awb-agent-loop-brand-copy strong,
+.awb-agent-loop-rail-collapsed .awb-agent-loop-rail-button > span,
+.awb-agent-loop-rail-collapsed .awb-agent-loop-rail-footer > span {
+  display: none;
+}
+
+.awb-agent-loop-rail-collapsed .awb-agent-loop-rail-button {
+  justify-content: center;
+  padding: 0;
+}
+
+.awb-agent-loop-rail {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  padding: 18px 12px 14px;
+  border-right: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-sidebar);
+}
+
+.awb-agent-loop-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 8px;
+  color: var(--awb-loop-text);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.awb-agent-loop-brand-copy {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+}
+
+.awb-agent-loop-brand-copy > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-nav {
+  display: grid;
+  gap: 4px;
+  margin-top: 30px;
+}
+
+.awb-agent-loop-rail-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--awb-loop-radius);
+  background: transparent;
+  color: var(--awb-loop-muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.awb-agent-loop-rail-button:hover {
+  background: var(--awb-loop-panel-raised);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-rail-button.is-active,
+.awb-agent-loop-rail-button[aria-current="page"] {
+  background: var(--awb-loop-blue);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 8%);
+  color: #fff;
+}
+
+.awb-agent-loop-rail-button svg,
+.awb-agent-loop-brand svg {
+  flex: 0 0 auto;
+}
+
+.awb-agent-loop-rail-footer {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: auto;
+  padding: 8px;
+  color: var(--awb-loop-muted);
+}
+
+.awb-agent-loop-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.awb-agent-loop-header {
+  flex: 0 0 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 16px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-bg);
+}
+
+.awb-agent-loop-header-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.awb-agent-loop-header-copy {
+  gap: 10px;
+}
+
+.awb-agent-loop-header-copy strong {
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-header-copy span {
+  overflow: hidden;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-header-actions {
+  flex: 0 0 auto;
+  gap: 12px;
+}
+
+.awb-agent-loop-host-status {
+  color: var(--awb-loop-green);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-host-status::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+  vertical-align: 1px;
+}
+
+.awb-agent-loop-host-status.is-offline,
+.awb-agent-loop-host-status.is-warning {
+  color: var(--awb-loop-amber);
+}
+
+/* The product's task list / task page / session directory three-pane layout. */
+.awb-agent-loop-task-layout {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(224px, 270px) minmax(420px, 1fr) minmax(244px, 304px);
+  overflow: hidden;
+}
+
+.awb-agent-loop-main > .awb-agent-loop-task-layout,
+.awb-agent-loop-main > .awb-agent-loop-template-layout {
+  flex: 1 1 auto;
+}
+
+/* The familiar AgentLoop panes remain user-resizable. This is renderer-only
+ * view state until the dedicated presentation-preference contract is ready. */
+.awb-agent-loop-task-layout-resizable {
+  grid-template-columns:
+    var(--awb-task-list-width, 258px)
+    8px
+    minmax(420px, 1fr)
+    8px
+    var(--awb-task-inspector-width, 290px);
+}
+
+.awb-agent-loop-task-layout-resizable.is-inspector-collapsed {
+  grid-template-columns:
+    var(--awb-task-list-width, 258px)
+    8px
+    minmax(420px, 1fr)
+    0
+    40px;
+}
+
+.awb-agent-loop-pane-resizer {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.awb-agent-loop-pane-resizer::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--awb-loop-line);
+  content: "";
+  transition: background 150ms ease;
+}
+
+.awb-agent-loop-pane-resizer:hover::after,
+.awb-agent-loop-pane-resizer:focus-visible::after {
+  width: 2px;
+  background: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-pane-resizer:disabled {
+  display: none;
+}
+
+.awb-agent-loop-resizing,
+.awb-agent-loop-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.awb-agent-loop-task-list,
+.awb-agent-loop-inspector {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--awb-loop-sidebar);
+}
+
+.awb-agent-loop-task-list {
+  border-right: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-inspector {
+  border-left: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-inspector-collapsed {
+  display: grid;
+  place-items: start center;
+  padding-top: 12px;
+}
+
+.awb-agent-loop-inspector-toggle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  background: var(--awb-loop-panel);
+  color: var(--awb-loop-muted);
+}
+
+.awb-agent-loop-inspector-toggle:hover {
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  min-height: 58px;
+  gap: 10px;
+  padding: 14px 14px 11px;
+  border-bottom: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-panel-heading > div {
+  min-width: 0;
+}
+
+.awb-agent-loop-panel-heading h1,
+.awb-agent-loop-panel-heading h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-size: 15px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-panel-heading p,
+.awb-agent-loop-panel-heading span {
+  display: block;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--awb-loop-muted);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-task-list > .awb-agent-loop-task-rows,
+.awb-agent-loop-session-list,
+.awb-agent-loop-inspector > .awb-agent-loop-session-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.awb-agent-loop-task-list > .awb-agent-loop-task-rows {
+  flex: 1 1 auto;
+}
+
+.awb-agent-loop-list-caption {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  color: var(--awb-loop-faint);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.awb-agent-loop-task-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.awb-agent-loop-task-groups {
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border-top: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-task-groups button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  text-align: left;
+}
+
+.awb-agent-loop-task-groups button:hover,
+.awb-agent-loop-task-groups button.active {
+  background: var(--awb-loop-panel-raised);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-task-groups b {
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-task-row {
+  display: grid;
+  width: 100%;
+  min-height: 66px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  padding: 9px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--awb-loop-line);
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--awb-loop-muted);
+  text-align: left;
+}
+
+.awb-agent-loop-task-row:hover {
+  background: var(--awb-loop-panel-raised);
+}
+
+.awb-agent-loop-task-row.is-active,
+.awb-agent-loop-task-row[aria-current="true"] {
+  border-left-color: var(--awb-loop-blue);
+  background: var(--awb-loop-blue-soft);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-task-row-copy {
+  min-width: 0;
+}
+
+.awb-agent-loop-task-row strong,
+.awb-agent-loop-task-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-task-row strong {
+  color: var(--awb-loop-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-task-row small {
+  margin-top: 2px;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+}
+
+.awb-agent-loop-task-row time,
+.awb-agent-loop-task-row em {
+  align-self: center;
+  max-width: 48px;
+  overflow: hidden;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.2;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--awb-loop-faint);
+}
+
+.awb-agent-loop-state-dot.is-running,
+.awb-agent-loop-state-dot[data-state="running"] {
+  background: var(--awb-loop-blue);
+  box-shadow: 0 0 0 3px var(--awb-loop-blue-soft);
+}
+
+.awb-agent-loop-state-dot.is-blocked,
+.awb-agent-loop-state-dot.is-failed,
+.awb-agent-loop-state-dot[data-state="blocked"] {
+  background: var(--awb-loop-red);
+}
+
+.awb-agent-loop-state-dot.is-stopped,
+.awb-agent-loop-state-dot.is-queued,
+.awb-agent-loop-state-dot[data-state="stopping"] {
+  background: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-state-dot.is-achieved,
+.awb-agent-loop-state-dot[data-state="achieved"] {
+  background: var(--awb-loop-green);
+}
+
+.awb-agent-loop-session-card {
+  display: grid;
+  width: calc(100% - 18px);
+  min-height: 56px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  margin: 0 9px 5px;
+  padding: 8px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--awb-loop-muted);
+  text-align: left;
+}
+
+.awb-agent-loop-session-card:hover {
+  background: var(--awb-loop-panel-raised);
+}
+
+.awb-agent-loop-session-card.is-active,
+.awb-agent-loop-session-card[aria-current="true"] {
+  border-color: var(--awb-loop-blue);
+  background: var(--awb-loop-blue-soft);
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-session-card-copy {
+  min-width: 0;
+}
+
+.awb-agent-loop-session-card strong,
+.awb-agent-loop-session-card small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-session-card strong {
+  color: var(--awb-loop-text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-session-card small {
+  margin-top: 3px;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-session-card em {
+  color: var(--awb-loop-green);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.awb-agent-loop-session-card em.is-running {
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-session-card em.is-blocked,
+.awb-agent-loop-session-card em.is-failed {
+  color: var(--awb-loop-red);
+}
+
+/* Task center: header, durable timeline, and custom session surface. */
+.awb-agent-loop-center {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--awb-loop-bg);
+}
+
+.awb-agent-loop-task-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 20px;
+  padding: 22px 24px 17px;
+  border-bottom: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-task-head-copy {
+  min-width: 0;
+}
+
+.awb-agent-loop-eyebrow {
+  margin: 0 0 7px;
+  color: var(--awb-loop-blue);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.awb-agent-loop-task-head h1 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-size: 20px;
+  font-weight: 720;
+  letter-spacing: -0.03em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-task-head p {
+  max-width: 720px;
+  margin: 7px 0 0;
+  color: var(--awb-loop-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.awb-agent-loop-task-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.awb-agent-loop-context-bar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  color: var(--awb-loop-faint);
+  font-size: 10px;
+}
+
+.awb-agent-loop-context-bar b {
+  color: var(--awb-loop-muted);
+  font-weight: 650;
+}
+
+.awb-agent-loop-context-bar > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-task-body {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.awb-agent-loop-session-workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.awb-agent-loop-session-tabs {
+  display: flex;
+  min-width: 0;
+  gap: 2px;
+  padding: 6px 10px 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-sidebar);
+  scrollbar-width: thin;
+}
+
+.awb-agent-loop-session-tabs button {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 110px;
+  max-width: 210px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  background: transparent;
+  color: var(--awb-loop-muted);
+  cursor: pointer;
+}
+
+.awb-agent-loop-session-tabs button.is-active {
+  border-color: var(--awb-loop-line);
+  background: var(--awb-loop-terminal);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-session-tabs button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-session-tabs button small {
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+}
+
+.awb-agent-loop-timeline-surface {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.awb-agent-loop-timeline-surface {
+  overflow-y: auto;
+  padding: 0 24px 16px;
+}
+
+.awb-agent-loop-timeline {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.awb-agent-loop-timeline-entry {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 9px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  border-left: 2px solid var(--awb-loop-faint);
+}
+
+.awb-agent-loop-timeline-entry.is-user {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--awb-loop-blue), var(--awb-loop-line) 70%);
+  border-left: 2px solid var(--awb-loop-blue);
+  border-radius: 5px;
+  background: var(--awb-loop-blue-soft);
+}
+
+.awb-agent-loop-timeline-entry.is-provider {
+  border-left-color: var(--awb-loop-green);
+}
+
+.awb-agent-loop-timeline-entry.is-attention {
+  border-left-color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-timeline-entry.is-runtime {
+  border-left-color: var(--awb-loop-violet);
+}
+
+.awb-agent-loop-timeline-entry > div {
+  min-width: 0;
+}
+
+.awb-agent-loop-timeline-entry strong {
+  display: block;
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-size: 11px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-timeline-entry span,
+.awb-agent-loop-timeline-entry time {
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-timeline-entry p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.awb-agent-loop-empty {
+  display: grid;
+  min-height: 220px;
+  place-content: center;
+  justify-items: center;
+  padding: 28px;
+  color: var(--awb-loop-muted);
+  text-align: center;
+}
+
+.awb-agent-loop-empty strong {
+  color: var(--awb-loop-text);
+  font-size: 14px;
+}
+
+.awb-agent-loop-empty p {
+  max-width: 340px;
+  margin: 7px 0 0;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+/* The Template Library is a first-class AgentLoop route, not a generic page. */
+.awb-agent-loop-template-layout {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(224px, 270px) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.awb-agent-loop-template-list {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow-y: auto;
+  border-right: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-sidebar);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.awb-agent-loop-template-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.awb-agent-loop-template-drafts {
+  display: grid;
+  gap: 6px;
+  padding: 10px 9px;
+  border-top: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-template-drafts > .awb-section-heading {
+  min-height: 24px;
+  padding: 0 5px;
+  border: 0;
+  background: transparent;
+}
+
+.awb-agent-loop-template-drafts > .awb-section-heading h2 {
+  margin: 0;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.awb-agent-loop-template-draft-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--awb-loop-muted);
+  text-align: left;
+}
+
+.awb-agent-loop-template-draft-row:hover {
+  border-color: var(--awb-loop-blue);
+  background: var(--awb-loop-blue-soft);
+}
+
+.awb-agent-loop-template-draft-row strong {
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-template-draft-row span,
+.awb-agent-loop-muted {
+  margin: 0;
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.awb-agent-loop-template-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+  gap: 10px;
+  padding: 9px 13px;
+  border: 0;
+  border-bottom: 1px solid var(--awb-loop-line);
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--awb-loop-muted);
+  text-align: left;
+}
+
+.awb-agent-loop-template-row:hover,
+.awb-agent-loop-template-row.is-active {
+  background: var(--awb-loop-panel-raised);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-template-row.is-active {
+  border-left-color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-template-row strong,
+.awb-agent-loop-template-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-template-row strong {
+  color: var(--awb-loop-text);
+  font-size: 11px;
+}
+
+.awb-agent-loop-template-row span {
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-template-canvas {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--awb-loop-bg);
+}
+
+.awb-agent-loop-template-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 24px 17px;
+  border-bottom: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-template-head h1 {
+  margin: 0;
+  color: var(--awb-loop-text);
+  font-size: 20px;
+  font-weight: 720;
+  letter-spacing: -0.025em;
+}
+
+.awb-agent-loop-template-head p {
+  max-width: 680px;
+  margin: 7px 0 0;
+  color: var(--awb-loop-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.awb-agent-loop-template-contract {
+  margin: 18px 24px 0;
+  padding: 12px 13px;
+  border-left: 2px solid var(--awb-loop-blue);
+  background: var(--awb-loop-blue-soft);
+}
+
+.awb-agent-loop-template-contract strong {
+  color: var(--awb-loop-text);
+  font-size: 11px;
+}
+
+.awb-agent-loop-template-contract p {
+  margin: 5px 0 0;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.awb-agent-loop-template-contract dl {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+
+.awb-agent-loop-template-contract dl > div {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.awb-agent-loop-template-contract dt {
+  color: var(--awb-loop-faint);
+  font-size: 10px;
+}
+
+.awb-agent-loop-template-contract dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-template-toolbar,
+.awb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.awb-agent-loop-template-toolbar {
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-template-editor,
+.awb-agent-loop-template-import {
+  display: grid;
+  gap: 13px;
+  margin: 18px 24px 24px;
+  padding: 16px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 6px;
+  background: var(--awb-loop-panel);
+}
+
+.awb-agent-loop-template-editor > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.awb-agent-loop-template-editor h2,
+.awb-agent-loop-template-import h2 {
+  margin: 3px 0 0;
+  color: var(--awb-loop-text);
+  font-size: 15px;
+}
+
+.awb-agent-loop-template-editor > label {
+  display: grid;
+  gap: 5px;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-template-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.awb-agent-loop-template-form-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-template-editor input,
+.awb-agent-loop-template-editor textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  outline: 0;
+  background: var(--awb-loop-bg);
+  color: var(--awb-loop-text);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.awb-agent-loop-template-editor textarea {
+  resize: vertical;
+}
+
+.awb-agent-loop-template-definition {
+  min-height: 330px;
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px !important;
+}
+
+.awb-agent-loop-template-editor input:focus,
+.awb-agent-loop-template-editor textarea:focus {
+  border-color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-profile-editor {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 6px;
+  background: var(--awb-loop-panel-raised);
+}
+
+.awb-agent-loop-profile-editor > header,
+.awb-agent-loop-profile-grid > article > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.awb-agent-loop-profile-editor h3 {
+  margin: 2px 0 0;
+  color: var(--awb-loop-text);
+  font-size: 13px;
+}
+
+.awb-agent-loop-profile-editor > header > span,
+.awb-agent-loop-profile-grid > article > header > span {
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.awb-agent-loop-profile-editor > p {
+  margin: 0;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.awb-agent-loop-profile-editor.is-invalid {
+  border-left: 2px solid var(--awb-loop-amber);
+}
+
+.awb-agent-loop-profile-grid {
+  display: grid;
+  gap: 9px;
+}
+
+.awb-agent-loop-profile-grid > article {
+  display: grid;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  background: var(--awb-loop-panel);
+}
+
+.awb-agent-loop-profile-grid > article > header strong {
+  color: var(--awb-loop-text);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.awb-agent-loop-profile-editor .awb-agent-loop-template-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.awb-agent-loop-template-form-span {
+  grid-column: 1 / -1;
+}
+
+.awb-agent-loop-template-import > div > p,
+.awb-agent-loop-template-import > p {
+  margin: 5px 0 0;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.awb-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Shared formal AgentLoop controls and the custom SessionPresentation controls. */
+.awb-agent-loop-app .awb-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-app .awb-button-primary {
+  background: var(--awb-loop-blue);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
+  color: #fff;
+}
+
+.awb-agent-loop-app .awb-button-secondary {
+  border-color: var(--awb-loop-line);
+  color: var(--awb-loop-muted);
+}
+
+.awb-agent-loop-app .awb-button:hover:not(:disabled) {
+  background: var(--awb-loop-panel-raised);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-app .awb-button-primary:hover:not(:disabled) {
+  background: var(--awb-loop-blue);
+  filter: brightness(1.08);
+  color: #fff;
+}
+
+.awb-agent-loop-app .awb-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.awb-agent-loop-app .awb-button-danger {
+  border-color: color-mix(in srgb, var(--awb-loop-red), var(--awb-loop-line) 55%);
+  color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--awb-loop-muted);
+}
+
+.awb-agent-loop-icon-button:hover {
+  background: var(--awb-loop-panel-raised);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-app .awb-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 19px;
+  padding: 1px 6px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 999px;
+  color: var(--awb-loop-muted);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-app .awb-status.is-running {
+  border-color: color-mix(in srgb, var(--awb-loop-blue), var(--awb-loop-line) 50%);
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-app .awb-status.is-attention {
+  border-color: color-mix(in srgb, var(--awb-loop-amber), var(--awb-loop-line) 50%);
+  color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-app .awb-notice {
+  position: fixed;
+  z-index: 60;
+  right: 18px;
+  bottom: 18px;
+  max-width: min(420px, calc(100vw - 36px));
+  padding: 10px 12px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 6px;
+  background: var(--awb-loop-panel);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 22%);
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.awb-agent-loop-app .awb-notice.is-error {
+  border-color: color-mix(in srgb, var(--awb-loop-red), var(--awb-loop-line) 55%);
+  color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-app .awb-notice.is-success {
+  border-color: color-mix(in srgb, var(--awb-loop-green), var(--awb-loop-line) 55%);
+  color: var(--awb-loop-green);
+}
+
+/* SessionPresentation is the new renderer-owned substitute for the Provider Web UI. */
+.awb-agent-loop-app .awb-session-presentation {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+  background: var(--awb-loop-terminal);
+}
+
+.awb-agent-loop-app .awb-session-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 16px;
+  padding: 13px 16px 11px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-panel);
+}
+
+.awb-agent-loop-app .awb-eyebrow {
+  margin: 0;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.awb-agent-loop-app .awb-session-heading h3 {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-size: 14px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-app .awb-session-status-grid {
+  display: grid;
+  min-width: 178px;
+  gap: 3px;
+  margin: 0;
+}
+
+.awb-agent-loop-app .awb-session-status-grid > div {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.awb-agent-loop-app .awb-session-status-grid dt {
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-session-status-grid dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--awb-loop-muted);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-app .awb-session-transcript {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.awb-agent-loop-app .awb-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  min-height: 34px;
+  padding: 9px 16px 7px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  background: color-mix(in srgb, var(--awb-loop-panel), var(--awb-loop-terminal) 35%);
+}
+
+.awb-agent-loop-app .awb-section-heading h4 {
+  margin: 0;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.awb-agent-loop-app .awb-section-heading span {
+  display: inline-grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--awb-loop-panel-raised);
+  color: var(--awb-loop-muted);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-session-message-scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.awb-agent-loop-app .awb-session-message-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 16px 10px;
+  list-style: none;
+}
+
+.awb-agent-loop-app .awb-empty {
+  margin: 0;
+  padding: 20px 16px;
+  color: var(--awb-loop-faint);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.awb-agent-loop-app .awb-detail-item {
+  min-width: 0;
+}
+
+.awb-agent-loop-app .awb-session-message {
+  min-width: 0;
+}
+
+.awb-agent-loop-app .awb-session-message > article {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--awb-loop-line);
+  border-left: 3px solid var(--awb-loop-muted);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--awb-loop-panel), var(--awb-loop-terminal) 36%);
+}
+
+.awb-agent-loop-app .awb-session-message.is-outgoing > article {
+  border-left-color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-app .awb-session-message.is-agent_final > article {
+  border-left-color: var(--awb-loop-green);
+}
+
+.awb-agent-loop-app .awb-session-message.is-runtime_notice > article {
+  border-left-color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-app .awb-session-message > article > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.awb-agent-loop-app .awb-session-message > article > header > div {
+  min-width: 0;
+}
+
+.awb-agent-loop-app .awb-session-message > article > header strong {
+  display: block;
+  color: var(--awb-loop-text);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.awb-agent-loop-app .awb-session-message > article > header div > span {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-app .awb-session-message-direction {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 999px;
+  color: var(--awb-loop-muted);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-session-message-content,
+.awb-agent-loop-app .awb-relay-block pre {
+  margin: 0;
+  overflow: auto;
+  color: var(--awb-loop-text);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.58;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.awb-agent-loop-app .awb-message-relay-blocks {
+  display: grid;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--awb-loop-line);
+}
+
+.awb-agent-loop-app .awb-message-relay-blocks > p,
+.awb-agent-loop-app .awb-shared-relay-space > p {
+  margin: 0;
+  color: var(--awb-loop-faint);
+  font-size: 10px;
+}
+
+.awb-agent-loop-app .awb-session-message > article > header time {
+  color: inherit;
+  font: inherit;
+}
+
+.awb-agent-loop-app .awb-session-message.is-user-message .awb-session-message-kind,
+.awb-agent-loop-app .awb-session-message.is-assistant-message .awb-session-message-kind {
+  display: none;
+}
+
+.awb-agent-loop-app .awb-message-relay-blocks > ol,
+.awb-agent-loop-app .awb-shared-relay-space > ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.awb-agent-loop-app .awb-relay-block {
+  border: 1px solid var(--awb-loop-line);
+  border-left: 2px solid var(--awb-loop-muted);
+  border-radius: 5px;
+  background: var(--awb-loop-terminal);
+}
+
+.awb-agent-loop-app .awb-relay-block.is-shared {
+  border-left-color: var(--awb-loop-green);
+}
+
+.awb-agent-loop-app .awb-relay-block.is-direct {
+  border-left-color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-app .awb-relay-block.is-private {
+  border-left-color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-app .awb-relay-block details {
+  min-width: 0;
+}
+
+.awb-agent-loop-app .awb-relay-block summary {
+  padding: 7px 9px;
+  cursor: pointer;
+  color: var(--awb-loop-muted);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-relay-block details[open] summary {
+  border-bottom: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-app .awb-relay-block dl {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 8px 9px 0;
+}
+
+.awb-agent-loop-app .awb-relay-block dl > div {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.awb-agent-loop-app .awb-relay-block dt {
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-relay-block dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--awb-loop-muted);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+.awb-agent-loop-app .awb-relay-block pre {
+  margin: 8px 9px 9px;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+}
+
+.awb-agent-loop-app .awb-message-inbox-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.awb-agent-loop-app .awb-message-inbox-states li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 4px;
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-message-inbox-states strong {
+  color: var(--awb-loop-muted);
+  font-weight: 700;
+}
+
+.awb-agent-loop-app .awb-message-inbox-states .is-delivered strong {
+  color: var(--awb-loop-green);
+}
+
+.awb-agent-loop-app .awb-message-inbox-states .is-ambiguous strong,
+.awb-agent-loop-app .awb-message-inbox-states .is-suppressed strong {
+  color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-app .awb-shared-relay-space {
+  display: grid;
+  gap: 8px;
+  margin: 0 16px 14px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--awb-loop-green), var(--awb-loop-line) 58%);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--awb-loop-green), var(--awb-loop-terminal) 94%);
+}
+
+.awb-agent-loop-app .awb-shared-relay-space > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.awb-agent-loop-app .awb-shared-relay-space > div > strong {
+  color: var(--awb-loop-green);
+  font-size: 10px;
+}
+
+.awb-agent-loop-app .awb-shared-relay-space > div > span {
+  display: inline-grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--awb-loop-green), var(--awb-loop-panel) 75%);
+  color: var(--awb-loop-text);
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-session-attentions {
+  max-height: 42%;
+  overflow-y: auto;
+  border-top: 1px solid color-mix(in srgb, var(--awb-loop-amber), var(--awb-loop-line) 55%);
+  background: color-mix(in srgb, var(--awb-loop-amber), var(--awb-loop-panel) 94%);
+}
+
+.awb-agent-loop-app .awb-session-attention {
+  display: grid;
+  gap: 7px;
+  margin: 0 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--awb-loop-amber), var(--awb-loop-line) 63%);
+}
+
+.awb-agent-loop-app .awb-session-attention > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.awb-agent-loop-app .awb-session-attention strong {
+  color: var(--awb-loop-amber);
+  font-size: 11px;
+}
+
+.awb-agent-loop-app .awb-session-attention > p {
+  margin: 0;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.awb-agent-loop-app .awb-session-attention form {
+  display: grid;
+  gap: 7px;
+}
+
+.awb-agent-loop-app .awb-session-attention label,
+.awb-agent-loop-app .awb-composer label {
+  display: grid;
+  gap: 5px;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-app .awb-session-attention input,
+.awb-agent-loop-app .awb-composer textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 4px;
+  outline: none;
+  background: var(--awb-loop-bg);
+  color: var(--awb-loop-text);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.awb-agent-loop-app .awb-session-attention input {
+  min-height: 30px;
+  padding: 6px 7px;
+}
+
+.awb-agent-loop-app .awb-composer textarea {
+  min-height: 52px;
+  max-height: 130px;
+  padding: 7px 8px;
+  resize: vertical;
+}
+
+.awb-agent-loop-app .awb-session-attention input:focus,
+.awb-agent-loop-app .awb-composer textarea:focus {
+  border-color: var(--awb-loop-blue);
+  box-shadow: 0 0 0 2px var(--awb-loop-blue-soft);
+}
+
+.awb-agent-loop-app .awb-option-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.awb-agent-loop-app .awb-option,
+.awb-agent-loop-app .awb-text-button {
+  min-height: 27px;
+  padding: 0 8px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--awb-loop-blue);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-app .awb-option:hover:not(:disabled),
+.awb-agent-loop-app .awb-text-button:hover:not(:disabled) {
+  background: var(--awb-loop-blue-soft);
+  border-color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-app .awb-composer {
+  display: grid;
+  gap: 6px;
+  margin: 10px 16px 15px;
+  padding: 9px 10px;
+  border: 1px solid var(--awb-loop-line);
+  border-top: 2px solid var(--awb-loop-blue);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--awb-loop-panel), var(--awb-loop-bg) 12%);
+}
+
+.awb-agent-loop-app .awb-composer footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.awb-agent-loop-app .awb-composer-warning {
+  margin: 0;
+  color: var(--awb-loop-amber);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.awb-agent-loop-app .awb-composer-warning.closed {
+  color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-achieved {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--awb-loop-green);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-artifact-list {
+  display: grid;
+  gap: 0;
+  margin-top: auto;
+  border-top: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-artifact-list h3 {
+  margin: 0;
+  padding: 10px 13px 7px;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.awb-agent-loop-artifact-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 13px;
+  border-top: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-artifact-list > div > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.awb-agent-loop-artifact-list strong {
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-artifact-list span {
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-artifact-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 25px;
+  padding: 0 7px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--awb-loop-muted);
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.awb-agent-loop-artifact-preview:hover:not(:disabled) {
+  border-color: var(--awb-loop-blue);
+  color: var(--awb-loop-text);
+}
+
+/* Task confirmations and the timeline/artifact side drawer remain product-owned
+ * surfaces; neither is a Provider page. */
+.awb-agent-loop-modal-backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(3 7 12 / 42%);
+}
+
+.awb-agent-loop-modal-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: transparent;
+}
+
+.awb-agent-loop-modal {
+  position: relative;
+  z-index: 1;
+  width: min(480px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 8px;
+  background: var(--awb-loop-panel);
+  box-shadow: 0 22px 64px rgb(0 0 0 / 32%);
+}
+
+.awb-agent-loop-modal > header,
+.awb-agent-loop-modal > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-modal > header p {
+  margin: 0 0 5px;
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .05em;
+}
+
+.awb-agent-loop-modal > header h2 {
+  margin: 0;
+  color: var(--awb-loop-text);
+  font-size: 16px;
+  letter-spacing: -.02em;
+}
+
+.awb-agent-loop-modal > footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--awb-loop-line);
+  border-bottom: 0;
+}
+
+.awb-agent-loop-modal-copy {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  color: var(--awb-loop-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.awb-agent-loop-modal-copy p {
+  margin: 0;
+}
+
+.awb-agent-loop-modal-copy strong {
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-artifact-preview-dialog,
+.awb-agent-loop-permanent-delete-dialog {
+  width: min(640px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+}
+
+.awb-agent-loop-artifact-preview-dialog .awb-agent-loop-modal-copy,
+.awb-agent-loop-permanent-delete-dialog .awb-agent-loop-modal-copy {
+  max-height: min(560px, calc(100vh - 230px));
+  overflow: auto;
+}
+
+.awb-agent-loop-artifact-preview-dialog pre {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  background: var(--awb-loop-bg);
+  color: var(--awb-loop-text);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.awb-agent-loop-delete-artifact-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.awb-agent-loop-delete-artifact-list li {
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+}
+
+.awb-agent-loop-delete-artifact-list label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  padding: 10px;
+  cursor: pointer;
+}
+
+.awb-agent-loop-delete-artifact-list input {
+  margin: 3px 0 0;
+  accent-color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-delete-artifact-list label > span {
+  display: grid;
+  gap: 2px;
+}
+
+.awb-agent-loop-delete-artifact-list strong {
+  color: var(--awb-loop-text);
+  font-size: 11px;
+}
+
+.awb-agent-loop-delete-artifact-list small {
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+}
+
+.awb-agent-loop-side-drawer {
+  position: absolute;
+  z-index: 10;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  width: min(390px, 82%);
+  min-width: 260px;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-left: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-panel);
+  box-shadow: -18px 0 42px rgb(0 0 0 / 24%);
+}
+
+.awb-agent-loop-side-drawer > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-side-drawer > .awb-agent-loop-timeline,
+.awb-agent-loop-side-drawer-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.awb-agent-loop-side-drawer-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.awb-agent-loop-side-drawer-list article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px;
+  padding: 9px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+}
+
+.awb-agent-loop-side-drawer-list strong {
+  overflow: hidden;
+  color: var(--awb-loop-text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-side-drawer-list span {
+  color: var(--awb-loop-faint);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.awb-agent-loop-inline-notice {
+  position: absolute;
+  z-index: 15;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(480px, calc(100% - 36px));
+}
+
+.awb-agent-loop-inline-notice button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.awb-agent-loop-form-grid {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.awb-agent-loop-form-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-form-grid input,
+.awb-agent-loop-form-grid textarea,
+.awb-agent-loop-form-grid select {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 7px 8px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  outline: none;
+  background: var(--awb-loop-bg);
+  color: var(--awb-loop-text);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.awb-agent-loop-form-grid textarea {
+  min-height: 104px;
+  resize: vertical;
+}
+
+.awb-agent-loop-form-grid input:focus,
+.awb-agent-loop-form-grid textarea:focus,
+.awb-agent-loop-form-grid select:focus {
+  border-color: var(--awb-loop-blue);
+  box-shadow: 0 0 0 3px var(--awb-loop-blue-soft);
+}
+
+/* Task creation remains a compact product drawer. It gathers user intent and
+ * one explicit Workspace authorization; it never becomes a Provider form. */
+.awb-agent-loop-task-create-modal {
+  width: min(720px, 100%);
+  max-height: min(820px, calc(100vh - 40px));
+  overflow-y: auto;
+}
+
+.awb-agent-loop-task-create-modal > form {
+  display: grid;
+  gap: 16px;
+  padding: 0 18px 18px;
+}
+
+.awb-agent-loop-task-create-modal .awb-agent-loop-modal-copy {
+  padding: 16px 0 0;
+}
+
+.awb-agent-loop-task-create-modal .awb-agent-loop-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.awb-agent-loop-form-span {
+  grid-column: 1 / -1;
+}
+
+.awb-agent-loop-workspace-authorize {
+  display: grid;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 6px;
+  background: var(--awb-loop-panel-raised);
+}
+
+.awb-agent-loop-workspace-authorize > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.awb-agent-loop-workspace-authorize strong {
+  color: var(--awb-loop-text);
+  font-size: 12px;
+}
+
+.awb-agent-loop-workspace-authorize p {
+  margin: 0;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.awb-agent-loop-authorize-action {
+  display: flex;
+  align-items: end;
+}
+
+.awb-agent-loop-form-error {
+  margin: 0;
+  padding: 10px 11px;
+  border-left: 2px solid var(--awb-loop-red);
+  background: color-mix(in srgb, var(--awb-loop-red), var(--awb-loop-panel) 92%);
+  color: var(--awb-loop-text);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.awb-agent-loop-task-create-modal form > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+/* Keep the focused desktop information architecture usable at smaller widths. */
+@media (max-width: 1180px) {
+  .awb-agent-loop-shell {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+
+  .awb-agent-loop-rail {
+    padding-right: 9px;
+    padding-left: 9px;
+  }
+
+  .awb-agent-loop-brand {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .awb-agent-loop-brand-copy > span:last-child,
+  .awb-agent-loop-rail-button > span {
+    display: none;
+  }
+
+  .awb-agent-loop-rail-button {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .awb-agent-loop-task-layout,
+  .awb-agent-loop-template-layout {
+    grid-template-columns: minmax(218px, 258px) minmax(0, 1fr);
+  }
+
+  .awb-agent-loop-inspector {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .awb-agent-loop-shell {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .awb-agent-loop-rail {
+    position: sticky;
+    z-index: 10;
+    top: 0;
+    display: grid;
+    min-height: 50px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    padding: 7px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--awb-loop-line);
+  }
+
+  .awb-agent-loop-nav {
+    display: flex;
+    justify-content: center;
+    margin: 0;
+  }
+
+  .awb-agent-loop-rail-footer {
+    margin: 0;
+    padding: 0;
+  }
+
+  .awb-agent-loop-main {
+    min-height: min-content;
+    grid-template-rows: 45px auto;
+    overflow: visible;
+  }
+
+  .awb-agent-loop-header {
+    padding: 0 12px;
+  }
+
+  .awb-agent-loop-header-copy span,
+  .awb-agent-loop-host-status {
+    display: none;
+  }
+
+  .awb-agent-loop-task-layout,
+  .awb-agent-loop-template-layout {
+    display: grid;
+    min-height: min-content;
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .awb-agent-loop-task-list,
+  .awb-agent-loop-inspector,
+  .awb-agent-loop-template-list {
+    max-height: 240px;
+    border: 0;
+    border-bottom: 1px solid var(--awb-loop-line);
+  }
+
+  .awb-agent-loop-center,
+  .awb-agent-loop-template-canvas {
+    min-height: 560px;
+  }
+
+  .awb-agent-loop-task-head,
+  .awb-agent-loop-template-head {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+    padding: 18px;
+  }
+
+  .awb-agent-loop-task-actions {
+    justify-content: flex-start;
+  }
+
+  .awb-agent-loop-context-bar,
+  .awb-agent-loop-timeline-surface {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .awb-agent-loop-app .awb-session-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .awb-agent-loop-app .awb-session-status-grid {
+    min-width: 0;
+  }
+
+  .awb-agent-loop-app .awb-session-status-grid dd {
+    text-align: left;
+  }
+
+}
+
+/* Claudian-derived execution trace: compact rows, quiet hierarchy, tree rail. */
+.awb-agent-loop-app .awb-execution-group {
+  width: min(760px, 100%);
+  margin: 2px 0 4px;
+  list-style: none;
+}
+
+.awb-agent-loop-app .awb-execution-group details {
+  min-width: 0;
+}
+
+.awb-agent-loop-app .awb-execution-group summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 2px;
+  color: var(--awb-loop-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.awb-agent-loop-app .awb-execution-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.awb-agent-loop-app .awb-execution-group summary:hover {
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-app .awb-execution-chevron {
+  flex: 0 0 auto;
+  transition: transform 140ms ease;
+}
+
+.awb-agent-loop-app .awb-execution-group details[open] .awb-execution-chevron {
+  transform: rotate(90deg);
+}
+
+.awb-agent-loop-app .awb-execution-label {
+  color: var(--awb-loop-text);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.awb-agent-loop-app .awb-execution-group.is-running .awb-execution-label {
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-app .awb-execution-group.is-awaiting_final .awb-execution-label,
+.awb-agent-loop-app .awb-execution-group.is-ambiguous .awb-execution-label {
+  color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-app .awb-execution-count,
+.awb-agent-loop-app .awb-execution-provider {
+  overflow: hidden;
+  color: var(--awb-loop-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-app .awb-execution-provider {
+  margin-left: auto;
+}
+
+.awb-agent-loop-app .awb-execution-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.awb-agent-loop-app .awb-execution-status.is-running {
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-app .awb-execution-status.is-running svg {
+  animation: awb-execution-spin 1s linear infinite;
+}
+
+.awb-agent-loop-app .awb-execution-status.is-completed {
+  color: var(--awb-loop-green);
+}
+
+.awb-agent-loop-app .awb-execution-status.is-failed {
+  color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-app .awb-execution-status.is-awaiting_final,
+.awb-agent-loop-app .awb-execution-status.is-ambiguous {
+  color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-app .awb-execution-activity-list {
+  display: grid;
+  gap: 5px;
+  max-height: min(52vh, 480px);
+  margin: 1px 0 8px 8px;
+  padding: 4px 0 4px 16px;
+  overflow-y: auto;
+  border-left: 2px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-app .awb-provider-activity {
+  min-width: 0;
+}
+
+.awb-agent-loop-app .awb-provider-activity > header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0;
+}
+
+.awb-agent-loop-app .awb-provider-activity-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-app .awb-provider-activity.is-change .awb-provider-activity-icon {
+  color: var(--awb-loop-violet);
+}
+
+.awb-agent-loop-app .awb-provider-activity.is-web .awb-provider-activity-icon {
+  color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-app .awb-provider-activity > header strong,
+.awb-agent-loop-app .awb-provider-activity-detail {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 450;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-app .awb-provider-activity > header strong {
+  flex: 0 0 auto;
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-app .awb-provider-activity-detail {
+  flex: 1 1 auto;
+  color: var(--awb-loop-muted);
+}
+
+.awb-agent-loop-app .awb-provider-activity > header .awb-execution-status {
+  margin-left: auto;
+}
+
+.awb-agent-loop-app .awb-provider-activity-content {
+  max-height: 220px;
+  margin: 2px 0 3px 22px;
+  padding: 4px 0;
+  overflow: auto;
+  color: var(--awb-loop-muted);
+  background: transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.48;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.awb-agent-loop-app .awb-provider-activity.is-assistant_progress .awb-provider-activity-content {
+  color: color-mix(in srgb, var(--awb-loop-text) 76%, var(--awb-loop-muted));
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.awb-agent-loop-app .awb-stream-caret {
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--awb-loop-blue);
+  animation: awb-stream-caret 900ms steps(2, jump-none) infinite;
+}
+
+@keyframes awb-execution-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes awb-stream-caret {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .awb-agent-loop-app .awb-execution-status.is-running svg,
+  .awb-agent-loop-app .awb-stream-caret {
+    animation: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .awb-agent-loop-header-actions {
+    gap: 5px;
+  }
+
+  .awb-agent-loop-task-head h1 {
+    font-size: 17px;
+  }
+
+  .awb-agent-loop-app .awb-composer {
+    margin-right: 10px;
+    margin-left: 10px;
+  }
+}
+
+/* Claudian-inspired workbench skin.
+ *
+ * Claudian is used here as a presentation reference only: open message flow,
+ * Obsidian-like neutral surfaces, compact controls, and one warm semantic
+ * accent. Runtime ownership and typed read-model boundaries remain unchanged.
+ */
+:where(.awb-agent-loop-app) {
+  --awb-loop-bg: #1b1b1d;
+  --awb-loop-sidebar: #202124;
+  --awb-loop-panel: #232326;
+  --awb-loop-panel-raised: #2a2a2e;
+  --awb-loop-terminal: #1b1b1d;
+  --awb-loop-text: #dedddb;
+  --awb-loop-muted: #999793;
+  --awb-loop-faint: #73716e;
+  --awb-loop-line: #353539;
+  --awb-loop-blue: #d97757;
+  --awb-loop-blue-soft: rgb(217 119 87 / 11%);
+  --awb-loop-green: #56b870;
+  --awb-loop-amber: #d7a45c;
+  --awb-loop-red: #d96767;
+  --awb-loop-violet: #a48bd8;
+  --awb-loop-radius: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+:where(.awb-agent-loop-app)[data-theme="light"] {
+  --awb-loop-bg: #f7f7f6;
+  --awb-loop-sidebar: #efefed;
+  --awb-loop-panel: #ffffff;
+  --awb-loop-panel-raised: #e7e6e3;
+  --awb-loop-terminal: #f7f7f6;
+  --awb-loop-text: #262522;
+  --awb-loop-muted: #6f6d68;
+  --awb-loop-faint: #94918a;
+  --awb-loop-line: #d8d6d1;
+  --awb-loop-blue: #c86343;
+  --awb-loop-blue-soft: rgb(200 99 67 / 10%);
+  --awb-loop-green: #2f8750;
+  --awb-loop-amber: #9d6b28;
+  --awb-loop-red: #b84e4e;
+  --awb-loop-violet: #745cad;
+}
+
+:where(.awb-agent-loop-app) button:focus-visible,
+:where(.awb-agent-loop-app) input:focus-visible,
+:where(.awb-agent-loop-app) select:focus-visible,
+:where(.awb-agent-loop-app) textarea:focus-visible {
+  outline: 1px solid var(--awb-loop-blue);
+  outline-offset: 2px;
+}
+
+:where(.awb-agent-loop-app) * {
+  scrollbar-color: #46454a transparent;
+}
+
+:where(.awb-agent-loop-app) *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+:where(.awb-agent-loop-app) *::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  background: #46454a;
+  background-clip: padding-box;
+}
+
+.awb-agent-loop-shell {
+  background: var(--awb-loop-bg);
+}
+
+.awb-agent-loop-shell.awb-agent-loop-rail-collapsed {
+  grid-template-columns: 58px minmax(0, 1fr);
+}
+
+.awb-agent-loop-rail {
+  padding: 14px 8px 12px;
+  background: #1e1f21;
+}
+
+[data-theme="light"] .awb-agent-loop-rail {
+  background: #e9e9e7;
+}
+
+.awb-agent-loop-brand {
+  min-height: 34px;
+}
+
+.awb-agent-loop-rail-collapsed .awb-agent-loop-brand-copy {
+  display: none;
+}
+
+.awb-agent-loop-nav {
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.awb-agent-loop-rail-button {
+  position: relative;
+  height: 42px;
+  border-radius: 4px;
+  color: var(--awb-loop-muted);
+}
+
+.awb-agent-loop-rail-button.is-active,
+.awb-agent-loop-rail-button[aria-current="page"] {
+  background: var(--awb-loop-panel-raised);
+  box-shadow: none;
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-rail-button.is-active::before,
+.awb-agent-loop-rail-button[aria-current="page"]::before {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: -8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--awb-loop-blue);
+  content: "";
+}
+
+.awb-agent-loop-rail-button.is-active svg,
+.awb-agent-loop-rail-button[aria-current="page"] svg {
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-header {
+  flex-basis: 44px;
+  padding: 0 16px;
+  background: #191a1c;
+}
+
+[data-theme="light"] .awb-agent-loop-header {
+  background: #f2f2f0;
+}
+
+.awb-agent-loop-header-copy {
+  display: flex;
+  align-items: baseline;
+}
+
+.awb-agent-loop-header-copy strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.awb-agent-loop-header-copy span {
+  font-family: inherit;
+  font-size: 10px;
+}
+
+.awb-agent-loop-host-status {
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.awb-agent-loop-task-layout-resizable {
+  grid-template-columns:
+    var(--awb-task-list-width, 250px)
+    6px
+    minmax(480px, 1fr)
+    6px
+    var(--awb-task-inspector-width, 240px);
+}
+
+.awb-agent-loop-task-layout-resizable.is-inspector-collapsed {
+  grid-template-columns:
+    var(--awb-task-list-width, 250px)
+    6px
+    minmax(480px, 1fr)
+    0
+    36px;
+}
+
+.awb-agent-loop-pane-resizer::after {
+  left: 2px;
+}
+
+.awb-agent-loop-pane-resizer:hover::after,
+.awb-agent-loop-pane-resizer:focus-visible::after {
+  width: 1px;
+  background: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-task-list,
+.awb-agent-loop-inspector {
+  background: var(--awb-loop-sidebar);
+}
+
+.awb-agent-loop-panel-heading {
+  min-height: 58px;
+  padding: 13px 12px;
+  border-bottom: 0;
+}
+
+.awb-agent-loop-panel-heading h1,
+.awb-agent-loop-panel-heading h2 {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.awb-agent-loop-panel-heading p,
+.awb-agent-loop-panel-heading span,
+.awb-agent-loop-list-caption {
+  display: none;
+}
+
+.awb-agent-loop-task-list .awb-agent-loop-panel-heading .awb-button-primary {
+  min-height: 28px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--awb-loop-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.awb-agent-loop-task-list .awb-agent-loop-panel-heading .awb-button-primary svg {
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-task-groups {
+  order: 1;
+  gap: 2px;
+  padding: 2px 8px 9px;
+  border-top: 0;
+  border-bottom: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-task-groups button {
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.awb-agent-loop-task-groups button.active {
+  background: transparent;
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-task-groups button.active svg:first-child {
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-task-groups b {
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.awb-agent-loop-task-list > .awb-agent-loop-task-rows {
+  order: 2;
+  padding: 8px;
+}
+
+.awb-agent-loop-task-row {
+  position: relative;
+  min-height: 66px;
+  margin-bottom: 4px;
+  padding: 10px 10px 10px 12px;
+  border: 0;
+  border-radius: 5px;
+}
+
+.awb-agent-loop-task-row::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: transparent;
+  content: "";
+}
+
+.awb-agent-loop-task-row.is-active,
+.awb-agent-loop-task-row[aria-current="true"] {
+  border-left: 0;
+  background: var(--awb-loop-panel-raised);
+}
+
+.awb-agent-loop-task-row.is-active::before,
+.awb-agent-loop-task-row[aria-current="true"]::before {
+  background: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-task-row strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.awb-agent-loop-task-row small {
+  font-size: 10px;
+}
+
+.awb-agent-loop-task-row time,
+.awb-agent-loop-task-row em {
+  font-family: inherit;
+  font-size: 9px;
+}
+
+.awb-agent-loop-state-dot.is-running,
+.awb-agent-loop-state-dot[data-state="running"] {
+  background: var(--awb-loop-blue);
+  box-shadow: none;
+}
+
+.awb-agent-loop-center {
+  background: var(--awb-loop-bg);
+}
+
+.awb-agent-loop-task-head {
+  align-items: center;
+  min-height: 92px;
+  padding: 18px 22px 15px;
+  border-bottom: 0;
+}
+
+.awb-agent-loop-eyebrow {
+  margin-bottom: 6px;
+  color: var(--awb-loop-faint);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.awb-agent-loop-task-head h1 {
+  font-size: 23px;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+.awb-agent-loop-task-actions {
+  gap: 7px;
+}
+
+.awb-agent-loop-task-actions .awb-button {
+  min-height: 34px;
+  border-color: var(--awb-loop-line);
+  background: transparent;
+  box-shadow: none;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.awb-agent-loop-task-actions .awb-button-primary {
+  border-color: var(--awb-loop-blue);
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-task-actions .awb-button-danger {
+  border-color: color-mix(in srgb, var(--awb-loop-red), var(--awb-loop-line) 50%);
+  color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-session-tabs {
+  gap: 0;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  background: transparent;
+}
+
+.awb-agent-loop-session-tabs button {
+  position: relative;
+  min-width: 128px;
+  padding: 10px 16px 11px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
+  font-size: 13px;
+}
+
+.awb-agent-loop-session-tabs button::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: transparent;
+  content: "";
+}
+
+.awb-agent-loop-session-tabs button.is-active {
+  border-color: var(--awb-loop-line);
+  border-bottom-color: var(--awb-loop-bg);
+  background: transparent;
+}
+
+.awb-agent-loop-session-tabs button.is-active::after {
+  background: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-session-tabs button small {
+  font-size: 10px;
+}
+
+.awb-agent-loop-timeline-entry {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 10px 8px 10px 12px;
+}
+
+.awb-agent-loop-timeline-entry > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.awb-agent-loop-timeline-entry strong {
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.awb-agent-loop-timeline-entry span,
+.awb-agent-loop-timeline-entry time {
+  flex: 0 0 auto;
+  font-family: inherit;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-timeline-entry p {
+  grid-column: 1;
+}
+
+.awb-agent-loop-app .awb-session-presentation {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  padding: 0 22px;
+  background: var(--awb-loop-terminal);
+}
+
+.awb-agent-loop-app .awb-session-transcript {
+  border-bottom: 0;
+}
+
+.awb-agent-loop-app .awb-section-heading {
+  min-height: 44px;
+  padding: 11px 4px 8px;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.awb-agent-loop-app .awb-section-heading > div {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.awb-agent-loop-app .awb-section-heading h4 {
+  color: var(--awb-loop-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.awb-agent-loop-app .awb-section-heading > div > span {
+  display: inline;
+  min-width: 0;
+  height: auto;
+  border-radius: 0;
+  background: transparent;
+  color: var(--awb-loop-faint);
+  font-family: inherit;
+  font-size: 10px;
+}
+
+.awb-agent-loop-app .awb-session-status-grid {
+  display: flex;
+  min-width: 0;
+  gap: 12px;
+  margin: 0;
+}
+
+.awb-agent-loop-app .awb-session-status-grid > div {
+  display: flex;
+  gap: 4px;
+}
+
+.awb-agent-loop-app .awb-session-status-grid dt,
+.awb-agent-loop-app .awb-session-status-grid dd {
+  color: var(--awb-loop-faint);
+  font-family: inherit;
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-session-status-grid dd {
+  margin: 0;
+}
+
+.awb-agent-loop-app .awb-session-message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 12px 4px 24px;
+}
+
+.awb-agent-loop-app .awb-session-message {
+  position: relative;
+  width: 100%;
+}
+
+.awb-agent-loop-app .awb-session-message > article {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0 4px 34px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.awb-agent-loop-app .awb-session-message:not(.is-user-message)::before {
+  position: absolute;
+  top: 3px;
+  left: 2px;
+  color: var(--awb-loop-blue);
+  content: "✳";
+  font-size: 19px;
+  line-height: 1;
+}
+
+.awb-agent-loop-app .awb-session-message > article > header {
+  align-items: baseline;
+  justify-content: flex-start;
+}
+
+.awb-agent-loop-app .awb-session-message > article > header > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.awb-agent-loop-app .awb-session-message > article > header strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.awb-agent-loop-app .awb-session-message > article > header div > span {
+  margin-top: 0;
+  color: var(--awb-loop-faint);
+  font-family: inherit;
+  font-size: 10px;
+}
+
+.awb-agent-loop-app .awb-session-message-direction {
+  display: none;
+}
+
+.awb-agent-loop-app .awb-session-message-content,
+.awb-agent-loop-app .awb-relay-block pre {
+  font-size: 14px;
+  line-height: 1.58;
+}
+
+.awb-agent-loop-app .awb-session-message.is-user-message {
+  align-self: flex-end;
+  width: min(78%, 680px);
+}
+
+.awb-agent-loop-app .awb-session-message.is-user-message > article {
+  padding: 9px 12px;
+  border-radius: 6px 6px 3px 6px;
+  background: #29292d;
+}
+
+[data-theme="light"] .awb-session-message.is-user-message > article {
+  background: #e8e7e3;
+}
+
+.awb-agent-loop-app .awb-session-message.is-user-message > article > header {
+  justify-content: flex-end;
+}
+
+.awb-agent-loop-app .awb-session-message.is-user-message > article > header > div {
+  flex-direction: row;
+}
+
+.awb-agent-loop-app .awb-message-inbox-states {
+  gap: 8px;
+}
+
+.awb-agent-loop-app .awb-message-inbox-states li {
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+}
+
+.awb-agent-loop-app .awb-message-inbox-states li span {
+  display: none;
+}
+
+.awb-agent-loop-app .awb-relay-block {
+  border: 0;
+  border-left: 2px solid var(--awb-loop-line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.awb-agent-loop-app .awb-composer {
+  gap: 0;
+  margin: 10px 0 14px;
+  padding: 0;
+  border: 1px solid #4a494e;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.awb-agent-loop-app .awb-composer label {
+  display: block;
+  color: transparent;
+  font-size: 0;
+}
+
+.awb-agent-loop-app .awb-composer textarea {
+  min-height: 84px;
+  max-height: 180px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+}
+
+.awb-agent-loop-app .awb-composer textarea:focus {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.awb-agent-loop-app .awb-composer footer {
+  min-height: 40px;
+  padding: 5px 7px 6px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--awb-loop-line), transparent 30%);
+}
+
+.awb-agent-loop-app .awb-composer-meta {
+  min-width: 0;
+  color: var(--awb-loop-faint);
+  font-size: 10px;
+}
+
+.awb-agent-loop-app .awb-composer-warning {
+  overflow: hidden;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-app .awb-composer-warning.recovery_required,
+.awb-agent-loop-app .awb-composer-warning.stopping {
+  color: var(--awb-loop-amber);
+}
+
+.awb-agent-loop-app .awb-composer-warning.closed {
+  color: var(--awb-loop-faint);
+}
+
+.awb-agent-loop-app .awb-composer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.awb-agent-loop-app .awb-composer-actions .awb-button-secondary {
+  min-height: 28px;
+  border: 0;
+  color: var(--awb-loop-faint);
+}
+
+.awb-agent-loop-app .awb-composer-actions .awb-button-primary {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  background: var(--awb-loop-blue);
+  box-shadow: none;
+  color: #1d1b1a;
+  font-size: 0;
+}
+
+.awb-agent-loop-app .awb-composer-actions .awb-button-primary svg {
+  margin: 0;
+}
+
+.awb-agent-loop-inspector .awb-agent-loop-panel-heading {
+  min-height: 58px;
+  padding-right: 8px;
+}
+
+.awb-agent-loop-inspector .awb-agent-loop-eyebrow {
+  display: none;
+}
+
+.awb-agent-loop-inspector .awb-agent-loop-panel-heading h2 {
+  font-size: 15px;
+}
+
+.awb-agent-loop-session-list {
+  padding-top: 4px;
+}
+
+.awb-agent-loop-session-card {
+  position: relative;
+  width: calc(100% - 16px);
+  min-height: 60px;
+  margin: 0 8px 5px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 5px;
+}
+
+.awb-agent-loop-session-card::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: transparent;
+  content: "";
+}
+
+.awb-agent-loop-session-card.is-active,
+.awb-agent-loop-session-card[aria-current="true"] {
+  border-color: transparent;
+  background: var(--awb-loop-panel-raised);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-session-card.is-active::before,
+.awb-agent-loop-session-card[aria-current="true"]::before {
+  background: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-session-card.is-active > svg,
+.awb-agent-loop-session-card[aria-current="true"] > svg {
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-session-card strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.awb-agent-loop-session-card small,
+.awb-agent-loop-session-card em {
+  font-family: inherit;
+  font-size: 9px;
+}
+
+.awb-agent-loop-inspector-toggle {
+  border: 0;
+  background: transparent;
+}
+
+.awb-agent-loop-app .awb-button {
+  font-weight: 550;
+}
+
+.awb-agent-loop-app .awb-button-primary {
+  background: var(--awb-loop-blue);
+  box-shadow: none;
+  color: #1d1b1a;
+}
+
+.awb-agent-loop-app .awb-button-primary:hover:not(:disabled) {
+  background: var(--awb-loop-blue);
+  color: #1d1b1a;
+  filter: brightness(1.06);
+}
+
+.awb-agent-loop-app .awb-agent-loop-task-actions .awb-button-primary {
+  border-color: var(--awb-loop-blue);
+  background: transparent;
+  color: var(--awb-loop-blue);
+}
+
+.awb-agent-loop-app .awb-agent-loop-task-actions .awb-button-primary:hover:not(:disabled) {
+  background: var(--awb-loop-blue-soft);
+  color: var(--awb-loop-blue);
+  filter: none;
+}
+
+.awb-agent-loop-icon-button {
+  border-radius: 4px;
+}
+
+@media (max-width: 1180px) {
+  .awb-agent-loop-task-layout-resizable,
+  .awb-agent-loop-task-layout-resizable.is-inspector-collapsed {
+    grid-template-columns: 230px 6px minmax(0, 1fr);
+  }
+
+  .awb-agent-loop-pane-resizer.is-inspector,
+  .awb-agent-loop-inspector {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .awb-agent-loop-task-head {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .awb-agent-loop-task-head h1 {
+    white-space: normal;
+  }
+
+  .awb-agent-loop-task-actions {
+    justify-content: flex-start;
+  }
+
+  .awb-agent-loop-app .awb-session-status-grid {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .awb-agent-loop-shell,
+  .awb-agent-loop-shell.awb-agent-loop-rail-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .awb-agent-loop-rail {
+    min-height: 50px;
+    padding: 6px 8px;
+  }
+
+  .awb-agent-loop-rail-collapsed .awb-agent-loop-brand-copy,
+  .awb-agent-loop-rail-collapsed .awb-agent-loop-brand-copy strong,
+  .awb-agent-loop-rail-collapsed .awb-agent-loop-rail-button > span {
+    display: none;
+  }
+
+  .awb-agent-loop-nav {
+    margin: 0;
+  }
+
+  .awb-agent-loop-task-layout-resizable,
+  .awb-agent-loop-task-layout-resizable.is-inspector-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .awb-agent-loop-pane-resizer {
+    display: none;
+  }
+
+  .awb-agent-loop-task-list {
+    max-height: 220px;
+  }
+
+  .awb-agent-loop-task-head {
+    min-height: 0;
+    padding: 16px;
+  }
+
+  .awb-agent-loop-task-head h1 {
+    font-size: 20px;
+  }
+
+  .awb-agent-loop-session-tabs,
+  .awb-agent-loop-app .awb-session-presentation {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .awb-agent-loop-app .awb-session-status-grid {
+    display: none;
+  }
+
+  .awb-agent-loop-app .awb-session-message.is-user-message {
+    width: 88%;
+  }
+}
+
+/* Configuration-time Meta and Task Setup surfaces. */
+.awb-agent-loop-template-canvas {
+  position: relative;
+}
+
+.awb-agent-loop-meta-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: auto;
+  border: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-sidebar);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 28%);
+}
+
+.awb-agent-loop-meta-panel.is-docked {
+  height: 100%;
+  border-width: 0 1px 0 0;
+  box-shadow: none;
+}
+
+.awb-agent-loop-meta-panel.is-floating {
+  position: absolute;
+  z-index: 20;
+  top: 76px;
+  right: 18px;
+  width: min(410px, calc(100% - 36px));
+  max-height: calc(100% - 94px);
+  border-radius: 8px;
+}
+
+.awb-agent-loop-meta-head,
+.awb-agent-loop-meta-proposals > header,
+.awb-agent-loop-meta-chat > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.awb-agent-loop-meta-head {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-sidebar);
+}
+
+.awb-agent-loop-meta-head h2,
+.awb-agent-loop-meta-profile p,
+.awb-agent-loop-meta-proposal p,
+.awb-agent-loop-meta-empty p {
+  margin: 0;
+}
+
+.awb-agent-loop-meta-head h2 {
+  font-size: 15px;
+}
+
+.awb-agent-loop-meta-view-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.awb-agent-loop-meta-profile,
+.awb-agent-loop-meta-empty,
+.awb-agent-loop-meta-chat,
+.awb-agent-loop-meta-proposals,
+.awb-agent-loop-meta-composer {
+  margin: 10px 12px 0;
+}
+
+.awb-agent-loop-meta-profile {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--awb-loop-line);
+  border-left: 3px solid var(--awb-loop-green);
+  border-radius: 6px;
+  background: var(--awb-loop-panel);
+}
+
+.awb-agent-loop-meta-profile.is-unavailable {
+  border-left-color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-meta-profile > div {
+  display: flex;
+  justify-content: space-between;
+}
+
+.awb-agent-loop-meta-profile label,
+.awb-agent-loop-meta-composer label {
+  display: grid;
+  gap: 5px;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+}
+
+.awb-agent-loop-meta-profile select,
+.awb-agent-loop-meta-composer textarea,
+.awb-agent-loop-task-setup-form input,
+.awb-agent-loop-task-setup-form select,
+.awb-agent-loop-task-setup-form textarea {
+  width: 100%;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  background: var(--awb-loop-terminal);
+  color: var(--awb-loop-text);
+}
+
+.awb-agent-loop-meta-profile select,
+.awb-agent-loop-task-setup-form input,
+.awb-agent-loop-task-setup-form select {
+  min-height: 34px;
+  padding: 0 9px;
+}
+
+.awb-agent-loop-meta-profile small,
+.awb-agent-loop-meta-profile ul {
+  margin: 0;
+  color: var(--awb-loop-faint);
+  font-size: 10px;
+}
+
+.awb-agent-loop-meta-empty {
+  display: grid;
+  gap: 9px;
+  padding: 11px;
+  border-radius: 6px;
+  background: var(--awb-loop-panel);
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+}
+
+.awb-agent-loop-meta-chat > header,
+.awb-agent-loop-meta-proposals > header {
+  padding-bottom: 7px;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.awb-agent-loop-meta-chat ol,
+.awb-agent-loop-meta-diff {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.awb-agent-loop-meta-chat li {
+  padding: 8px 9px;
+  border-radius: 6px;
+  background: var(--awb-loop-panel);
+}
+
+.awb-agent-loop-meta-chat li.is-user {
+  border-left: 2px solid var(--awb-loop-blue);
+}
+
+.awb-agent-loop-meta-chat li > span {
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.awb-agent-loop-meta-chat li p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.awb-agent-loop-meta-composer {
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+}
+
+.awb-agent-loop-meta-composer label {
+  width: 100%;
+}
+
+.awb-agent-loop-meta-composer textarea,
+.awb-agent-loop-task-setup-form textarea {
+  padding: 8px 9px;
+  resize: vertical;
+}
+
+.awb-agent-loop-meta-proposals {
+  display: grid;
+  gap: 9px;
+  padding-bottom: 12px;
+}
+
+.awb-agent-loop-meta-proposal {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 6px;
+  background: var(--awb-loop-panel);
+}
+
+.awb-agent-loop-meta-proposal > header,
+.awb-agent-loop-meta-proposal > footer,
+.awb-agent-loop-meta-diff li > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.awb-agent-loop-meta-proposal > header span,
+.awb-agent-loop-meta-diff li > div span {
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.awb-agent-loop-meta-diff li {
+  display: grid;
+  gap: 4px;
+  overflow: hidden;
+  padding: 7px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 4px;
+  background: var(--awb-loop-terminal);
+}
+
+.awb-agent-loop-meta-diff code {
+  overflow-wrap: anywhere;
+  color: var(--awb-loop-blue);
+  font-size: 10px;
+}
+
+.awb-agent-loop-meta-diff pre {
+  margin: 0;
+  overflow: auto;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+  white-space: pre-wrap;
+}
+
+.awb-agent-loop-meta-diff del {
+  color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-meta-diff ins {
+  color: var(--awb-loop-green);
+  text-decoration: none;
+}
+
+.awb-agent-loop-meta-issues,
+.awb-agent-loop-meta-unresolved,
+.awb-agent-loop-meta-dirty {
+  padding: 7px 8px;
+  border-radius: 4px;
+  background: rgb(230 171 67 / 10%);
+  color: var(--awb-loop-amber);
+  font-size: 10px;
+}
+
+.awb-agent-loop-meta-issues ul,
+.awb-agent-loop-meta-unresolved ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+
+.awb-agent-loop-task-setup-surface {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  background: var(--awb-loop-bg);
+}
+
+.awb-agent-loop-task-setup-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-task-setup-head h1,
+.awb-agent-loop-task-setup-head p,
+.awb-agent-loop-task-setup-version h2,
+.awb-agent-loop-task-setup-profiles h2,
+.awb-agent-loop-task-setup-profiles p,
+.awb-agent-loop-task-setup-meta-empty h2,
+.awb-agent-loop-task-setup-meta-empty p {
+  margin: 0;
+}
+
+.awb-agent-loop-task-setup-head h1 {
+  font-size: 21px;
+}
+
+.awb-agent-loop-task-setup-head > div:first-child > p:last-child {
+  margin-top: 5px;
+  color: var(--awb-loop-muted);
+  font-size: 11px;
+}
+
+.awb-agent-loop-task-setup-grid {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, .75fr);
+  align-items: start;
+}
+
+.awb-agent-loop-task-setup-editor {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+  padding: 20px 24px 28px;
+}
+
+.awb-agent-loop-task-setup-meta-column {
+  position: sticky;
+  top: 0;
+  height: calc(100vh - 92px);
+  min-height: 520px;
+  border-left: 1px solid var(--awb-loop-line);
+}
+
+.awb-agent-loop-task-setup-meta-column .awb-agent-loop-meta-panel.is-docked {
+  border-right: 0;
+}
+
+.awb-agent-loop-task-setup-version,
+.awb-agent-loop-task-setup-profiles,
+.awb-agent-loop-task-setup-form,
+.awb-agent-loop-task-setup-validation,
+.awb-agent-loop-task-setup-actions,
+.awb-agent-loop-task-setup-meta-empty {
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 7px;
+  background: var(--awb-loop-panel);
+}
+
+.awb-agent-loop-task-setup-version {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 14px;
+  border-left: 3px solid var(--awb-loop-violet);
+}
+
+.awb-agent-loop-task-setup-version h2,
+.awb-agent-loop-task-setup-profiles h2 {
+  font-size: 14px;
+}
+
+.awb-agent-loop-task-setup-version code {
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+.awb-agent-loop-task-setup-profiles {
+  padding: 13px;
+}
+
+.awb-agent-loop-task-setup-profiles > header,
+.awb-agent-loop-task-setup-profiles article > header,
+.awb-agent-loop-task-setup-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.awb-agent-loop-task-setup-profiles > header p {
+  margin-top: 4px;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+}
+
+.awb-agent-loop-task-setup-profiles > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.awb-agent-loop-task-setup-profiles article {
+  padding: 10px;
+  border: 1px solid var(--awb-loop-line);
+  border-left: 3px solid var(--awb-loop-green);
+  border-radius: 5px;
+  background: var(--awb-loop-terminal);
+}
+
+.awb-agent-loop-task-setup-profiles article.is-unavailable {
+  border-left-color: var(--awb-loop-red);
+}
+
+.awb-agent-loop-task-setup-profiles dl {
+  display: grid;
+  gap: 3px;
+  margin: 8px 0 0;
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+}
+
+.awb-agent-loop-task-setup-profiles dl > div {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+}
+
+.awb-agent-loop-task-setup-profiles dd,
+.awb-agent-loop-task-setup-profiles dt {
+  margin: 0;
+}
+
+.awb-agent-loop-task-setup-profiles dd {
+  color: var(--awb-loop-muted);
+}
+
+.awb-agent-loop-task-setup-profiles ul {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  color: var(--awb-loop-red);
+  font-size: 10px;
+}
+
+.awb-agent-loop-task-setup-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+
+.awb-agent-loop-task-setup-form label {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+}
+
+.awb-agent-loop-task-setup-form label.is-span {
+  grid-column: 1 / -1;
+}
+
+.awb-agent-loop-task-setup-form small {
+  color: var(--awb-loop-faint);
+}
+
+.awb-agent-loop-task-setup-validation {
+  padding: 10px 12px;
+  border-color: rgb(230 171 67 / 40%);
+  color: var(--awb-loop-amber);
+  font-size: 10px;
+}
+
+.awb-agent-loop-task-setup-validation ul {
+  margin: 5px 0 0;
+  padding-left: 18px;
+}
+
+.awb-agent-loop-task-setup-actions {
+  padding: 11px 12px;
+  color: var(--awb-loop-muted);
+  font-size: 10px;
+}
+
+.awb-agent-loop-task-setup-actions > div {
+  display: flex;
+  gap: 7px;
+}
+
+.awb-agent-loop-task-setup-meta-empty {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  min-height: 100%;
+  gap: 8px;
+  padding: 24px;
+  border: 0;
+  border-radius: 0;
+  color: var(--awb-loop-muted);
+}
+
+.awb-agent-loop-task-setup-loading {
+  display: grid;
+  min-height: 260px;
+  place-items: center;
+  color: var(--awb-loop-muted);
+}
+
+/* The Task-level Conductor entry remains fixed while Session Tabs change. */
+.awb-agent-loop-session-workspace {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.awb-agent-loop-task-conductor-dock {
+  display: grid;
+  grid-template-columns: minmax(190px, .42fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--awb-loop-line);
+  background: var(--awb-loop-sidebar);
+}
+
+.awb-agent-loop-task-conductor-dock > header {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.awb-agent-loop-task-conductor-dock > header strong {
+  color: var(--awb-loop-blue);
+  font-size: 11px;
+}
+
+.awb-agent-loop-task-conductor-dock > header span,
+.awb-agent-loop-task-conductor-composer footer span,
+.awb-agent-loop-task-conductor-composer footer p {
+  margin: 0;
+  color: var(--awb-loop-faint);
+  font-size: 9px;
+}
+
+.awb-agent-loop-task-conductor-composer,
+.awb-agent-loop-task-conductor-composer label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.awb-agent-loop-task-conductor-composer label {
+  color: var(--awb-loop-muted);
+  font-size: 9px;
+}
+
+.awb-agent-loop-task-conductor-composer textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 7px 9px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  background: var(--awb-loop-terminal);
+  color: var(--awb-loop-text);
+  resize: vertical;
+}
+
+.awb-agent-loop-task-conductor-composer footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.awb-agent-loop-task-conductor-composer footer > div {
+  min-width: 0;
+}
+
+.awb-agent-loop-artifact-html-preview {
+  width: 100%;
+  min-height: 420px;
+  border: 1px solid var(--awb-loop-line);
+  border-radius: 5px;
+  background: #fff;
+}
+
+@media (max-width: 980px) {
+  .awb-agent-loop-task-setup-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, .8fr);
+  }
+
+  .awb-agent-loop-task-setup-profiles > div,
+  .awb-agent-loop-task-setup-form {
+    grid-template-columns: 1fr;
+  }
+
+  .awb-agent-loop-task-setup-form label.is-span {
+    grid-column: auto;
+  }
+
+  .awb-agent-loop-task-conductor-dock {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .awb-agent-loop-task-setup-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .awb-agent-loop-task-setup-head,
+  .awb-agent-loop-task-setup-actions,
+  .awb-agent-loop-task-setup-version {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .awb-agent-loop-task-setup-meta-column {
+    position: static;
+    height: auto;
+    min-height: 460px;
+    border-top: 1px solid var(--awb-loop-line);
+    border-left: 0;
+  }
+
+  .awb-agent-loop-meta-panel.is-floating {
+    position: fixed;
+    inset: 64px 10px 10px;
+    width: auto;
+    max-height: none;
+  }
+
+  .awb-agent-loop-task-conductor-dock {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "@agent-workspace/test-kit",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts"
+}

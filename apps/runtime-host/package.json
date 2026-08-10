@@ -1,0 +1,5 @@
+{
+  "name": "@agent-workspace/runtime-host",
+  "private": true,
+  "type": "module"
+}

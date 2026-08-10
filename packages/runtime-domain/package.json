@@ -1,0 +1,6 @@
+{
+  "name": "@agent-workspace/runtime-domain",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts"
+}

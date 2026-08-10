@@ -1,42 +1,38 @@
-# Agent Workspace 文档入口
+# Agent Workspace 文档
 
-状态：onlyopencode 当前入口
-更新日期：2026-08-05
+日期：2026-08-09
 
-主目录只保留当前产品契约与当前执行计划。研究、旧 mock、Orca/PTY 方案、旧
-Browser Runtime 方案和已替代计划均已移入 `archive/`，不能作为实现依据。
+当前产品/实现决策只有两个权威：
 
-## 从这里开始
+1. [`architecture.md`](architecture.md)：产品、Runtime、Provider、Web/Desktop、目录、状态与验证的唯一真相。
+2. [`implementation-plan.md`](implementation-plan.md)：唯一可执行的直接重构计划。
 
-1. 读 [`superworks/spec/spec_readme.md`](superworks/spec/spec_readme.md)。
-2. 涉及 Template、Task、Run、Session 或生命周期，读
-   [`superworks/spec/task-template-runtime-model.md`](superworks/spec/task-template-runtime-model.md)。
-3. 涉及产品流程与页面，读
-   [`superworks/spec/product-interaction-map.md`](superworks/spec/product-interaction-map.md)。
-4. 只从 [`superworks/plans/README.md`](superworks/plans/README.md) 选择当前计划。
+**当前默认产品入口：** `start.sh`、`pnpm start` 或 `npm start` → 一个认证的
+`apps/runtime-host`、`apps/workbench` 的正式 AgentLoop Renderer 与 `apps/desktop` Electron shell。
+`pnpm start:web` 启动同一 Renderer 与 Host 的浏览器开发面。不存在根 `src/`、根 `desktop/`、旧 Vite
+或 OpenCode WebUI fallback。
 
-## 当前产品一句话
+产品交互仍是 AgentLoop：任务三栏、Task Setup、Task-local Session Tabs、统一 Chat、Session Presentation、
+Timeline、Template Studio、配置期 Meta Agent、已完成和回收站。所有用户动作经 `RuntimeClient` 到统一
+Runtime，Provider 仅存在于 Host 的 `ProviderPort` 后面。协作 Message 与只给人看的 Provider 活动是两层
+不同投影，Renderer 不是任一领域事实的 writer。
 
-Agent Workspace 只实现 Agent Loop：Template 保存为不可变 Version，Task 快照该
-Version；一个项目目录由共享 OpenCode Server 承载 Provider Sessions；官方 OpenCode
-Web UI 是 Conductor 与 Worker 的唯一对话界面；Conductor 决定派发，Runtime 只记录
-事实与受控命令。
+**消息主权：** 对 Agent ↔ Agent 协作，Conductor 是唯一跨 Session 转递决策者。每个非 Conductor Session
+Agent 的完整 final 都由 Runtime 可靠投到 Conductor；Agent 可在
+final 中附带零到多个 `relay` 候选片段。只有 Conductor 明确选择转发完整 Message、某个 RelayBlock 或显式
+publish 给多个目标后，其他 Agent 才会收到内容。不存在 Shared Relay Space、`read_shared_relays` 或 Agent
+之间的直接 Provider 调用。
 
-## 当前事实 owner
+**用户优先：** 用户可明确向某张 Card 发送内容；Runtime 以 `HumanIntervention` 记录认证来源，把全文与目标
+归因透明同步给 Conductor，但不广播 sibling。Card busy 时不排队，只能在 scoped interrupt 确认后发送。
+内部 `WakeConductor` 只是由 durable Inbox 派生的调度信号，不恢复旧 Wakeup record。
 
-| 事实 | Owner |
-| --- | --- |
-| Template、Task Architecture、Task、Run、生命周期命令 | Task/Template/Run service |
-| Dispatch、输入回执、wakeup、取消回执 | Dispatch Coordinator |
-| OpenCode Session/message/turn/result/attention | OpenCode Server 与 Provider Adapter 投影 |
-| 官方页面 presentation lease | OpenCode presentation gateway |
-| 选中项、弹窗、布局和输入草稿 | Renderer |
+[`archive/README.md`](archive/README.md) 只记录历史材料已从工作树移除这一事实；当前 checkout
+不保留复制的旧规范、研究、设计或计划。需要恢复某一历史版本时使用 VCS，而不是重新把 archive
+变成第二份产品真相或兼容输入。
 
-Renderer 只能提交 typed intent、读取 typed read model；它没有 Provider、文件系统或
-生命周期写入权。Task 真实产物与测试项目只存在用户选择的项目目录中，不写入 `docs/`。
-
-## 目录
-
-- `superworks/spec/`：当前权威规范。
-- `superworks/plans/`：当前可执行计划。
-- `archive/` 与各子目录的 `archive/`：历史证据，不是产品依据。
+[`../apps/runtime-host/PROVIDER_CONFIGURATION.md`](../apps/runtime-host/PROVIDER_CONFIGURATION.md)
+和 [`../tests/integration/README.md`](../tests/integration/README.md) 是由上述两份权威文档约束的
+操作说明：它们可以给出命令、版本 pin 与当前 probe 结果，但不得另行定义产品架构或 Provider
+能力。任何能力是否可用于受管 Template，以 `architecture.md` 的 managed-core 规则和其中的
+证据矩阵为准。

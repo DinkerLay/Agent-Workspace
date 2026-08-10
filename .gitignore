@@ -1,8 +1,12 @@
 node_modules/
 dist/
 .agent-workspace/
+.agent-workspace-v2/
 .codegraph/
+.references/
 .superpowers/
+
+# Local Runtime data; never commit generated databases.
 
 .DS_Store
 *.log
