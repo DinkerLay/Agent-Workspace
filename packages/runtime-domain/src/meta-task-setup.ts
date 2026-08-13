@@ -2,16 +2,31 @@ import type {
   MetaPatchOperation,
   MetaMessageRecord,
   MetaPatchProposalRecord,
+  MetaPatchProposalRecordFor,
   MetaPatchValidationIssue,
   MetaProfileDefinition,
+  MetaProfileDefinitionV2,
+  MetaProfileDefinitionV3,
+  MetaProfileSnapshot,
   MetaSessionRecord,
+  MetaSessionRecordFor,
+  MetaSessionRecordV2,
+  MetaSessionRecordV3,
   MetaSessionTarget,
   TaskInputSchema,
   TaskInputValue,
   TaskSetupDraftRecord,
   TemplateDraftRecord,
 } from "@agent-workspace/runtime-contracts";
-import { hashDefinition, validateTemplateDefinition } from "@agent-workspace/runtime-contracts";
+import {
+  hashDefinition,
+  isMetaProfileDefinitionV3,
+  isTemplateDefinitionV3,
+  renderTaskGoalContentV1,
+  validateMetaProfileDefinitionV2,
+  validateMetaProfileDefinitionV3,
+  validateTemplateDefinitionSnapshot,
+} from "@agent-workspace/runtime-contracts";
 import { invariant } from "./errors.js";
 
 const MAX_PATCH_OPERATIONS = 64;
@@ -110,19 +125,10 @@ export function compileTaskGoal(
   const goal = requiredNormalizedText(input.goal, "task_setup_goal_required", 16_000);
   const values = normalizeTaskInputValues(schema, input.taskInputValues);
   assertTaskInputValuesComplete(schema, values);
-  const byFieldId = new Map(values.map((value) => [value.fieldId, value.value] as const));
-  const fieldBlocks = (schema?.fields ?? []).flatMap((field) => {
-    const value = byFieldId.get(field.fieldId);
-    if (value === undefined) return [];
-    const renderedValue = field.kind === "choice"
-      ? `${field.options.find((option) => option.optionId === value)!.label} [${value}]`
-      : value;
-    return [`[${field.fieldId}] ${field.label}\n${renderedValue}`];
-  });
-  const renderedInputs = fieldBlocks.length === 0 ? "(none)" : fieldBlocks.join("\n\n");
-  return `Task title: ${title}\nTask goal:\n${goal}\nTask inputs:\n${renderedInputs}\n`;
+  return renderTaskGoalContentV1({ title, goal, taskInputValues: values }, schema);
 }
 
+/** @deprecated Constructs historical v2 fixtures only; every durable writer rejects the result. */
 export function createMetaSession(input: Readonly<{
   metaSessionId: string;
   ownerId: string;
@@ -130,13 +136,42 @@ export function createMetaSession(input: Readonly<{
   metaProfileOptionId: string;
   metaProfile: MetaProfileDefinition;
   now: string;
-}>): MetaSessionRecord {
+}>): MetaSessionRecordV2 {
+  return constructMetaSession({
+    ...input,
+    metaProfile: validateMetaProfileDefinitionV2(input.metaProfile),
+  });
+}
+
+/** New configuration effects freeze only a validated portable ACP profile. */
+export function createMetaSessionV3(input: Readonly<{
+  metaSessionId: string;
+  ownerId: string;
+  target: MetaSessionTarget;
+  metaProfileOptionId: string;
+  metaProfile: MetaProfileDefinitionV3;
+  now: string;
+}>): MetaSessionRecordV3 {
+  return constructMetaSession({
+    ...input,
+    metaProfile: validateMetaProfileDefinitionV3(input.metaProfile),
+  });
+}
+
+function constructMetaSession<Profile extends MetaProfileSnapshot>(input: Readonly<{
+  metaSessionId: string;
+  ownerId: string;
+  target: MetaSessionTarget;
+  metaProfileOptionId: string;
+  metaProfile: Profile;
+  now: string;
+}>): MetaSessionRecordFor<Profile> {
   invariant(input.metaSessionId.startsWith("meta_session_"), "meta_session_id_invalid");
   const base = {
     metaSessionId: input.metaSessionId,
     ownerId: requiredText(input.ownerId, "meta_session_owner_required", 300),
     metaProfileOptionId: requiredOpaqueId(input.metaProfileOptionId, "meta_profile_option_", "meta_profile_option_id_invalid"),
-    metaProfile: cloneMetaProfile(input.metaProfile),
+    metaProfile: input.metaProfile,
     state: "active" as const,
     revision: 1,
     createdAt: input.now,
@@ -205,6 +240,30 @@ export function createMetaPatchProposal(input: Readonly<{
   validationIssues: readonly MetaPatchValidationIssue[];
   now: string;
 }>): MetaPatchProposalRecord {
+  return isMetaSessionV3(input.session)
+    ? constructMetaPatchProposal(
+        { ...input, session: input.session },
+        validateMetaProfileDefinitionV3(input.session.metaProfile),
+      )
+    : constructMetaPatchProposal(
+        { ...input, session: input.session },
+        validateMetaProfileDefinitionV2(input.session.metaProfile),
+      );
+}
+
+function constructMetaPatchProposal<Profile extends MetaProfileSnapshot>(
+  input: Readonly<{
+    metaPatchProposalId: string;
+    session: MetaSessionRecordFor<Profile>;
+    targetRevision: number;
+    operations: readonly MetaPatchOperation[];
+    summary: string;
+    rationale: string;
+    validationIssues: readonly MetaPatchValidationIssue[];
+    now: string;
+  }>,
+  sourceMetaProfile: Profile,
+): MetaPatchProposalRecordFor<Profile> {
   invariant(input.metaPatchProposalId.startsWith("meta_patch_proposal_"), "meta_patch_proposal_id_invalid");
   invariant(input.session.state === "active", "meta_session_not_active");
   invariant(Number.isSafeInteger(input.targetRevision) && input.targetRevision > 0, "meta_patch_target_revision_invalid");
@@ -217,7 +276,7 @@ export function createMetaPatchProposal(input: Readonly<{
     mode: input.session.mode,
     target: { ...input.session.target },
     sourceMetaProfileOptionId: input.session.metaProfileOptionId,
-    sourceMetaProfile: cloneMetaProfile(input.session.metaProfile),
+    sourceMetaProfile,
     sourceMetaSessionRevision: input.session.revision,
     targetRevision: input.targetRevision,
     operations: input.operations.map(cloneOperation),
@@ -276,13 +335,22 @@ export function applyMetaPatchProposalToTemplateDraft(input: Readonly<{
       }
       case "template_profile_model_set": {
         let matched = false;
-        const executionProfiles = definition.executionProfiles.map((profile) => {
-          if (profile.executionProfileId !== operation.executionProfileId) return profile;
-          matched = true;
-          return { ...profile, model: requiredText(operation.value, "meta_patch_profile_model_required", 500) };
-        });
+        const model = requiredText(operation.value, "meta_patch_profile_model_required", 500);
+        const executionProfiles = isTemplateDefinitionV3(definition)
+          ? definition.executionProfiles.map((profile) => {
+              if (profile.executionProfileId !== operation.executionProfileId) return profile;
+              matched = true;
+              return { ...profile, model };
+            })
+          : definition.executionProfiles.map((profile) => {
+              if (profile.executionProfileId !== operation.executionProfileId) return profile;
+              matched = true;
+              return { ...profile, model };
+            });
         invariant(matched, "meta_patch_execution_profile_not_found");
-        definition = { ...definition, executionProfiles };
+        definition = isTemplateDefinitionV3(definition)
+          ? { ...definition, executionProfiles: executionProfiles as typeof definition.executionProfiles }
+          : { ...definition, executionProfiles: executionProfiles as typeof definition.executionProfiles };
         break;
       }
       case "template_card_profile_set": {
@@ -318,7 +386,7 @@ export function applyMetaPatchProposalToTemplateDraft(input: Readonly<{
         throw new Error("meta_session_mode_mismatch");
     }
   }
-  definition = validateTemplateDefinition(definition);
+  definition = validateTemplateDefinitionSnapshot(definition);
   const draft: TemplateDraftRecord = {
     ...input.draft,
     metadata,
@@ -445,7 +513,10 @@ function assertProposalSession(session: MetaSessionRecord, proposal: MetaPatchPr
   invariant(JSON.stringify(proposal.sourceMetaProfile) === JSON.stringify(session.metaProfile), "meta_patch_profile_snapshot_mismatch");
 }
 
-function assertOperationsMatchMode(session: MetaSessionRecord, operations: readonly MetaPatchOperation[]): void {
+function assertOperationsMatchMode(
+  session: Pick<MetaSessionRecordFor<MetaProfileSnapshot>, "mode">,
+  operations: readonly MetaPatchOperation[],
+): void {
   const prefix = session.mode === "template_design" ? "template_" : "task_setup_";
   invariant(operations.every((operation) => operation.kind.startsWith(prefix)), "meta_session_mode_mismatch");
 }
@@ -488,15 +559,8 @@ function requiredArtifactPath(value: string): string {
   return normalized;
 }
 
-function cloneMetaProfile(profile: MetaProfileDefinition): MetaProfileDefinition {
-  return {
-    ...profile,
-    capabilityPolicy: {
-      ...profile.capabilityPolicy,
-      requiredCapabilities: [...profile.capabilityPolicy.requiredCapabilities],
-      allowedTools: [...profile.capabilityPolicy.allowedTools],
-    },
-  };
+function isMetaSessionV3(session: MetaSessionRecord): session is MetaSessionRecordV3 {
+  return isMetaProfileDefinitionV3(session.metaProfile);
 }
 
 function cloneOperation(operation: MetaPatchOperation): MetaPatchOperation {

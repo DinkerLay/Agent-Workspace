@@ -4,11 +4,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AgentLoopSessionPresentation,
-  type AgentLoopAttentionDisplay,
   type AgentLoopComposerSubmission,
+  type AgentLoopInteractionDisplay,
   type AgentLoopStopTaskRequest,
 } from "./AgentLoopSessionPresentation";
-import type { AgentLoopExecutionGroup, AgentLoopSessionMessageItem } from "./agent-loop-model";
+import type { AgentLoopExecutionGroup, AgentLoopSessionMessageItem } from "./agent-loop-session-id-presentation-model";
 
 afterEach(cleanup);
 
@@ -45,7 +45,6 @@ const messages: readonly AgentLoopSessionMessageItem[] = [
         format: "text/markdown",
         content: "仅供父 Session 审阅",
         contentDigest: "private-digest",
-        parserVersion: 1,
         createdAt: "2026-08-06T00:01:00.000Z",
       },
       {
@@ -57,7 +56,6 @@ const messages: readonly AgentLoopSessionMessageItem[] = [
         format: "application/json",
         content: '{"turn": 4}',
         contentDigest: "shared-digest",
-        parserVersion: 1,
         createdAt: "2026-08-06T00:01:00.000Z",
       },
     ],
@@ -75,54 +73,37 @@ const messages: readonly AgentLoopSessionMessageItem[] = [
 const runningExecution: AgentLoopExecutionGroup = {
   executionGroupId: "session_turn_stream",
   logicalSessionId: "logical_session_conductor",
-  provider: "codex",
+  providerFamily: "codex",
   sessionTurnId: "session_turn_stream",
   inputSubmissionId: "input_stream",
   status: "running",
   startedAt: "2026-08-06T00:00:30.000Z",
   updatedAt: "2026-08-06T00:00:32.000Z",
-  activities: [{
-    activityId: "activity_tool0123456789",
-    category: "tool",
-    status: "running",
-    title: "运行命令",
-    detail: "npm test",
-    content: "Tests are running…",
-    startedAt: "2026-08-06T00:00:30.000Z",
-    updatedAt: "2026-08-06T00:00:32.000Z",
-  }, {
-    activityId: "activity_assistant012345",
-    category: "assistant_progress",
-    status: "running",
-    title: "正在生成回复",
-    content: "我正在核对结果",
-    startedAt: "2026-08-06T00:00:31.000Z",
-    updatedAt: "2026-08-06T00:00:32.000Z",
-  }],
+  activities: [],
 };
 
 function ControlledPresentation({
   onSubmitInput = vi.fn(async () => undefined),
   onStopTask = vi.fn(async () => undefined),
-  onRespondAttention = vi.fn(async () => undefined),
-  attentions,
+  onRespondInteraction = vi.fn(async () => undefined),
+  interactions,
   executionGroups = [],
   sessionMessages = messages,
 }: Readonly<{
   onSubmitInput?: (input: AgentLoopComposerSubmission) => Promise<void> | void;
   onStopTask?: (input: AgentLoopStopTaskRequest) => Promise<void> | void;
-  onRespondAttention?: (input: { taskId: string; logicalSessionId: string; attentionId: string; response: string }) => Promise<void> | void;
-  attentions?: readonly AgentLoopAttentionDisplay[];
+  onRespondInteraction?: (input: { taskId: string; logicalSessionId: string; interactionId: string; choiceId: string }) => Promise<void> | void;
+  interactions?: readonly AgentLoopInteractionDisplay[];
   executionGroups?: readonly AgentLoopExecutionGroup[];
   sessionMessages?: readonly AgentLoopSessionMessageItem[];
 }>) {
   const [message, setMessage] = useState("");
   return <AgentLoopSessionPresentation
-    attentions={attentions}
+    interactions={interactions}
     binding={{ label: "Codex", status: "active", detail: "Runtime 已建立受控绑定。" }}
     composer={{ message, continuity: { state: "connected", message: "已连接；发送会成为一个有回执的 Task 输入。" } }}
     onComposerChange={setMessage}
-    onRespondAttention={onRespondAttention}
+    onRespondInteraction={onRespondInteraction}
     onStopTask={onStopTask}
     onSubmitInput={onSubmitInput}
     executionGroups={executionGroups}
@@ -137,6 +118,8 @@ describe("AgentLoopSessionPresentation", () => {
     const { container } = render(createElement(ControlledPresentation));
 
     expect(screen.getByRole("region", { name: "Conductor 会话" })).toBeTruthy();
+    expect(container.querySelector(".awb-agent-chat-transcript")).toBeTruthy();
+    expect(container.querySelector(".awb-agent-chat-composer")).toBeTruthy();
     expect(screen.getByText("conductor · active")).toBeTruthy();
     expect(screen.getByText("Codex · active")).toBeTruthy();
     expect(screen.getByText("核实 Provider receipt。")).toBeTruthy();
@@ -173,29 +156,27 @@ describe("AgentLoopSessionPresentation", () => {
     }));
   });
 
-  it("shows live tool/assistant activity expanded, then auto-collapses when the canonical final is complete", () => {
+  it("keeps Provider activity out of collaboration projection and collapses after canonical final", () => {
     const { rerender } = render(createElement(ControlledPresentation, { executionGroups: [runningExecution] }));
 
-    const runningSummary = screen.getByLabelText(/执行中，2 步/u);
+    const runningSummary = screen.getByLabelText(/执行中，0 步/u);
     const details = runningSummary.closest("details")!;
     expect(details.open).toBe(true);
-    expect(screen.getByText("运行命令")).toBeTruthy();
-    expect(screen.getByText("Tests are running…")).toBeTruthy();
-    expect(screen.getByText("我正在核对结果", { exact: false })).toBeTruthy();
+    expect(screen.getByText(/Provider stream、工具调用和诊断不会进入协作消息读模型/u)).toBeTruthy();
+    expect(screen.queryByText("运行命令")).toBeNull();
 
     const completedExecution: AgentLoopExecutionGroup = {
       ...runningExecution,
       finalMessageId: "message_worker_final",
       status: "completed",
-      activities: runningExecution.activities.map((activity) => ({ ...activity, status: "completed" as const })),
     };
     rerender(createElement(ControlledPresentation, { executionGroups: [completedExecution] }));
 
     expect(details.open).toBe(false);
     expect(screen.getByText("完整 Worker 回信。", { exact: false })).toBeTruthy();
-    fireEvent.click(screen.getByLabelText(/已完成，2 步/u));
+    fireEvent.click(screen.getByLabelText(/已完成，0 步/u));
     expect(details.open).toBe(true);
-    expect(screen.getByText("Tests are running…")).toBeTruthy();
+    expect(screen.getByText(/Provider stream、工具调用和诊断不会进入协作消息读模型/u)).toBeTruthy();
   });
 
   it("keeps zero-step completed-without-final, ambiguous, and failed groups open with honest status", () => {
@@ -224,28 +205,28 @@ describe("AgentLoopSessionPresentation", () => {
     expect(screen.getByLabelText(/执行失败，0 步/u)).toBeTruthy();
   });
 
-  it("submits an option-backed attention reply as a typed session response", async () => {
-    const onRespondAttention = vi.fn(async () => undefined);
+  it("submits an opaque interaction choice without a free-text response", async () => {
+    const onRespondInteraction = vi.fn(async () => undefined);
     render(createElement(ControlledPresentation, {
-      onRespondAttention,
-      attentions: [{
-        attentionId: "attention_file_write",
-        title: "允许文件写入",
-        status: "awaiting_user",
-        prompt: "是否允许这次受控写入？",
-        options: ["允许", "拒绝"],
+      onRespondInteraction,
+      interactions: [{
+        interactionId: "interaction_file_write",
+        interactionRevision: 4,
+        choices: [
+          { choiceId: "choice_allow", label: "允许" },
+          { choiceId: "choice_deny", label: "拒绝" },
+        ],
       }],
     }));
 
     fireEvent.click(screen.getByRole("button", { name: "允许" }));
-    fireEvent.click(screen.getByRole("button", { name: "回复 允许文件写入" }));
 
-    await waitFor(() => expect(onRespondAttention).toHaveBeenCalledWith({
+    await waitFor(() => expect(onRespondInteraction).toHaveBeenCalledWith({
       taskId: "task_review",
       logicalSessionId: "logical_session_conductor",
-      attentionId: "attention_file_write",
-      response: "允许",
+      interactionId: "interaction_file_write",
+      choiceId: "choice_allow",
     }));
-    expect((screen.getByLabelText("回复 允许文件写入") as HTMLInputElement).value).toBe("");
+    expect(document.querySelector(".awb-session-interaction input")).toBeNull();
   });
 });

@@ -27,15 +27,18 @@ describe("Provider profile readiness registry", () => {
       state: "available",
       unavailableReasons: [],
       missingCapabilities: [],
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
     });
   });
 
-  it("turns an observed version mismatch into a typed unavailable result without raw diagnostics", async () => {
+  it("keeps a profile available across version changes and projects only observed protocol evidence", async () => {
     const provider = new ReadinessProvider();
     provider.report = {
       ...matchingReport(),
-      available: false,
+      available: true,
       providerVersion: "1.18.15",
+      protocolFingerprint: "sha256:runtime-discovered-1.18.15",
       unavailableReasons: ["token=must-not-cross-the-host"],
     };
     const registry = createProviderRegistry([provider]);
@@ -43,11 +46,35 @@ describe("Provider profile readiness registry", () => {
     await registry.probe(profile);
 
     expect(registry.readiness(profile)).toEqual({
-      state: "version_mismatch",
-      unavailableReasons: ["provider_version_mismatch"],
+      state: "available",
+      unavailableReasons: [],
       missingCapabilities: [],
+      observedProviderVersion: "1.18.15",
+      observedProtocolFingerprint: "sha256:runtime-discovered-1.18.15",
     });
     expect(JSON.stringify(registry.readiness(profile))).not.toContain("must-not-cross-the-host");
+  });
+
+  it("fails closed on provider identity mismatch or incomplete observed protocol evidence", async () => {
+    const provider = new ReadinessProvider();
+    const registry = createProviderRegistry([provider]);
+
+    provider.report = { ...matchingReport(), provider: "codex" };
+    await expect(registry.probe(profile, { force: true })).resolves.toEqual({
+      state: "unavailable",
+      unavailableReasons: ["provider_mismatch"],
+      missingCapabilities: [],
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
+    });
+
+    provider.report = { ...matchingReport(), protocolFingerprint: undefined };
+    await expect(registry.probe(profile, { force: true })).resolves.toEqual({
+      state: "unavailable",
+      unavailableReasons: ["provider_unavailable"],
+      missingCapabilities: [],
+      observedProviderVersion: profile.providerVersion,
+    });
   });
 
   it("forces the owner command gate to revalidate a previously available profile", async () => {

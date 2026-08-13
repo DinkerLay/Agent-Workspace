@@ -2,7 +2,6 @@ import {
   createId,
   type ExecutionProfileDefinition,
   type InputSubmissionId,
-  type InvocationId,
   type ProviderCapabilities,
   type ProviderEffect,
   type ProviderEffectKind,
@@ -38,7 +37,6 @@ export interface FakeEnsureBindingRequest {
 export interface FakeSubmitDeliveryRequest {
   readonly bindingId: ProviderSessionBindingId;
   readonly inputSubmissionId: InputSubmissionId;
-  readonly invocationId?: InvocationId;
   readonly effectId?: string;
 }
 
@@ -48,7 +46,6 @@ export interface FakeObserveBindingRequest {
 
 export interface FakeInterruptRequest {
   readonly bindingId: ProviderSessionBindingId;
-  readonly invocationId?: InvocationId;
   readonly effectId?: string;
 }
 
@@ -126,7 +123,6 @@ export class FakeProvider implements FakeProviderPort {
     return this.recordEffect("submit_delivery", request.effectId, {
       bindingId: request.bindingId,
       inputSubmissionId: request.inputSubmissionId,
-      ...(request.invocationId ? { invocationId: request.invocationId } : {}),
     });
   }
 
@@ -154,7 +150,6 @@ export class FakeProvider implements FakeProviderPort {
   async requestInterrupt(request: FakeInterruptRequest): Promise<ProviderEffect> {
     return this.recordEffect("request_interrupt", request.effectId, {
       bindingId: request.bindingId,
-      ...(request.invocationId ? { invocationId: request.invocationId } : {}),
     });
   }
 
@@ -236,7 +231,6 @@ export function createFakeProvider(options: FakeProviderOptions = {}): FakeProvi
 export function providerEffectHasNoFact(provider: FakeProvider, effect: ProviderEffect): boolean {
   return !provider.facts.some((fact) =>
     (effect.inputSubmissionId !== undefined && fact.correlation.inputSubmissionId === effect.inputSubmissionId)
-    || (effect.invocationId !== undefined && fact.correlation.invocationId === effect.invocationId)
     || (effect.attentionId !== undefined && fact.correlation.attentionId === effect.attentionId),
   );
 }

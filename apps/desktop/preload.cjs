@@ -2,70 +2,77 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
 
-/**
- * Electron sandbox preloads cannot resolve relative modules. Keep this narrow
- * facade self-contained so sandboxed renderer startup cannot silently fall
- * back to the browser Runtime client.
- */
-const RUNTIME_IPC_CHANNELS = Object.freeze({
-  read: "agent-workspace:runtime:read",
-  command: "agent-workspace:runtime:command",
-  subscribe: "agent-workspace:runtime:subscribe",
-  unsubscribe: "agent-workspace:runtime:unsubscribe",
-  invalidated: "agent-workspace:runtime:invalidated",
+/* Sandbox preloads cannot resolve local modules; keep the formal facade self-contained. */
+const SESSION_ID_ROOT_RUNTIME_IPC_CHANNELS = Object.freeze({
+  workspaceRead: "agent-workspace:session-id-root:workspace-read",
+  taskRead: "agent-workspace:session-id-root:task-read",
+  configurationRead: "agent-workspace:session-id-root:configuration-read",
+  command: "agent-workspace:session-id-root:command",
+  subscribe: "agent-workspace:session-id-root:subscribe",
+  unsubscribe: "agent-workspace:session-id-root:unsubscribe",
+  invalidated: "agent-workspace:session-id-root:invalidated",
 });
 
-function createDesktopRuntimeClient(ipc) {
-  const invalidationListeners = new Map();
+function createSessionIdRootDesktopFacade(ipc, createSubscriptionId = defaultSubscriptionId) {
+  if (!ipc || typeof ipc.invoke !== "function" || typeof ipc.on !== "function") {
+    throw new TypeError("session_id_root_runtime_ipc_invalid");
+  }
+  const listeners = new Map();
   let attached = false;
-
-  function attachInvalidationListener() {
+  const attach = () => {
     if (attached) return;
     attached = true;
-    ipc.on(RUNTIME_IPC_CHANNELS.invalidated, (_event, message) => {
+    ipc.on(SESSION_ID_ROOT_RUNTIME_IPC_CHANNELS.invalidated, (_event, message) => {
       if (!message || typeof message !== "object" || typeof message.subscriptionId !== "string" || !message.invalidation) return;
-      invalidationListeners.get(message.subscriptionId)?.(message.invalidation);
+      listeners.get(message.subscriptionId)?.(message.invalidation);
     });
-  }
+  };
 
   return Object.freeze({
-    read(request = {}) {
-      return ipc.invoke(RUNTIME_IPC_CHANNELS.read, request);
-    },
-    command(command) {
-      return ipc.invoke(RUNTIME_IPC_CHANNELS.command, command);
-    },
-    async subscribe(request = {}, listener) {
-      if (typeof listener !== "function") throw new TypeError("subscription listener is required");
-      attachInvalidationListener();
-      const subscriptionId = createClientSubscriptionId();
-      invalidationListeners.set(subscriptionId, listener);
+    readWorkspace: () => ipc.invoke(SESSION_ID_ROOT_RUNTIME_IPC_CHANNELS.workspaceRead),
+    readTask: (request) => ipc.invoke(SESSION_ID_ROOT_RUNTIME_IPC_CHANNELS.taskRead, request),
+    readConfiguration: (request) => ipc.invoke(SESSION_ID_ROOT_RUNTIME_IPC_CHANNELS.configurationRead, request),
+    command: (command) => ipc.invoke(SESSION_ID_ROOT_RUNTIME_IPC_CHANNELS.command, command),
+    async subscribe(scope, listener) {
+      if (typeof listener !== "function") throw new TypeError("session_id_root_runtime_listener_required");
+      attach();
+      const subscriptionId = createSubscriptionId();
+      listeners.set(subscriptionId, listener);
       try {
-        const response = await ipc.invoke(RUNTIME_IPC_CHANNELS.subscribe, { ...request, clientSubscriptionId: subscriptionId });
-        if (response?.subscriptionId !== subscriptionId) throw new Error("runtime_subscription_identity_mismatch");
+        const response = await ipc.invoke(SESSION_ID_ROOT_RUNTIME_IPC_CHANNELS.subscribe, {
+          ...scope,
+          clientSubscriptionId: subscriptionId,
+        });
+        if (response?.subscriptionId !== subscriptionId) throw new Error("session_id_root_subscription_identity_mismatch");
       } catch (error) {
-        invalidationListeners.delete(subscriptionId);
+        listeners.delete(subscriptionId);
         throw error;
       }
       return async () => {
-        invalidationListeners.delete(subscriptionId);
-        await ipc.invoke(RUNTIME_IPC_CHANNELS.unsubscribe, { subscriptionId });
+        listeners.delete(subscriptionId);
+        await ipc.invoke(SESSION_ID_ROOT_RUNTIME_IPC_CHANNELS.unsubscribe, { subscriptionId });
       };
     },
   });
 }
 
-function createClientSubscriptionId() {
-  return `renderer-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+function defaultSubscriptionId() {
+  return `session-id-root-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 contextBridge.exposeInMainWorld(
   "agentWorkspace",
   Object.freeze({
-    runtime: createDesktopRuntimeClient(ipcRenderer),
+    sessionIdRuntime: Object.freeze({
+      ...createSessionIdRootDesktopFacade(ipcRenderer),
+      authenticatedUserId: rendererOwnerId(process.env.AGENT_WORKSPACE_OWNER_ID),
+    }),
   }),
 );
 
-module.exports = {
-  createDesktopRuntimeClient,
-};
+function rendererOwnerId(value) {
+  const normalized = typeof value === "string" && value.trim() ? value.trim() : "user_local";
+  return /^user_[A-Za-z0-9_-]{1,251}$/.test(normalized) ? normalized : "user_local";
+}
+
+module.exports = { createSessionIdRootDesktopFacade };

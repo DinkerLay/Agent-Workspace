@@ -1,12 +1,18 @@
-export { AgentLoopRuntimeApp, type AgentLoopRuntimeAppProps } from "./agent-loop/AgentLoopRuntimeApp";
-export { AgentLoopTaskSurface, type AgentLoopTaskListMode, type AgentLoopTaskSurfaceProps } from "./agent-loop/AgentLoopTaskSurface";
-export { AgentLoopTaskCreateDialog, type AgentLoopTaskCreateDialogProps } from "./agent-loop/AgentLoopTaskCreateDialog";
 export { AgentLoopTemplateStudio, type AgentLoopTemplateStudioProps } from "./agent-loop/AgentLoopTemplateStudio";
 export {
-  createAgentLoopConfigurationController,
-  toMetaPanelViewModel,
+  AgentLoopChatComposer,
+  AgentLoopChatMessage,
+  AgentLoopChatTranscript,
+  type AgentLoopChatComposerProps,
+  type AgentLoopChatMessageProps,
+  type AgentLoopChatTranscriptProps,
+} from "./agent-loop/AgentLoopChatUI";
+export {
+  AgentLoopAcpProfileSummary,
+  type AgentLoopAcpProfileSummaryProps,
+} from "./agent-loop/AgentLoopAcpProfileSummary";
+export {
   type AgentLoopConfigurationController,
-  type AgentLoopConfigurationControllerOptions,
   type AgentLoopCreateTaskSetupDraftInput,
 } from "./agent-loop/agent-loop-configuration-controller";
 export {
@@ -18,58 +24,120 @@ export {
   type AgentLoopMetaPatchFieldDiff,
   type AgentLoopMetaPatchProposal,
   type AgentLoopMetaProfileOption,
+  type AgentLoopMetaProfileOptionV3,
   type AgentLoopMetaScope,
 } from "./agent-loop/AgentLoopMetaPanel";
 export {
   AgentLoopTaskSetupSurface,
   type AgentLoopTaskSetupController,
   type AgentLoopTaskSetupDraftInput,
+  type AgentLoopTaskSetupProfileOption,
+  type AgentLoopTaskSetupProfileOptionV2,
+  type AgentLoopTaskSetupProfileOptionV3,
   type AgentLoopTaskSetupSchemaField,
   type AgentLoopTaskSetupSurfaceProps,
   type AgentLoopTaskSetupViewModel,
 } from "./agent-loop/AgentLoopTaskSetupSurface";
 export {
-  AgentLoopArtifactHtmlPreview,
-  type AgentLoopArtifactHtmlPreviewProps,
-} from "./agent-loop/AgentLoopArtifactHtmlPreview";
-export {
-  createAgentLoopTemplateStudioController,
   createAgentLoopTemplateDraftEditor,
   downloadAgentLoopTemplateExport,
+  type AgentLoopTemplateCurrentVersion,
   type AgentLoopTemplateDraftEditor,
   type AgentLoopTemplateExport,
   type AgentLoopTemplateImportFile,
   type AgentLoopTemplateImportMode,
   type AgentLoopTemplateImportPreview,
+  type AgentLoopTemplateProfileRevisionOption,
   type AgentLoopTemplateStudioController,
-  type AgentLoopTemplateStudioControllerOptions,
+  type AgentLoopTemplateStudioDraft,
+  type AgentLoopTemplateStudioSelectedTemplate,
+  type AgentLoopTemplateStudioSurfaceController,
+  type AgentLoopTemplateStudioTemplate,
+  type AgentLoopTemplateStudioUnsubscribe,
   type AgentLoopTemplateStudioViewModel,
+  type AgentLoopTemplateV3MigrationInput,
+  type AgentLoopTemplateVersion,
 } from "./agent-loop/agent-loop-template-studio-controller";
 export {
-  createAgentLoopRuntimeController,
-  type AgentLoopInputSubmissionIntent,
-  type AgentLoopRuntimeController,
-  type AgentLoopRuntimeControllerOptions,
-  type AgentLoopWorkspaceAuthorization,
-} from "./agent-loop/agent-loop-runtime-controller";
-export {
-  toAgentLoopRuntimeViewModel,
-  type AgentLoopArtifactItem,
-  type AgentLoopAttentionItem,
-  type AgentLoopRuntimeViewModel,
-  type AgentLoopSessionItem,
-  type AgentLoopTaskDetail,
-  type AgentLoopTaskListItem,
-  type AgentLoopTemplateListItem,
-  type AgentLoopWorkspaceListItem,
-} from "./agent-loop/agent-loop-model";
-export {
   AgentLoopSessionPresentation,
-  type AgentLoopAttentionDisplay,
-  type AgentLoopAttentionResponse,
   type AgentLoopBindingDisplay,
   type AgentLoopComposerDisplay,
   type AgentLoopComposerSubmission,
+  type AgentLoopInteractionDisplay,
+  type AgentLoopInteractionResponse,
   type AgentLoopSessionDisplay,
   type AgentLoopStopTaskRequest,
 } from "./agent-loop/AgentLoopSessionPresentation";
+export {
+  type AgentLoopExecutionGroup,
+  type AgentLoopInboxDeliveryItem,
+  type AgentLoopRelayBlockItem,
+  type AgentLoopSessionMessageItem,
+} from "./agent-loop/agent-loop-session-id-presentation-model";
+export {
+  createAgentLoopSessionIdRuntimeController,
+  type AgentLoopSessionIdCommandResult,
+  type AgentLoopSessionIdCommandTrace,
+  type AgentLoopSessionIdContinuity,
+  type AgentLoopSessionIdControlItem,
+  type AgentLoopSessionIdDirectoryItem,
+  type AgentLoopSessionIdDirectoryState,
+  type AgentLoopSessionIdHumanAbandonOutcome,
+  type AgentLoopSessionIdHumanDelivery,
+  type AgentLoopSessionIdHumanMessageTarget,
+  type AgentLoopSessionIdHumanSendOutcome,
+  type AgentLoopSessionIdInterruptOutcome,
+  type AgentLoopSessionIdInvalidation,
+  type AgentLoopSessionIdRuntimeController,
+  type AgentLoopSessionIdRuntimeControllerOptions,
+  type AgentLoopSessionIdRuntimePort,
+  type AgentLoopSessionIdPlanningFence,
+  type AgentLoopSessionIdProfile,
+  type AgentLoopSessionIdProfileV3,
+  type AgentLoopSessionIdSession,
+  type AgentLoopSessionIdTaskReadModel,
+  type AgentLoopSessionIdUiCommand,
+  type AgentLoopWorkspaceFileObservation,
+  type AgentLoopWorkspaceFilePreview,
+} from "./agent-loop/agent-loop-session-id-runtime-controller";
+export {
+  AgentLoopSessionIdTaskSurface,
+  type AgentLoopSessionIdTaskSurfaceProps,
+} from "./agent-loop/AgentLoopSessionIdTaskSurface";
+export {
+  AgentLoopSessionIdRuntimeApp,
+  type AgentLoopSessionIdRuntimeAppProps,
+} from "./agent-loop/AgentLoopSessionIdRuntimeApp";
+export {
+  AgentLoopProviderSettings,
+  type AgentLoopProviderSettingsController,
+} from "./agent-loop/AgentLoopProviderSettings";
+export {
+  AgentLoopSessionIdTaskSetupLauncher,
+  type AgentLoopSessionIdTaskSetupLauncherProps,
+} from "./agent-loop/AgentLoopSessionIdTaskSetupLauncher";
+export {
+  createAgentLoopSessionIdConfigurationControllers,
+  type AgentLoopSessionIdConfigurationCommand,
+  type AgentLoopSessionIdConfigurationCommandResult,
+  type AgentLoopSessionIdConfigurationCommandTrace,
+  type AgentLoopSessionIdConfigurationControllers,
+  type AgentLoopSessionIdConfigurationControllerOptions,
+  type AgentLoopSessionIdConfigurationInvalidation,
+  type AgentLoopSessionIdConfigurationReadRequest,
+  type AgentLoopSessionIdConfigurationReadResult,
+  type AgentLoopSessionIdConfigurationRuntimePort,
+} from "./agent-loop/agent-loop-session-id-configuration-controller";
+export {
+  createAgentLoopSessionIdRootController,
+  type AgentLoopSessionIdFileStateAnchor,
+  type AgentLoopSessionIdLifecycleCommand,
+  type AgentLoopSessionIdLifecycleCommandResult,
+  type AgentLoopSessionIdRootController,
+  type AgentLoopSessionIdRootControllerOptions,
+  type AgentLoopSessionIdRootInvalidation,
+  type AgentLoopSessionIdRootRuntimePort,
+  type AgentLoopSessionIdTaskSetupOptions,
+  type AgentLoopSessionIdTaskSummary,
+  type AgentLoopSessionIdWorkspaceReadModel,
+} from "./agent-loop/agent-loop-session-id-root-controller";

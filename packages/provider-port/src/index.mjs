@@ -2,7 +2,7 @@
  * ProviderPort is the Runtime Host's provider boundary.
  *
  * A ProviderEffect is only local transport acceptance. A ProviderFact is the
- * only native observation that may advance Binding/Input/Invocation/Attention
+ * only native observation that may advance Binding/Input/Turn/Attention
  * state. This package has no Task, Run, Store, credential, or UI dependency.
  * Adapter selection happens outside the port through a frozen ExecutionProfile.
  */
@@ -185,7 +185,7 @@ export function providerFactDedupKey(fact) {
  */
 export function createProtocolGatedProviderAdapter({
   provider,
-  declaredProtocol,
+  startupProtocolObservation,
   capabilities,
   transport,
   mapNativeFact = (raw) => raw,
@@ -213,6 +213,9 @@ export function createProtocolGatedProviderAdapter({
       && (!verifiedCapabilities || verifiedCapabilities.has(capability))),
   );
   const attentionScopes = new Map();
+  // Production composition supplies the protocol observation made while the
+  // Host starts. It is a process-local transport baseline, not a profile equality gate.
+  const runtimeProtocolObservation = observedProtocolEvidence(startupProtocolObservation);
 
   async function describeCapabilities(profile) {
     let observedProtocol;
@@ -221,18 +224,18 @@ export function createProtocolGatedProviderAdapter({
     } catch (cause) {
       return unavailableCapabilities({
         provider: normalizedProvider,
-        declaredProtocol,
         reasons: ["protocol_observation_failed"],
         diagnostic: String(cause?.message ?? cause),
       });
     }
-    return evaluateProtocolCompatibility({
+    const report = evaluateProtocolCompatibility({
       provider: normalizedProvider,
       profile,
-      declaredProtocol,
       observedProtocol,
       capabilities: availableCapabilities,
+      runtimeProtocolObservation,
     });
+    return report;
   }
 
   async function ensureAvailable(request) {
@@ -420,8 +423,8 @@ export function providerTransportOperations(transport) {
 
 /**
  * Derives a conservative Capability report from operations that the configured
- * transport can actually receive. Semantic protocol proof is still supplied by
- * the version-pinned integration spike; this function only prevents missing
+ * transport can actually receive. Semantic proof still comes from current
+ * structural and live qualification; this function only prevents missing
  * routes/process operations from being advertised as usable capabilities.
  */
 export function deriveProviderCapabilitiesFromTransport(transport) {
@@ -462,7 +465,6 @@ export function createProviderEffect({ provider, operation, request, response, a
     provider: requiredProvider(provider),
     bindingId: stringOrUndefined(request?.bindingId),
     inputSubmissionId: stringOrUndefined(request?.inputSubmissionId),
-    invocationId: stringOrUndefined(request?.invocationId),
     attentionId: stringOrUndefined(request?.attentionId),
     acceptance,
     acceptedAt: requiredString(acceptedAt, "acceptedAt"),
@@ -480,18 +482,16 @@ export function normalizeProviderFact({ provider, bindingId, bindingRevision, na
 
   // A final is a message-bearing fact, not an inference from a terminal turn.
   // Keep the contract narrow so each Adapter can emit it only when its native
-  // protocol actually supplied the associated managed input (or legacy
-  // Invocation correlation) and the text. Relay and human-direct turns do not
-  // have an Invocation, so requiring one would silently drop valid finals.
+  // protocol actually supplied the associated managed input and the text.
   if (kind === "assistant_final") {
-    if (!correlation.inputSubmissionId && !correlation.invocationId) {
-      throw new Error("assistant_final.inputSubmissionId_or_invocationId_required");
+    if (!correlation.inputSubmissionId) {
+      throw new Error("assistant_final.inputSubmissionId_required");
     }
     requiredString(payload.content, "assistant_final.payload.content");
   }
 
   if (kind === "activity_observed") {
-    if (!correlation.inputSubmissionId && !correlation.invocationId && !correlation.sessionTurnId) {
+    if (!correlation.inputSubmissionId && !correlation.sessionTurnId) {
       throw new Error("activity_observed.correlation_required");
     }
     payload = normalizeProviderActivityPayload(payload);
@@ -562,18 +562,22 @@ export function createScriptedProviderTransport({ protocol, effects = {}, stream
   });
 }
 
-function evaluateProtocolCompatibility({ provider, profile, declaredProtocol, observedProtocol, capabilities }) {
+function evaluateProtocolCompatibility({ provider, profile, observedProtocol, capabilities, runtimeProtocolObservation }) {
   const reasons = [];
   const expected = normalizeProfile(profile);
-  const declared = normalizeProtocol(declaredProtocol);
-  const observed = normalizeProtocol(observedProtocol);
+  const observed = observedProtocolEvidence(observedProtocol);
   if (expected.provider !== provider) reasons.push("execution_profile_provider_mismatch");
   for (const field of ["providerVersion", "protocolFingerprint"]) {
-    if (!declared[field]) reasons.push(`adapter_${field}_not_pinned`);
-    if (!expected[field]) reasons.push(`execution_profile_${field}_missing`);
+    if (!runtimeProtocolObservation[field]) reasons.push(`runtime_observation_${field}_missing`);
     if (!observed[field]) reasons.push(`observed_${field}_missing`);
-    if (declared[field] && observed[field] && declared[field] !== observed[field]) reasons.push(`adapter_${field}_mismatch`);
-    if (expected[field] && observed[field] && expected[field] !== observed[field]) reasons.push(`execution_profile_${field}_mismatch`);
+  }
+  if (runtimeProtocolObservation.providerVersion
+    && runtimeProtocolObservation.protocolFingerprint
+    && observed.providerVersion
+    && observed.protocolFingerprint
+    && (runtimeProtocolObservation.providerVersion !== observed.providerVersion
+      || runtimeProtocolObservation.protocolFingerprint !== observed.protocolFingerprint)) {
+    reasons.push("transport_protocol_observation_drift");
   }
   const knownCapabilities = new Set(normalizeCapabilities(capabilities));
   for (const capability of expected.requiredCapabilities) {
@@ -589,13 +593,10 @@ function evaluateProtocolCompatibility({ provider, profile, declaredProtocol, ob
   });
 }
 
-function unavailableCapabilities({ provider, declaredProtocol, reasons }) {
-  const declared = normalizeProtocol(declaredProtocol);
+function unavailableCapabilities({ provider, reasons }) {
   return freezeWithoutUndefined({
     provider,
     available: false,
-    providerVersion: declared.providerVersion,
-    protocolFingerprint: declared.protocolFingerprint,
     capabilities: Object.freeze([]),
     unavailableReasons: Object.freeze(reasons),
   });
@@ -623,7 +624,6 @@ function attentionScopeFromFact(fact) {
     bindingRevision: fact.bindingRevision,
     nativeRequestId: requiredString(fact.correlation.nativeRequestId, "nativeRequestId"),
     inputSubmissionId: stringOrUndefined(fact.correlation.inputSubmissionId),
-    invocationId: stringOrUndefined(fact.correlation.invocationId),
   });
 }
 
@@ -634,7 +634,6 @@ function normalizeAttentionScope(request) {
     bindingRevision: positiveInteger(request?.bindingRevision, "bindingRevision"),
     nativeRequestId: requiredString(request?.nativeRequestId, "nativeRequestId"),
     inputSubmissionId: stringOrUndefined(request?.activeInputSubmissionId ?? request?.inputSubmissionId),
-    invocationId: stringOrUndefined(request?.activeInvocationId ?? request?.invocationId),
   });
 }
 
@@ -643,8 +642,7 @@ function sameAttentionScope(left, right) {
     && left.bindingId === right.bindingId
     && left.bindingRevision === right.bindingRevision
     && left.nativeRequestId === right.nativeRequestId
-    && left.inputSubmissionId === right.inputSubmissionId
-    && left.invocationId === right.invocationId;
+    && left.inputSubmissionId === right.inputSubmissionId;
 }
 
 function normalizeProfile(profile) {
@@ -654,19 +652,16 @@ function normalizeProfile(profile) {
   const policy = source.capabilityPolicy;
   return {
     provider: requiredProvider(source.provider),
-    providerVersion: requiredString(source.providerVersion, "executionProfile.providerVersion"),
-    protocolFingerprint: requiredString(source.protocolFingerprint, "executionProfile.protocolFingerprint"),
     requiredCapabilities: normalizeCapabilities(policy.requiredCapabilities),
   };
 }
 
-function normalizeProtocol(protocol) {
-  if (!isRecord(protocol)) throw new ProviderProtocolError("Protocol pin is missing.");
-  const source = protocol;
-  return {
-    providerVersion: requiredString(source.providerVersion, "protocol.providerVersion"),
-    protocolFingerprint: requiredString(source.protocolFingerprint, "protocol.protocolFingerprint"),
-  };
+function observedProtocolEvidence(protocol) {
+  const source = isRecord(protocol) ? protocol : {};
+  return freezeWithoutUndefined({
+    providerVersion: stringOrUndefined(source.providerVersion),
+    protocolFingerprint: stringOrUndefined(source.protocolFingerprint),
+  });
 }
 
 function normalizeCapabilities(capabilities) {
@@ -686,7 +681,6 @@ function normalizeCorrelation(raw) {
   return freezeWithoutUndefined({
     inputSubmissionId: stringOrUndefined(correlation.inputSubmissionId ?? raw.inputSubmissionId),
     sessionTurnId: stringOrUndefined(correlation.sessionTurnId ?? raw.sessionTurnId),
-    invocationId: stringOrUndefined(correlation.invocationId ?? raw.invocationId),
     attentionId: stringOrUndefined(correlation.attentionId ?? raw.attention?.attentionId ?? raw.attentionId),
     nativeMessageId: stringOrUndefined(correlation.nativeMessageId ?? raw.nativeMessageId ?? raw.messageId ?? raw.message?.id),
     nativeTurnId: stringOrUndefined(correlation.nativeTurnId ?? raw.nativeTurnId ?? raw.turnId ?? raw.turn?.id),

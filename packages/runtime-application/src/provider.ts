@@ -15,6 +15,8 @@ export type ProviderProfileReadiness = Readonly<{
   state: "checking" | "available" | "unavailable" | "version_mismatch" | "capability_missing";
   unavailableReasons: readonly ExecutionProfileReadinessReason[];
   missingCapabilities: readonly ProviderCapability[];
+  observedProviderVersion?: string;
+  observedProtocolFingerprint?: string;
 }>;
 
 export interface ProviderRegistry {
@@ -76,24 +78,26 @@ export function createProviderRegistry(
     }
     const pending = boundedProbe(() => port.describeCapabilities(profile), probeTimeoutMs)
       .then((report): ProviderProfileReadiness => {
+        const observation = providerProtocolObservation(report);
         const missing = profile.capabilityPolicy.requiredCapabilities.filter((capability) => !report.capabilities.includes(capability));
-        const pinReasons: ExecutionProfileReadinessReason[] = [
-          ...(report.provider !== profile.provider ? ["provider_mismatch" as const] : []),
-          ...(report.providerVersion !== profile.providerVersion ? ["provider_version_mismatch" as const] : []),
-          ...(report.protocolFingerprint !== profile.protocolFingerprint ? ["protocol_fingerprint_mismatch" as const] : []),
-        ];
-        if (pinReasons.length > 0) return unavailable("version_mismatch", pinReasons);
+        if (report.provider !== profile.provider) {
+          return unavailable("unavailable", ["provider_mismatch"], [], observation);
+        }
+        if (!observation.observedProviderVersion || !observation.observedProtocolFingerprint) {
+          return unavailable("unavailable", ["provider_unavailable"], [], observation);
+        }
         if (missing.length > 0) {
           return unavailable(
             "capability_missing",
             missing.map((capability) => `capability_${capability}_unavailable` as const),
             missing,
+            observation,
           );
         }
         if (!report.available) {
-          return unavailable("unavailable", ["provider_unavailable"]);
+          return unavailable("unavailable", ["provider_unavailable"], [], observation);
         }
-        return unavailable("available", []);
+        return unavailable("available", [], [], observation);
       })
       .catch(() => unavailable("unavailable", ["provider_probe_failed"]))
       .then((result) => {
@@ -147,10 +151,35 @@ function unavailable(
   state: ProviderProfileReadiness["state"],
   reasons: readonly ExecutionProfileReadinessReason[],
   missingCapabilities: readonly ProviderCapability[] = [],
+  observation: Readonly<{
+    observedProviderVersion?: string;
+    observedProtocolFingerprint?: string;
+  }> = {},
 ): ProviderProfileReadiness {
   return Object.freeze({
     state,
     unavailableReasons: Object.freeze([...reasons]),
     missingCapabilities: Object.freeze([...missingCapabilities]),
+    ...observation,
   });
+}
+
+function providerProtocolObservation(report: Readonly<{
+  providerVersion?: string;
+  protocolFingerprint?: string;
+}>): Readonly<{
+  observedProviderVersion?: string;
+  observedProtocolFingerprint?: string;
+}> {
+  const providerVersion = nonEmptyString(report.providerVersion);
+  const protocolFingerprint = nonEmptyString(report.protocolFingerprint);
+  return Object.freeze({
+    ...(providerVersion ? { observedProviderVersion: providerVersion } : {}),
+    ...(protocolFingerprint ? { observedProtocolFingerprint: protocolFingerprint } : {}),
+  });
+}
+
+function nonEmptyString(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized || undefined;
 }

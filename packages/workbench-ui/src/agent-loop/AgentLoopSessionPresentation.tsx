@@ -2,23 +2,21 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
-  FilePenLine,
-  Globe2,
   LoaderCircle,
-  MessageSquareText,
-  Send,
-  Wrench,
   X,
 } from "lucide-react";
 import { useState } from "react";
-import type { FormEvent } from "react";
 import type {
   AgentLoopInboxDeliveryItem,
   AgentLoopExecutionGroup,
-  AgentLoopProviderActivityItem,
   AgentLoopRelayBlockItem,
   AgentLoopSessionMessageItem,
-} from "./agent-loop-model";
+} from "./agent-loop-session-id-presentation-model";
+import {
+  AgentLoopChatComposer,
+  AgentLoopChatMessage,
+  AgentLoopChatTranscript,
+} from "./AgentLoopChatUI";
 
 /**
  * Renderer-only session surface for the preserved AgentLoop conversation.
@@ -36,12 +34,12 @@ export type AgentLoopSessionPresentationProps = Readonly<{
   messages?: readonly AgentLoopSessionMessageItem[];
   /** Human-only execution trace, already normalized and scoped by Runtime. */
   executionGroups?: readonly AgentLoopExecutionGroup[];
-  attentions?: readonly AgentLoopAttentionDisplay[];
+  interactions?: readonly AgentLoopInteractionDisplay[];
   composer: AgentLoopComposerDisplay;
   onComposerChange: (message: string) => void;
   onSubmitInput: (input: AgentLoopComposerSubmission) => Promise<void> | void;
   onStopTask?: (input: AgentLoopStopTaskRequest) => Promise<void> | void;
-  onRespondAttention: (input: AgentLoopAttentionResponse) => Promise<void> | void;
+  onRespondInteraction: (input: AgentLoopInteractionResponse) => Promise<void> | void;
   /** TaskSurface supplies a separate fixed Conductor composer. */
   showComposer?: boolean;
 }>;
@@ -73,6 +71,9 @@ export type AgentLoopComposerDisplay = Readonly<{
   disabled?: boolean;
   stopDisabled?: boolean;
   continuity?: AgentLoopComposerContinuity;
+  /** Stable locator names are supplied by the owning formal Surface. */
+  testId?: string;
+  sendTestId?: string;
 }>;
 
 export type AgentLoopComposerSubmission = Readonly<{
@@ -86,20 +87,20 @@ export type AgentLoopStopTaskRequest = Readonly<{
   logicalSessionId: string;
 }>;
 
-export type AgentLoopAttentionDisplay = Readonly<{
-  attentionId: string;
-  title: string;
-  status: string;
-  prompt?: string;
-  options?: readonly string[];
-  disabled?: boolean;
+export type AgentLoopInteractionDisplay = Readonly<{
+  interactionId: string;
+  interactionRevision: number;
+  choices: readonly Readonly<{
+    choiceId: string;
+    label: string;
+  }>[];
 }>;
 
-export type AgentLoopAttentionResponse = Readonly<{
+export type AgentLoopInteractionResponse = Readonly<{
   taskId: string;
   logicalSessionId: string;
-  attentionId: string;
-  response: string;
+  interactionId: string;
+  choiceId: string;
 }>;
 
 /**
@@ -113,12 +114,12 @@ export function AgentLoopSessionPresentation({
   binding,
   messages = [],
   executionGroups = [],
-  attentions = [],
+  interactions = [],
   composer,
   onComposerChange,
   onSubmitInput,
   onStopTask,
-  onRespondAttention,
+  onRespondInteraction,
   showComposer = true,
 }: AgentLoopSessionPresentationProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -132,8 +133,7 @@ export function AgentLoopSessionPresentation({
     : "发送给 Conductor";
   const entries = transcriptEntries(messages, executionGroups);
 
-  const submitComposer = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const submitComposer = async () => {
     const content = composer.message.trim();
     if (composerDisabled || !content) return;
     setComposerError(undefined);
@@ -162,68 +162,58 @@ export function AgentLoopSessionPresentation({
 
   return (
     <section className="awb-session-presentation" aria-label={`${sessionTitle} 会话`}>
-      <section className="awb-session-transcript" aria-label="会话消息">
-        <div className="awb-section-heading">
-          <div><h4>会话消息</h4><span>{messages.length} 条消息{executionGroups.length ? ` · ${executionGroups.length} 个执行过程` : ""}</span></div>
-          <dl className="awb-session-status-grid" aria-label="会话与绑定状态">
+      <AgentLoopChatTranscript
+        ariaLabel="会话消息"
+        className="awb-session-transcript"
+        context={<dl className="awb-session-status-grid" aria-label="会话与绑定状态">
             <div><dt>Session</dt><dd>{session.kind} · {session.status}</dd></div>
             <div><dt>Binding</dt><dd>{binding.label} · {binding.status}</dd></div>
             {binding.detail ? <div><dt>状态说明</dt><dd>{binding.detail}</dd></div> : null}
-          </dl>
-        </div>
-        <div className="awb-session-message-scroll">
-          {entries.length === 0 ? <p className="awb-empty">还没有可展示的统一 Message。Task 目标、用户输入、派发与 Agent 回信都会在这里出现。</p> : (
-            <ol className="awb-session-message-list">
-              {entries.map((entry) => entry.kind === "message"
-                ? <SessionMessageCard message={entry.message} session={session} key={`message:${entry.message.messageId}`} />
-                : <SessionExecutionGroup group={entry.group} key={`execution:${entry.group.executionGroupId}`} />)}
-            </ol>
-          )}
-        </div>
-      </section>
+          </dl>}
+        empty={<p className="awb-empty">还没有可展示的统一 Message。Task 目标、用户输入、派发与 Agent 回信都会在这里出现。</p>}
+        status={`${messages.length} 条消息${executionGroups.length ? ` · ${executionGroups.length} 个执行过程` : ""}`}
+        title="对话"
+      >
+        {entries.length ? entries.map((entry) => entry.kind === "message"
+          ? <SessionMessageCard message={entry.message} session={session} key={`message:${entry.message.messageId}`} />
+          : <SessionExecutionGroup group={entry.group} key={`execution:${entry.group.executionGroupId}`} />) : undefined}
+      </AgentLoopChatTranscript>
 
-      {attentions.length > 0 ? (
-        <section className="awb-session-attentions" aria-label="需要你的确认">
-          <div className="awb-section-heading"><h4>需要你的确认</h4><span>{attentions.length}</span></div>
-          {attentions.map((attention) => (
-            <AttentionResponseCard
-              attention={attention}
-              key={attention.attentionId}
+      {interactions.length > 0 ? (
+        <section className="awb-session-interactions" aria-label="需要你的确认">
+          <div className="awb-section-heading"><h4>需要你的确认</h4><span>{interactions.length}</span></div>
+          {interactions.map((interaction) => (
+            <InteractionResponseCard
+              interaction={interaction}
+              key={interaction.interactionId}
               logicalSessionId={session.logicalSessionId}
               taskId={taskId}
-              onRespondAttention={onRespondAttention}
+              onRespondInteraction={onRespondInteraction}
             />
           ))}
         </section>
       ) : null}
 
-      {showComposer ? <form className="awb-composer awb-session-composer" onSubmit={(event) => void submitComposer(event)}>
-        <label>
-          {composerLabel}
-          <textarea
-            disabled={composerDisabled}
-            onChange={(event) => {
-              setComposerError(undefined);
-              onComposerChange(event.target.value);
-            }}
-            placeholder={session.kind === "card"
-              ? "直接介入此 Card；若它正在运行，将先请求中断，确认安全结束后才发送。"
-              : "补充目标、纠正结论，或要求再次核实；由 Conductor 决定是否重新派发。"}
-            rows={2}
-            value={composer.message}
-          />
-        </label>
-        {composerError ? <p className="awb-composer-warning" role="alert">{composerError}</p> : null}
-        <footer>
-          <div className="awb-composer-meta">
-            {composer.continuity ? <p className={`awb-composer-warning ${composer.continuity.state}`}>{composer.continuity.message}</p> : <span>Enter 发送 · Shift+Enter 换行</span>}
-          </div>
-          <div className="awb-composer-actions">
-            {onStopTask ? <button className="awb-button awb-button-secondary" disabled={stopDisabled} type="button" onClick={() => void stopTask()}>{isStopping ? "正在停止…" : "停止任务"}</button> : null}
-            <button className="awb-button awb-button-primary" disabled={composerDisabled || !composer.message.trim()} type="submit"><Send size={15} />{isSubmitting ? "正在发送…" : "发送"}</button>
-          </div>
-        </footer>
-      </form> : null}
+      {showComposer ? <AgentLoopChatComposer
+        busy={isSubmitting}
+        className="awb-session-composer"
+        disabled={composerDisabled}
+        error={composerError}
+        hint={composer.continuity ? <p className={`awb-composer-warning ${composer.continuity.state}`}>{composer.continuity.message}</p> : undefined}
+        label={composerLabel}
+        onChange={(content) => {
+          setComposerError(undefined);
+          onComposerChange(content);
+        }}
+        onSubmit={submitComposer}
+        placeholder={session.kind === "card"
+          ? "直接介入此 Card；若它正在运行，将先请求中断，确认安全结束后才发送。"
+          : "补充目标、纠正结论，或要求再次核实；由 Conductor 决定是否重新派发。"}
+        secondaryActions={onStopTask ? <button className="awb-button awb-button-secondary" disabled={stopDisabled} type="button" onClick={() => void stopTask()}>{isStopping ? "正在停止…" : "停止任务"}</button> : undefined}
+        sendTestId={composer.sendTestId}
+        testId={composer.testId}
+        value={composer.message}
+      /> : null}
     </section>
   );
 }
@@ -268,41 +258,18 @@ function SessionExecutionGroup({ group }: Readonly<{ group: AgentLoopExecutionGr
           <ChevronRight aria-hidden="true" className="awb-execution-chevron" size={14} />
           <span className="awb-execution-label">{statusLabel}</span>
           <span className="awb-execution-count">{countLabel}</span>
-          <span className="awb-execution-provider">{group.provider}</span>
+          <span className="awb-execution-provider">{group.providerFamily}</span>
           <ExecutionStatusIcon status={displayStatus} />
         </summary>
         <div aria-live={isRunning ? "polite" : "off"} className="awb-execution-activity-list">
-          {group.activities.map((activity) => <ProviderActivityRow activity={activity} key={activity.activityId} />)}
+          <p>Provider stream、工具调用和诊断不会进入协作消息读模型。</p>
         </div>
       </details>
     </li>
   );
 }
 
-function ProviderActivityRow({ activity }: Readonly<{ activity: AgentLoopProviderActivityItem }>) {
-  return (
-    <article className={`awb-provider-activity is-${activity.category} is-${activity.status}`} data-activity-category={activity.category}>
-      <header>
-        <span aria-hidden="true" className="awb-provider-activity-icon">{activityIcon(activity.category)}</span>
-        <strong>{activity.title}</strong>
-        {activity.detail ? <span className="awb-provider-activity-detail" title={activity.detail}>{activity.detail}</span> : null}
-        <ExecutionStatusIcon status={activity.status} />
-      </header>
-      {activity.content !== undefined ? (
-        <pre className="awb-provider-activity-content">{activity.content}{activity.category === "assistant_progress" && activity.status === "running" ? <span aria-hidden="true" className="awb-stream-caret" /> : null}</pre>
-      ) : null}
-    </article>
-  );
-}
-
-function activityIcon(category: AgentLoopProviderActivityItem["category"]) {
-  if (category === "assistant_progress") return <MessageSquareText size={15} />;
-  if (category === "change") return <FilePenLine size={15} />;
-  if (category === "web") return <Globe2 size={15} />;
-  return <Wrench size={15} />;
-}
-
-function ExecutionStatusIcon({ status }: Readonly<{ status: AgentLoopExecutionGroup["status"] | AgentLoopProviderActivityItem["status"] }>) {
+function ExecutionStatusIcon({ status }: Readonly<{ status: AgentLoopExecutionGroup["status"] }>) {
   const label = executionStatusLabel(status);
   return <span aria-label={label} className={`awb-execution-status is-${status}`} title={label}>
     {status === "running"
@@ -315,11 +282,14 @@ function ExecutionStatusIcon({ status }: Readonly<{ status: AgentLoopExecutionGr
   </span>;
 }
 
-function executionStatusLabel(status: AgentLoopExecutionGroup["status"] | AgentLoopProviderActivityItem["status"]): string {
+function executionStatusLabel(status: AgentLoopExecutionGroup["status"]): string {
+  if (status === "pending") return "等待投递";
   if (status === "running") return "运行中";
+  if (status === "waiting_for_interaction") return "等待用户选择";
   if (status === "awaiting_final") return "等待最终回复";
   if (status === "ambiguous") return "状态待确认";
   if (status === "completed") return "已完成";
+  if (status === "cancelled") return "已取消";
   return "失败";
 }
 
@@ -343,25 +313,21 @@ function SessionMessageCard({
   const deliveries = message.inboxDeliveries.filter((delivery) =>
     isFromSelectedSession || delivery.targetLogicalSessionId === session.logicalSessionId,
   );
-  return (
-    <li className={`awb-session-message is-${message.kind} ${isFromSelectedSession ? "is-outgoing" : "is-incoming"} ${isUserMessage ? "is-user-message" : ""} ${isAssistantMessage ? "is-assistant-message" : ""}`} data-message-kind={message.kind}>
-      <article>
-        <header>
-          <div>
-            <strong>{sourceLabel}</strong>
-            <span><span className="awb-session-message-kind">{messageKindLabel(message.kind)}</span><time dateTime={message.createdAt} title={message.createdAt}> · {shortTimestamp(message.createdAt)}</time></span>
-          </div>
-          <span className="awb-session-message-direction">{isFromSelectedSession ? "发送" : "收到"}</span>
-        </header>
-        <pre className="awb-session-message-content">{message.content}</pre>
-        {message.relayBlocks.length > 0 ? <section className="awb-message-relay-blocks" aria-label="转递内容">
+  return <AgentLoopChatMessage
+    className={`is-${message.kind} ${isFromSelectedSession ? "is-outgoing" : "is-incoming"} ${isUserMessage ? "is-user-message" : ""} ${isAssistantMessage ? "is-assistant-message" : ""}`}
+    content={message.content}
+    dataMessageKind={message.kind}
+    detail={<><span className="awb-session-message-kind">{messageKindLabel(message.kind)}</span><time dateTime={message.createdAt} title={message.createdAt}> · {shortTimestamp(message.createdAt)}</time></>}
+    direction={isFromSelectedSession ? "发送" : "收到"}
+    speaker={sourceLabel}
+    tone={isUserMessage ? "user" : isAssistantMessage ? "assistant" : "notice"}
+  >
+    {message.relayBlocks.length > 0 ? <section className="awb-message-relay-blocks" aria-label="转递内容">
           <p>转递内容 · {message.relayBlocks.length}</p>
           <ol>{message.relayBlocks.map((relayBlock) => <RelayBlockCard relayBlock={relayBlock} key={relayBlock.relayBlockId} />)}</ol>
         </section> : null}
-        {deliveries.length > 0 ? <InboxDeliveryStates deliveries={deliveries} session={session} /> : null}
-      </article>
-    </li>
-  );
+    {deliveries.length > 0 ? <InboxDeliveryStates deliveries={deliveries} session={session} /> : null}
+  </AgentLoopChatMessage>;
 }
 
 function RelayBlockCard({ relayBlock }: Readonly<{ relayBlock: AgentLoopRelayBlockItem }>) {
@@ -394,51 +360,56 @@ function InboxDeliveryStates({
   </ul>;
 }
 
-function AttentionResponseCard({
-  attention,
+function InteractionResponseCard({
+  interaction,
   taskId,
   logicalSessionId,
-  onRespondAttention,
+  onRespondInteraction,
 }: Readonly<{
-  attention: AgentLoopAttentionDisplay;
+  interaction: AgentLoopInteractionDisplay;
   taskId: string;
   logicalSessionId: string;
-  onRespondAttention: (input: AgentLoopAttentionResponse) => Promise<void> | void;
+  onRespondInteraction: (input: AgentLoopInteractionResponse) => Promise<void> | void;
 }>) {
-  const [response, setResponse] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string>();
-  const disabled = Boolean(attention.disabled || isSubmitting);
+  const [selectedChoiceId, setSelectedChoiceId] = useState<string>();
 
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const text = response.trim();
-    if (disabled || !text) return;
+  const submit = async (choiceId: string) => {
+    if (isSubmitting) return;
     setError(undefined);
+    setSelectedChoiceId(choiceId);
     setIsSubmitting(true);
     try {
-      await onRespondAttention({ taskId, logicalSessionId, attentionId: attention.attentionId, response: text });
-      setResponse("");
+      await onRespondInteraction({
+        taskId,
+        logicalSessionId,
+        interactionId: interaction.interactionId,
+        choiceId,
+      });
     } catch (nextError) {
       setError(messageFor(nextError));
     } finally {
       setIsSubmitting(false);
+      setSelectedChoiceId(undefined);
     }
   };
 
   return (
-    <article className="awb-detail-item awb-session-attention">
-      <div><strong>{attention.title}</strong><span>{attention.status}</span></div>
-      {attention.prompt ? <p>{attention.prompt}</p> : null}
-      <form onSubmit={(event) => void submit(event)}>
-        {attention.options?.length ? <div className="awb-option-row">{attention.options.map((option) => <button className="awb-option" disabled={disabled} key={option} type="button" onClick={() => { setError(undefined); setResponse(option); }}>{option}</button>)}</div> : null}
-        <label>
-          回复 {attention.title}
-          <input disabled={disabled} onChange={(event) => { setError(undefined); setResponse(event.target.value); }} value={response} />
-        </label>
-        {error ? <p className="awb-composer-warning" role="alert">{error}</p> : null}
-        <button className="awb-text-button" disabled={disabled || !response.trim()} type="submit">{isSubmitting ? "正在回复…" : `回复 ${attention.title}`}</button>
-      </form>
+    <article className="awb-detail-item awb-session-interaction">
+      <div><strong>请选择一项</strong><span>等待你的确认</span></div>
+      <div className="awb-option-row" role="group" aria-label="可选回复">
+        {interaction.choices.map((choice) => <button
+          className="awb-option"
+          disabled={isSubmitting}
+          key={choice.choiceId}
+          type="button"
+          onClick={() => void submit(choice.choiceId)}
+        >
+          {isSubmitting && selectedChoiceId === choice.choiceId ? "正在提交…" : choice.label}
+        </button>)}
+      </div>
+      {error ? <p className="awb-composer-warning" role="alert">{error}</p> : null}
     </article>
   );
 }
@@ -447,10 +418,8 @@ function messageKindLabel(kind: AgentLoopSessionMessageItem["kind"]): string {
   return ({
     task_goal: "Task 目标",
     user_input: "用户输入",
-    agent_assignment: "Agent 派发",
+    conductor_forward: "Conductor 派发",
     agent_final: "Agent 最终回信",
-    relay_forward: "Agent 转递",
-    publish_forward: "Agent 发布",
     runtime_notice: "Runtime 通知",
   } satisfies Record<AgentLoopSessionMessageItem["kind"], string>)[kind];
 }

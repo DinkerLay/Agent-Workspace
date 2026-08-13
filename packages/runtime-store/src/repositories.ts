@@ -1,79 +1,54 @@
 import {
-  type ArtifactReference,
-  type AttentionRecord,
   canonicalJson,
-  type InputSubmissionRecord,
-  type InvocationRecord,
-  type HumanInterventionRecord,
-  type JsonObject,
   type JsonValue,
-  type LogicalSessionRecord,
   type MetaMessageRecord,
   type MetaMessageId,
   type MetaPatchProposalRecord,
+  type MetaPatchProposalRecordFor,
+  type MetaPatchProposalRecordV3,
   type MetaPatchProposalId,
-  type MetaProfileDefinition,
+  type MetaProfileDefinitionV2,
+  type MetaProfileDefinitionV3,
+  type MetaProfileSnapshot,
   type MetaSessionRecord,
+  type MetaSessionRecordFor,
+  type MetaSessionRecordV3,
   type MetaSessionId,
   type MetaSessionMode,
   type MetaTurnId,
   type MetaTurnReadModel,
   type MetaTurnStatus,
-  type ManagedArtifactReadModel,
-  type MessageForwardBatchRecord,
-  type MessageForwardRecord,
-  type ProviderFact,
-  providerFactDedupKey,
-  providerFactFingerprint,
-  type ProviderSessionBindingRecord,
-  type RelayBlockRecord,
-  type RuntimeReadModel,
-  type RuntimeReadRequest,
   type RuntimeCommandId,
   type RuntimeCommandResult,
-  type SessionInboxItemRecord,
-  type SessionMessageRecord,
-  type SessionPresentation,
-  type SessionTurnRecord,
   type TaskArchitectureSnapshot,
-  type TaskPermanentDeleteResult,
+  type TaskArchitectureSnapshotV2,
   type TaskRecord,
   type TaskRunRecord,
   type TaskSetupDraftRecord,
-  type TemplateDefinition,
   EMPTY_TEMPLATE_ASSET_MANIFEST_HASH,
   type TemplateAssetRecord,
   type TemplateDraftRecord,
   type TemplatePackage,
+  type TemplatePackageSnapshot,
   type TemplateRecord,
-  type TemplateSelectionReadModel,
-  type TemplateVersionReadModel,
   type TemplateVersionRecord,
   type WorkspaceAuthorizationRecord,
   hashDefinition,
+  isMetaProfileDefinitionV3,
+  isTaskArchitectureSnapshotV3,
+  validateMetaProfileSnapshot,
+  validateTaskArchitectureSnapshotV3,
+  validateTemplateDefinition,
+  validateTemplateDefinitionSnapshot,
+  validateTemplateDefinitionV3,
+  validateTemplatePackageSnapshot,
 } from "@agent-workspace/runtime-contracts";
-import { artifactDisplayName, deriveProviderActivities, deriveTaskTimeline } from "@agent-workspace/runtime-domain";
 import { decodeJson, encodeJson, SqliteRuntimeStore } from "./sqlite.js";
-
-export type OutboxRecord = {
-  readonly outboxId: string;
-  readonly commandId: string;
-  readonly provider: string;
-  readonly kind: "ensure_binding" | "submit_delivery" | "request_interrupt" | "respond_attention" | "release_binding";
-  readonly bindingId?: string;
-  readonly payload: JsonObject;
-  readonly state: "pending" | "leased" | "effect_accepted" | "effect_rejected" | "unknown";
-  readonly attempts: number;
-  readonly leaseUntil?: string;
-  readonly lastEffect?: JsonObject;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-};
 
 export type MetaTurnDispatchStatus = "pending" | "provider_accepted" | "ambiguous";
 
 /** Configuration-owned Provider intent. It is never a Task Binding or ProviderFact. */
-export type MetaTurnRecord = {
+type MetaTurnRecordBase<Profile extends MetaProfileSnapshot> = {
   readonly metaTurnId: MetaTurnId;
   readonly metaSessionId: MetaSessionId;
   readonly commandId: RuntimeCommandId;
@@ -81,7 +56,7 @@ export type MetaTurnRecord = {
   readonly userMetaMessageId: MetaMessageId;
   readonly assistantMetaMessageId: MetaMessageId;
   readonly metaPatchProposalId: MetaPatchProposalId;
-  readonly profile: MetaProfileDefinition;
+  readonly profile: Profile;
   readonly mode: MetaSessionMode;
   readonly targetRevision: number;
   readonly systemInstructions: string;
@@ -100,11 +75,16 @@ export type MetaTurnRecord = {
   readonly updatedAt: string;
 };
 
+export type MetaTurnRecordV2 = MetaTurnRecordBase<MetaProfileDefinitionV2>;
+export type MetaTurnRecordV3 = MetaTurnRecordBase<MetaProfileDefinitionV3>;
+export type AcpMetaTurnRecordV3 = MetaTurnRecordV3;
+export type MetaTurnRecord = MetaTurnRecordV2 | MetaTurnRecordV3;
+
 export type CreateMetaTurnStorageInput = Readonly<{
-  session: MetaSessionRecord;
+  session: MetaSessionRecordV3;
   expectedSessionRevision: number;
   userMessage: MetaMessageRecord;
-  turn: MetaTurnRecord;
+  turn: AcpMetaTurnRecordV3;
 }>;
 
 export type SettleMetaTurnStorageInput = Readonly<{
@@ -118,24 +98,16 @@ export type SettleMetaTurnStorageInput = Readonly<{
 export type CompleteMetaTurnStorageInput = Readonly<{
   metaTurnId: MetaTurnId;
   expectedAttempts: number;
-  session: MetaSessionRecord;
+  session: MetaSessionRecordV3;
   expectedSessionRevision: number;
   assistantMessage: MetaMessageRecord;
-  proposal?: MetaPatchProposalRecord;
+  proposal?: MetaPatchProposalRecordV3;
   completedAt: string;
 }>;
 
 export type CreateTaskStorageInput = {
   readonly task: TaskRecord;
   readonly snapshot: TaskArchitectureSnapshot;
-};
-
-export type StartRunStorageInput = {
-  readonly task: TaskRecord;
-  readonly run: TaskRunRecord;
-  readonly conductor: LogicalSessionRecord;
-  readonly binding: ProviderSessionBindingRecord;
-  readonly outbox: OutboxRecord;
 };
 
 export interface TemplateTaskStore {
@@ -147,7 +119,7 @@ export interface TemplateTaskStore {
   readonly importPackage: (
     template: TemplateRecord,
     version: TemplateVersionRecord,
-    packageValue: TemplatePackage,
+    packageValue: TemplatePackageSnapshot,
     assets: readonly TemplateAssetRecord[],
   ) => "created" | "idempotent";
   readonly archiveTemplate: (templateId: string, expectedRevision: number, archivedAt: string) => TemplateRecord;
@@ -161,120 +133,9 @@ export interface TemplateTaskStore {
   readonly getArchitectureSnapshot: (taskId: string) => TaskArchitectureSnapshot | undefined;
   readonly listTasks: () => readonly TaskRecord[];
   readonly updateTask: (task: TaskRecord, expectedRevision: number) => void;
-  readonly startRun: (input: StartRunStorageInput) => void;
   readonly getRun: (runId: string) => TaskRunRecord | undefined;
   readonly updateRun: (run: TaskRunRecord) => void;
   readonly countRuns: (taskId: string) => number;
-}
-
-export interface BindingStore {
-  readonly createLogicalSession: (session: LogicalSessionRecord) => void;
-  readonly getLogicalSession: (logicalSessionId: string) => LogicalSessionRecord | undefined;
-  readonly findLogicalSession: (runId: string, agentCardId: string) => LogicalSessionRecord | undefined;
-  readonly listLogicalSessions: (runId: string) => readonly LogicalSessionRecord[];
-  readonly updateLogicalSession: (session: LogicalSessionRecord) => void;
-  readonly createBinding: (binding: ProviderSessionBindingRecord) => void;
-  readonly getBinding: (bindingId: string) => ProviderSessionBindingRecord | undefined;
-  readonly findBindingForLogicalSession: (logicalSessionId: string) => ProviderSessionBindingRecord | undefined;
-  readonly listBindings: (runId: string) => readonly ProviderSessionBindingRecord[];
-  readonly listObservableBindings: () => readonly ProviderSessionBindingRecord[];
-  readonly updateBinding: (binding: ProviderSessionBindingRecord) => void;
-}
-
-export interface InvocationStore {
-  readonly createInput: (input: InputSubmissionRecord, commandId: string) => void;
-  readonly getInput: (inputSubmissionId: string) => InputSubmissionRecord | undefined;
-  readonly findInputByCommandId: (commandId: string) => InputSubmissionRecord | undefined;
-  readonly listInputs: (runId: string) => readonly InputSubmissionRecord[];
-  readonly updateInput: (input: InputSubmissionRecord) => void;
-  readonly createInvocation: (invocation: InvocationRecord) => void;
-  readonly getInvocation: (invocationId: string) => InvocationRecord | undefined;
-  readonly listInvocations: (runId: string) => readonly InvocationRecord[];
-  readonly updateInvocation: (invocation: InvocationRecord) => void;
-  readonly createAttention: (attention: AttentionRecord) => void;
-  readonly getAttention: (attentionId: string) => AttentionRecord | undefined;
-  readonly listAttentions: (runId: string) => readonly AttentionRecord[];
-  readonly updateAttention: (attention: AttentionRecord) => void;
-  readonly enqueue: (outbox: OutboxRecord) => void;
-  readonly claimOutbox: (now: string, leaseUntil: string) => OutboxRecord | undefined;
-  readonly settleOutbox: (outboxId: string, state: OutboxRecord["state"], lastEffect?: JsonObject) => void;
-}
-
-/** The Message service is the sole writer of immutable collaboration content. */
-export interface MessageStore {
-  readonly createMessage: (message: SessionMessageRecord) => void;
-  readonly getMessage: (messageId: string) => SessionMessageRecord | undefined;
-  /** Used to make ProviderFact replay unable to create a second final message. */
-  readonly findMessageByInvocation: (invocationId: string, kind?: SessionMessageRecord["kind"]) => SessionMessageRecord | undefined;
-  readonly listMessages: (runId: string) => readonly SessionMessageRecord[];
-  readonly listMessagesFromSession: (logicalSessionId: string) => readonly SessionMessageRecord[];
-  readonly createRelayBlock: (relayBlock: RelayBlockRecord) => void;
-  readonly getRelayBlock: (relayBlockId: string) => RelayBlockRecord | undefined;
-  readonly listRelayBlocks: (runId: string) => readonly RelayBlockRecord[];
-  readonly listRelayBlocksForMessage: (messageId: string) => readonly RelayBlockRecord[];
-}
-
-/** Message service owns explicit cross-Session disclosure audit. */
-export interface ForwardStore {
-  readonly createForward: (forward: MessageForwardRecord) => void;
-  readonly getForward: (forwardId: string) => MessageForwardRecord | undefined;
-  readonly findForwardByTargetKey: (taskId: string, runId: string, idempotencyKey: string, targetLogicalSessionId: string) => MessageForwardRecord | undefined;
-  readonly listForwards: (runId: string) => readonly MessageForwardRecord[];
-  readonly createBatch: (batch: MessageForwardBatchRecord) => void;
-  readonly getBatch: (publishBatchId: string) => MessageForwardBatchRecord | undefined;
-  readonly findBatchByIdempotencyKey: (taskId: string, runId: string, idempotencyKey: string) => MessageForwardBatchRecord | undefined;
-  readonly findBatchByFanoutKey: (taskId: string, runId: string, fanoutKey: string) => MessageForwardBatchRecord | undefined;
-  readonly listBatches: (runId: string) => readonly MessageForwardBatchRecord[];
-  readonly updateBatch: (batch: MessageForwardBatchRecord) => void;
-}
-
-/** Human Intervention service is the only writer of authenticated human provenance. */
-export interface HumanInterventionStore {
-  readonly createIntervention: (intervention: HumanInterventionRecord) => void;
-  readonly getIntervention: (humanInterventionId: string) => HumanInterventionRecord | undefined;
-  readonly findInterventionByIdempotencyKey: (taskId: string, runId: string, idempotencyKey: string) => HumanInterventionRecord | undefined;
-  readonly listInterventions: (runId: string) => readonly HumanInterventionRecord[];
-  readonly updateIntervention: (intervention: HumanInterventionRecord) => void;
-}
-
-/** Turn Coordinator is the sole writer of managed Provider-turn provenance. */
-export interface SessionTurnStore {
-  readonly createTurn: (turn: SessionTurnRecord) => void;
-  readonly getTurn: (sessionTurnId: string) => SessionTurnRecord | undefined;
-  readonly findTurnByInput: (inputSubmissionId: string) => SessionTurnRecord | undefined;
-  readonly listTurns: (runId: string) => readonly SessionTurnRecord[];
-  readonly listTurnsForSession: (logicalSessionId: string) => readonly SessionTurnRecord[];
-  readonly updateTurn: (turn: SessionTurnRecord) => void;
-}
-
-/** Invocation Coordinator owns durable delivery intent and its short lease. */
-export interface InboxStore {
-  readonly createInboxItem: (item: SessionInboxItemRecord) => void;
-  readonly getInboxItem: (inboxItemId: string) => SessionInboxItemRecord | undefined;
-  readonly findInboxItem: (input: {
-    readonly targetLogicalSessionId: string;
-    readonly renderedMessageId: string;
-  }) => SessionInboxItemRecord | undefined;
-  readonly listInboxItems: (runId: string) => readonly SessionInboxItemRecord[];
-  readonly listInboxItemsForSession: (logicalSessionId: string) => readonly SessionInboxItemRecord[];
-  readonly updateInboxItem: (item: SessionInboxItemRecord, expectedRevision: number) => void;
-  readonly claimInboxItem: (input: {
-    readonly inboxItemId: string;
-    readonly expectedRevision: number;
-    readonly leaseId: string;
-    readonly leaseExpiresAt: string;
-    readonly now: string;
-  }) => SessionInboxItemRecord;
-}
-
-export interface ProviderFactStore {
-  /** Returns false for an observed duplicate; no domain conclusion is made here. */
-  readonly recordFact: (fact: ProviderFact, receivedAt: string) => boolean;
-  /**
-   * Returns durable Adapter observations for the selected bindings only.  The
-   * read-model projection deliberately normalizes them before renderer use.
-   */
-  readonly listFacts: (bindingIds: readonly string[]) => readonly ProviderFact[];
 }
 
 /** Durable command receipts make ambiguous client transport retries safe. */
@@ -291,57 +152,6 @@ export type StoredCommand = {
   readonly acceptedAt: string;
 };
 
-export interface ArtifactStore {
-  readonly recordArtifact: (artifact: ArtifactReference) => ArtifactReference;
-  readonly listArtifacts: (runId: string) => readonly ArtifactReference[];
-  readonly listArtifactsForTask: (taskId: string) => readonly ArtifactReference[];
-  readonly getArtifact: (artifactId: string) => ArtifactReference | undefined;
-  readonly findArtifactByClaim: (sourceMessageId: string, workspaceRelativePath: string) => ArtifactReference | undefined;
-}
-
-/** Durable delete intent is internal Runtime state, never a Renderer projection. */
-export type TaskPermanentDeleteIntent = {
-  readonly commandId: string;
-  readonly taskId: string;
-  readonly expectedRevision: number;
-  readonly artifactIds: readonly string[];
-  readonly payloadFingerprint: string;
-  readonly preparedAt: string;
-};
-
-export type TaskPermanentDeleteTombstone = {
-  readonly commandId: string;
-  readonly taskId: string;
-  readonly payloadFingerprint: string;
-  readonly result: TaskPermanentDeleteResult;
-  readonly deletedAt: string;
-};
-
-/**
- * Task/Run persistence owns the deletion fence and row cascade. The Host owns
- * filesystem effects, and Runtime Application coordinates the two around this
- * intent; no caller receives raw paths from this capability.
- */
-export interface TaskRetentionStore {
-  readonly getPermanentDeleteIntent: (commandId: string) => TaskPermanentDeleteIntent | undefined;
-  readonly getPermanentDeleteIntentForTask: (taskId: string) => TaskPermanentDeleteIntent | undefined;
-  readonly getPermanentDeleteTombstone: (commandId: string) => TaskPermanentDeleteTombstone | undefined;
-  readonly preparePermanentDelete: (intent: TaskPermanentDeleteIntent) => TaskPermanentDeleteIntent;
-  readonly completePermanentDelete: (input: {
-    readonly commandId: string;
-    readonly taskId: string;
-    readonly payloadFingerprint: string;
-    readonly result: TaskPermanentDeleteResult;
-  }) => TaskPermanentDeleteTombstone;
-}
-
-export interface PresentationStore {
-  readonly savePresentation: (presentation: SessionPresentation) => void;
-  readonly getPresentation: (presentationLeaseId: string) => SessionPresentation | undefined;
-  readonly revokePresentation: (presentationLeaseId: string, revokedAt: string) => SessionPresentation;
-  readonly listPresentations: (bindingIds: readonly string[], now: string) => readonly SessionPresentation[];
-}
-
 /** Host-private workspace directory authority. No Renderer receives this store. */
 export interface WorkspaceAuthorizationStore {
   readonly createAuthorization: (authorization: WorkspaceAuthorizationRecord) => WorkspaceAuthorizationRecord;
@@ -355,49 +165,33 @@ export interface ConfigurationStore {
   readonly getTaskSetupDraft: (taskSetupDraftId: string) => TaskSetupDraftRecord | undefined;
   readonly listTaskSetupDrafts: () => readonly TaskSetupDraftRecord[];
   readonly updateTaskSetupDraft: (draft: TaskSetupDraftRecord, expectedRevision: number) => void;
-  readonly createMetaSession: (session: MetaSessionRecord) => void;
+  readonly createMetaSession: (session: MetaSessionRecordV3) => void;
   readonly getMetaSession: (metaSessionId: string) => MetaSessionRecord | undefined;
   readonly findActiveMetaSession: (ownerId: string, target: MetaSessionRecord["target"]) => MetaSessionRecord | undefined;
   readonly listMetaSessions: () => readonly MetaSessionRecord[];
-  readonly updateMetaSession: (session: MetaSessionRecord, expectedRevision: number) => void;
+  readonly updateMetaSession: (session: MetaSessionRecordV3, expectedRevision: number) => void;
   readonly createMetaMessage: (message: MetaMessageRecord) => void;
   readonly getMetaMessage: (metaMessageId: string) => MetaMessageRecord | undefined;
   readonly listMetaMessages: (metaSessionId?: string) => readonly MetaMessageRecord[];
-  readonly createMetaPatchProposal: (proposal: MetaPatchProposalRecord) => void;
+  readonly createMetaPatchProposal: (proposal: MetaPatchProposalRecordV3) => void;
   readonly getMetaPatchProposal: (metaPatchProposalId: string) => MetaPatchProposalRecord | undefined;
   readonly listMetaPatchProposals: (metaSessionId?: string) => readonly MetaPatchProposalRecord[];
-  readonly updateMetaPatchProposal: (proposal: MetaPatchProposalRecord, expectedRevision: number) => void;
-  readonly createMetaMessageAndTurn: (input: CreateMetaTurnStorageInput) => MetaTurnRecord;
+  readonly updateMetaPatchProposal: (proposal: MetaPatchProposalRecordV3, expectedRevision: number) => void;
+  readonly createMetaMessageAndTurn: (input: CreateMetaTurnStorageInput) => AcpMetaTurnRecordV3;
   readonly getMetaTurn: (metaTurnId: MetaTurnId) => MetaTurnRecord | undefined;
   readonly listMetaTurns: (metaSessionId?: MetaSessionId) => readonly MetaTurnRecord[];
-  readonly claimMetaTurn: (now: string, leaseUntil: string) => MetaTurnRecord | undefined;
-  readonly releaseMetaTurn: (metaTurnId: MetaTurnId, expectedAttempts: number, now: string) => MetaTurnRecord;
-  readonly settleMetaTurn: (input: SettleMetaTurnStorageInput) => MetaTurnRecord;
-  readonly completeMetaTurn: (input: CompleteMetaTurnStorageInput) => MetaTurnRecord;
-}
-
-export interface RuntimeReadStore {
-  readonly readModel: (now: string, request?: RuntimeReadRequest) => RuntimeReadModel;
+  readonly claimMetaTurn: (now: string, leaseUntil: string) => AcpMetaTurnRecordV3 | undefined;
+  readonly releaseMetaTurn: (metaTurnId: MetaTurnId, expectedAttempts: number, now: string) => AcpMetaTurnRecordV3;
+  readonly settleMetaTurn: (input: SettleMetaTurnStorageInput) => AcpMetaTurnRecordV3;
+  readonly completeMetaTurn: (input: CompleteMetaTurnStorageInput) => AcpMetaTurnRecordV3;
 }
 
 export interface RuntimeRepositories {
   readonly transaction: <T>(work: () => T) => T;
   readonly templateTask: TemplateTaskStore;
-  readonly binding: BindingStore;
-  readonly message: MessageStore;
-  readonly forward: ForwardStore;
-  readonly humanIntervention: HumanInterventionStore;
-  readonly inbox: InboxStore;
-  readonly turn: SessionTurnStore;
-  readonly invocation: InvocationStore;
-  readonly providerFact: ProviderFactStore;
   readonly command: CommandStore;
-  readonly artifact: ArtifactStore;
-  readonly retention: TaskRetentionStore;
-  readonly presentation: PresentationStore;
   readonly workspace: WorkspaceAuthorizationStore;
   readonly configuration: ConfigurationStore;
-  readonly read: RuntimeReadStore;
 }
 
 /**
@@ -407,6 +201,7 @@ export interface RuntimeRepositories {
 export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRepositories {
   const templateTask: TemplateTaskStore = {
     createDraft(draft) {
+      validateTemplateDefinitionSnapshot(draft.definition);
       store.run(
         `INSERT INTO template_design_sessions(draft_id, template_id, base_template_version_id, metadata_json, definition_json, status, owner_id, revision, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -422,6 +217,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       return store.many<Row>("SELECT * FROM template_design_sessions WHERE status = ? ORDER BY updated_at DESC", "editing").map(toDraft);
     },
     updateDraft(draft, expectedRevision) {
+      validateTemplateDefinitionSnapshot(draft.definition);
       const previous = store.one<Row>("SELECT revision FROM template_design_sessions WHERE draft_id = ?", draft.templateDraftId);
       if (!previous) throw new Error("template_draft_not_found");
       if (number(previous.revision) !== expectedRevision) throw new Error("stale_template_draft_revision");
@@ -431,6 +227,10 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       );
     },
     publishDraft(template, version, draft, expectedRevision) {
+      const definition = validateTemplateDefinitionSnapshot(version.definition);
+      if (definition.schemaVersion !== draft.definition.schemaVersion) {
+        throw new Error("template_publish_schema_mismatch");
+      }
       store.transaction(() => {
         const storedDraft = store.one<Row>("SELECT revision FROM template_design_sessions WHERE draft_id = ?", draft.templateDraftId);
         if (!storedDraft) throw new Error("template_draft_not_found");
@@ -461,9 +261,22 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       });
     },
     importPackage(template, version, packageValue, assets) {
+      const validatedPackage = validateTemplatePackageSnapshot(packageValue);
+      const definition = validatedPackage.definition;
+      if (definition.schemaVersion !== version.definition.schemaVersion) {
+        throw new Error("template_import_schema_mismatch");
+      }
+      if (validatedPackage.template.templateId !== template.templateId
+        || version.templateId !== template.templateId
+        || validatedPackage.template.version !== version.version
+        || version.definitionHash !== hashDefinition(definition as unknown as JsonValue)
+        || (validatedPackage.template.definitionHash !== undefined
+          && version.definitionHash !== validatedPackage.template.definitionHash)) {
+        throw new Error("template_import_identity_mismatch");
+      }
       return store.transaction(() => {
         const assetManifestHash = version.assetManifestHash ?? EMPTY_TEMPLATE_ASSET_MANIFEST_HASH;
-        const packageAssetManifestHash = packageValue.template.assetManifestHash ?? EMPTY_TEMPLATE_ASSET_MANIFEST_HASH;
+        const packageAssetManifestHash = validatedPackage.template.assetManifestHash ?? EMPTY_TEMPLATE_ASSET_MANIFEST_HASH;
         if (assetManifestHash !== packageAssetManifestHash) throw new Error("template_import_asset_manifest_mismatch");
         const sameVersion = store.one<Row>(
           "SELECT template_version_id, definition_hash, asset_manifest_hash FROM template_versions WHERE template_id = ? AND version = ?",
@@ -508,7 +321,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
           `INSERT INTO template_versions(template_version_id, template_id, version, schema_version, definition_json, definition_hash, asset_manifest_hash, created_at, published_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           version.templateVersionId, version.templateId, version.version, version.definition.schemaVersion,
-          encodeJson(packageValue.definition), version.definitionHash, assetManifestHash, version.createdAt, version.publishedAt,
+          encodeJson(definition), version.definitionHash, assetManifestHash, version.createdAt, version.publishedAt,
         );
         insertTemplateAssets(store, version.templateVersionId, assets);
         return "created";
@@ -548,14 +361,22 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       });
     },
     createTask({ task, snapshot }) {
+      const persistedSnapshot = isTaskArchitectureSnapshotV3(snapshot)
+        ? validateTaskArchitectureSnapshotV3(snapshot)
+        : validateTaskArchitectureSnapshotV2(snapshot);
+      if (persistedSnapshot.taskId !== task.taskId
+        || persistedSnapshot.architectureSnapshotId !== task.architectureSnapshotId) {
+        throw new Error("task_architecture_identity_mismatch");
+      }
       store.transaction(() => {
         store.run(
           `INSERT INTO task_architecture_snapshots(architecture_snapshot_id, task_id, template_id, template_version_id, template_definition_hash, definition_json, task_input_values_json, task_goal_content, task_goal_content_digest, task_goal_compiler_version, workspace_json, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          snapshot.architectureSnapshotId, snapshot.taskId, snapshot.templateId, snapshot.templateVersionId,
-          snapshot.templateDefinitionHash, encodeJson(snapshot.definition), encodeJson(snapshot.taskInputValues),
-          snapshot.taskGoalContent, snapshot.taskGoalContentDigest, snapshot.taskGoalCompilerVersion,
-          encodeJson(snapshot.workspace), snapshot.createdAt,
+          persistedSnapshot.architectureSnapshotId, persistedSnapshot.taskId, persistedSnapshot.templateId,
+          persistedSnapshot.templateVersionId, persistedSnapshot.templateDefinitionHash,
+          encodeJson(persistedSnapshot.definition), encodeJson(persistedSnapshot.taskInputValues),
+          persistedSnapshot.taskGoalContent, persistedSnapshot.taskGoalContentDigest,
+          persistedSnapshot.taskGoalCompilerVersion, encodeJson(persistedSnapshot.workspace), persistedSnapshot.createdAt,
         );
         store.run(
           `INSERT INTO tasks(task_id, architecture_snapshot_id, title, goal, status, trashed_at, achievement_json, active_run_id, revision, created_at, updated_at)
@@ -571,7 +392,13 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       return row ? toTask(row) : undefined;
     },
     getArchitectureSnapshot(taskId) {
-      const row = store.one<Row>("SELECT * FROM task_architecture_snapshots WHERE task_id = ?", taskId);
+      const row = store.one<Row>(
+        `SELECT snapshot.*, task.title AS task_title, task.goal AS task_goal
+         FROM task_architecture_snapshots snapshot
+         JOIN tasks task ON task.task_id = snapshot.task_id
+         WHERE snapshot.task_id = ?`,
+        taskId,
+      );
       return row ? toArchitectureSnapshot(row) : undefined;
     },
     listTasks() {
@@ -586,21 +413,6 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
         task.title, task.goal, task.status, task.trashedAt ?? null, task.achievement ? encodeJson(task.achievement) : null,
         task.activeRunId ?? null, task.revision, task.updatedAt, task.taskId,
       );
-    },
-    startRun({ task, run, conductor, binding, outbox }) {
-      store.transaction(() => {
-        const row = store.one<Row>("SELECT revision FROM tasks WHERE task_id = ?", task.taskId);
-        if (!row || number(row.revision) + 1 !== task.revision) throw new Error("stale_task_revision");
-        store.run(
-          `INSERT INTO task_runs(run_id, task_id, conductor_logical_session_id, status, run_number, revision, started_at, ended_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          run.runId, run.taskId, run.conductorLogicalSessionId, run.status, run.runNumber, run.revision, run.startedAt, run.endedAt ?? null,
-        );
-        insertSession(store, conductor);
-        insertBinding(store, binding);
-        insertOutbox(store, outbox);
-        store.run("UPDATE tasks SET status = ?, active_run_id = ?, revision = ?, updated_at = ? WHERE task_id = ?", task.status, task.activeRunId ?? null, task.revision, task.updatedAt, task.taskId);
-      });
     },
     getRun(runId) {
       const row = store.one<Row>("SELECT * FROM task_runs WHERE run_id = ?", runId);
@@ -698,6 +510,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       );
     },
     createMetaSession(session) {
+      requiredAcpMetaProfile(session.metaProfile);
       store.run(
         `INSERT INTO meta_sessions(meta_session_id, owner_id, mode, target_kind, target_id, meta_profile_option_id, meta_profile_json, state, revision, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -731,9 +544,17 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       return store.many<Row>("SELECT * FROM meta_sessions ORDER BY updated_at DESC, meta_session_id").map(toMetaSession);
     },
     updateMetaSession(session, expectedRevision) {
-      const row = store.one<Row>("SELECT revision FROM meta_sessions WHERE meta_session_id = ?", session.metaSessionId);
+      requiredAcpMetaProfile(session.metaProfile);
+      const row = store.one<Row>("SELECT * FROM meta_sessions WHERE meta_session_id = ?", session.metaSessionId);
       if (!row) throw new Error("meta_session_not_found");
       if (number(row.revision) !== expectedRevision) throw new Error("stale_meta_session_revision");
+      const current = toMetaSession(row);
+      requiredAcpMetaProfile(current.metaProfile);
+      assertSameDurableValue(
+        metaSessionImmutable(current),
+        metaSessionImmutable(session),
+        "meta_session_identity_conflict",
+      );
       store.run(
         "UPDATE meta_sessions SET state = ?, revision = ?, updated_at = ? WHERE meta_session_id = ?",
         session.state,
@@ -743,6 +564,9 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       );
     },
     createMetaMessage(message) {
+      const session = this.getMetaSession(message.metaSessionId);
+      if (!session) throw new Error("meta_session_not_found");
+      requiredAcpMetaProfile(session.metaProfile);
       const existing = this.getMetaMessage(message.metaMessageId);
       if (existing) {
         assertSameDurableValue(existing, message, "meta_message_id_conflict");
@@ -771,6 +595,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       return rows.map(toMetaMessage);
     },
     createMetaPatchProposal(proposal) {
+      requiredAcpMetaProfile(proposal.sourceMetaProfile);
       const existing = this.getMetaPatchProposal(proposal.metaPatchProposalId);
       if (existing) {
         assertSameDurableValue(existing, proposal, "meta_patch_proposal_id_conflict");
@@ -812,9 +637,17 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
       return rows.map(toMetaPatchProposal);
     },
     updateMetaPatchProposal(proposal, expectedRevision) {
-      const row = store.one<Row>("SELECT revision FROM meta_patch_proposals WHERE meta_patch_proposal_id = ?", proposal.metaPatchProposalId);
+      requiredAcpMetaProfile(proposal.sourceMetaProfile);
+      const row = store.one<Row>("SELECT * FROM meta_patch_proposals WHERE meta_patch_proposal_id = ?", proposal.metaPatchProposalId);
       if (!row) throw new Error("meta_patch_proposal_not_found");
       if (number(row.revision) !== expectedRevision) throw new Error("stale_meta_patch_proposal_revision");
+      const current = toMetaPatchProposal(row);
+      requiredAcpMetaProfile(current.sourceMetaProfile);
+      assertSameDurableValue(
+        metaProposalImmutable(current),
+        metaProposalImmutable(proposal),
+        "meta_patch_proposal_identity_conflict",
+      );
       store.run(
         `UPDATE meta_patch_proposals
          SET state = ?, applied_target_revision = ?, revision = ?, updated_at = ?, resolved_at = ?
@@ -840,7 +673,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
         ).map(toMetaTurn);
         if (collisions.length > 0) {
           if (collisions.length !== 1) throw new Error("meta_turn_identity_conflict");
-          const existing = collisions[0]!;
+          const existing = requiredAcpMetaTurn(collisions[0]!);
           assertSameMetaTurnIntent(existing, input.turn);
           const existingMessage = this.getMetaMessage(existing.userMetaMessageId);
           if (!existingMessage) throw new Error("meta_turn_user_message_missing");
@@ -849,6 +682,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
         }
         const currentSession = this.getMetaSession(input.session.metaSessionId);
         if (!currentSession) throw new Error("meta_session_not_found");
+        requiredAcpMetaProfile(currentSession.metaProfile);
         if (currentSession.revision !== input.expectedSessionRevision) throw new Error("stale_meta_session_revision");
         const active = store.one<Row>(
           `SELECT meta_turn_id FROM meta_turns
@@ -875,7 +709,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
     claimMetaTurn(now, leaseUntil) {
       assertLeaseWindow(now, leaseUntil);
       return store.transaction(() => {
-        const row = store.one<Row>(
+        const rows = store.many<Row>(
           `SELECT * FROM meta_turns
            WHERE status IN ('pending', 'provider_accepted', 'ambiguous')
               OR (status = 'leased' AND lease_until < ?)
@@ -889,14 +723,14 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
                ELSE updated_at
              END,
              meta_turn_id
-           LIMIT 1`,
+           `,
           now,
         );
-        if (!row) return undefined;
-        const current = toMetaTurn(row);
+        const current = rows.map(toMetaTurn).find(isAcpMetaTurnV3);
+        if (!current) return undefined;
         const leasedFromStatus = current.status === "leased" ? current.leasedFromStatus : current.status;
         if (!isMetaTurnDispatchStatus(leasedFromStatus)) throw new Error("meta_turn_lease_origin_invalid");
-        const claimed: MetaTurnRecord = {
+        const claimed: AcpMetaTurnRecordV3 = {
           ...current,
           status: "leased",
           attempts: current.attempts + 1,
@@ -919,7 +753,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
     },
     releaseMetaTurn(metaTurnId, expectedAttempts, now) {
       return store.transaction(() => {
-        const current = requiredMetaTurn(store, metaTurnId);
+        const current = requiredAcpMetaTurnRecord(store, metaTurnId);
         if (
           isMetaTurnDispatchStatus(current.status)
           && current.attempts === expectedAttempts
@@ -929,7 +763,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
         if (current.status !== "leased") throw new Error("meta_turn_not_leased");
         if (current.attempts !== expectedAttempts) throw new Error("stale_meta_turn_attempt");
         if (!isMetaTurnDispatchStatus(current.leasedFromStatus)) throw new Error("meta_turn_lease_origin_invalid");
-        const released: MetaTurnRecord = {
+        const released: AcpMetaTurnRecordV3 = {
           ...current,
           status: current.leasedFromStatus,
           leaseUntil: undefined,
@@ -943,7 +777,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
     settleMetaTurn(input) {
       assertMetaTurnSettlement(input);
       return store.transaction(() => {
-        const current = requiredMetaTurn(store, input.metaTurnId);
+        const current = requiredAcpMetaTurnRecord(store, input.metaTurnId);
         if (
           current.status === input.status
           && current.attempts === input.expectedAttempts
@@ -952,7 +786,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
         ) return current;
         if (current.status !== "leased") throw new Error("meta_turn_not_leased");
         if (current.attempts !== input.expectedAttempts) throw new Error("stale_meta_turn_attempt");
-        const settled: MetaTurnRecord = {
+        const settled: AcpMetaTurnRecordV3 = {
           ...current,
           status: input.status,
           leaseUntil: undefined,
@@ -966,7 +800,7 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
     },
     completeMetaTurn(input) {
       return store.transaction(() => {
-        const current = requiredMetaTurn(store, input.metaTurnId);
+        const current = requiredAcpMetaTurnRecord(store, input.metaTurnId);
         if (current.status === "returned") {
           assertCompletedMetaTurnReplay(this, current, input);
           return current;
@@ -976,11 +810,12 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
         assertMetaTurnCompletion(current, input);
         const storedSession = this.getMetaSession(input.session.metaSessionId);
         if (!storedSession) throw new Error("meta_session_not_found");
+        requiredAcpMetaProfile(storedSession.metaProfile);
         if (storedSession.revision !== input.expectedSessionRevision) throw new Error("stale_meta_session_revision");
         this.createMetaMessage(input.assistantMessage);
         if (input.proposal) this.createMetaPatchProposal(input.proposal);
         this.updateMetaSession(input.session, input.expectedSessionRevision);
-        const returned: MetaTurnRecord = {
+        const returned: AcpMetaTurnRecordV3 = {
           ...current,
           status: "returned",
           leaseUntil: undefined,
@@ -991,616 +826,6 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
         updateMetaTurnDispatchState(store, returned);
         return returned;
       });
-    },
-  };
-
-  const binding: BindingStore = {
-    createLogicalSession(session) { insertSession(store, session); },
-    getLogicalSession(logicalSessionId) {
-      const row = store.one<Row>("SELECT * FROM logical_sessions WHERE logical_session_id = ?", logicalSessionId);
-      return row ? toLogicalSession(row) : undefined;
-    },
-    findLogicalSession(runId, agentCardId) {
-      const row = store.one<Row>("SELECT * FROM logical_sessions WHERE run_id = ? AND agent_card_id = ?", runId, agentCardId);
-      return row ? toLogicalSession(row) : undefined;
-    },
-    listLogicalSessions(runId) {
-      return store.many<Row>("SELECT * FROM logical_sessions WHERE run_id = ? ORDER BY ordinal", runId).map(toLogicalSession);
-    },
-    updateLogicalSession(session) {
-      store.run("UPDATE logical_sessions SET status = ?, updated_at = ? WHERE logical_session_id = ?", session.status, session.updatedAt, session.logicalSessionId);
-    },
-    createBinding(bindingRecord) { insertBinding(store, bindingRecord); },
-    getBinding(bindingId) {
-      const row = store.one<Row>("SELECT * FROM provider_session_bindings WHERE binding_id = ?", bindingId);
-      return row ? toBinding(row) : undefined;
-    },
-    findBindingForLogicalSession(logicalSessionId) {
-      const row = store.one<Row>("SELECT * FROM provider_session_bindings WHERE logical_session_id = ? ORDER BY created_at DESC LIMIT 1", logicalSessionId);
-      return row ? toBinding(row) : undefined;
-    },
-    listBindings(runId) {
-      return store.many<Row>("SELECT * FROM provider_session_bindings WHERE run_id = ? ORDER BY created_at", runId).map(toBinding);
-    },
-    listObservableBindings() {
-      return store.many<Row>(
-        "SELECT * FROM provider_session_bindings WHERE status IN ('binding_effect_accepted', 'recovering', 'active') ORDER BY updated_at",
-      ).map(toBinding);
-    },
-    updateBinding(bindingRecord) {
-      store.run(
-        `UPDATE provider_session_bindings SET provider_host_id = ?, native_binding_ref = ?, binding_revision = ?, status = ?, recoverable = ?, updated_at = ? WHERE binding_id = ?`,
-        bindingRecord.providerHostId ?? null, bindingRecord.nativeBindingRef ?? null, bindingRecord.bindingRevision,
-        bindingRecord.status, bindingRecord.recoverable ? 1 : 0, bindingRecord.updatedAt, bindingRecord.bindingId,
-      );
-    },
-  };
-
-  const message: MessageStore = {
-    createMessage(value) {
-      if (value.kind === "task_goal") {
-        if (value.taskGoalCompilerVersion !== "task-goal/v1") throw new Error("task_goal_compiler_version_required");
-      } else if (value.taskGoalCompilerVersion !== undefined) {
-        throw new Error("task_goal_compiler_version_not_allowed");
-      }
-      const currentRow = store.one<Row>("SELECT * FROM session_messages WHERE message_id = ?", value.messageId);
-      if (currentRow) {
-        assertSameDurableValue(toSessionMessage(currentRow), value, "session_message_id_conflict");
-        return;
-      }
-      if (value.kind === "agent_final" && value.invocationId) {
-        const existingFinal = store.one<Row>(
-          "SELECT * FROM session_messages WHERE invocation_id = ? AND kind = ? LIMIT 1",
-          value.invocationId,
-          "agent_final",
-        );
-        if (existingFinal) throw new Error("agent_final_invocation_conflict");
-      }
-      store.run(
-        `INSERT INTO session_messages(message_id, task_id, run_id, source_logical_session_id, source_session_turn_id, source_human_intervention_id, invocation_id, kind, content, content_digest, task_goal_compiler_version, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        value.messageId,
-        value.taskId,
-        value.runId,
-        value.sourceLogicalSessionId ?? null,
-        value.sourceSessionTurnId ?? null,
-        value.sourceHumanInterventionId ?? null,
-        value.invocationId ?? null,
-        value.kind,
-        value.content,
-        value.contentDigest,
-        value.taskGoalCompilerVersion ?? null,
-        value.createdAt,
-      );
-    },
-    getMessage(messageId) {
-      const row = store.one<Row>("SELECT * FROM session_messages WHERE message_id = ?", messageId);
-      return row ? toSessionMessage(row) : undefined;
-    },
-    findMessageByInvocation(invocationId, kind) {
-      const row = kind
-        ? store.one<Row>("SELECT * FROM session_messages WHERE invocation_id = ? AND kind = ? ORDER BY created_at, message_id LIMIT 1", invocationId, kind)
-        : store.one<Row>("SELECT * FROM session_messages WHERE invocation_id = ? ORDER BY created_at, message_id LIMIT 1", invocationId);
-      return row ? toSessionMessage(row) : undefined;
-    },
-    listMessages(runId) {
-      return store.many<Row>("SELECT * FROM session_messages WHERE run_id = ? ORDER BY created_at, message_id", runId).map(toSessionMessage);
-    },
-    listMessagesFromSession(logicalSessionId) {
-      return store.many<Row>("SELECT * FROM session_messages WHERE source_logical_session_id = ? ORDER BY created_at, message_id", logicalSessionId)
-        .map(toSessionMessage);
-    },
-    createRelayBlock(value) {
-      const currentRow = store.one<Row>("SELECT * FROM relay_blocks WHERE relay_block_id = ?", value.relayBlockId);
-      if (currentRow) {
-        assertSameDurableValue(toRelayBlock(currentRow), value, "relay_block_id_conflict");
-        return;
-      }
-      const existingOrdinal = store.one<Row>("SELECT * FROM relay_blocks WHERE source_message_id = ? AND ordinal = ?", value.sourceMessageId, value.ordinal);
-      if (existingOrdinal) {
-        assertSameDurableValue(toRelayBlock(existingOrdinal), value, "relay_block_source_ordinal_conflict");
-        return;
-      }
-      store.run(
-        `INSERT INTO relay_blocks(relay_block_id, source_message_id, ordinal, suggested_target_agent_card_ids_json, suggested_audience, topic, format, content, content_digest, parser_version, source_start, source_end, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        value.relayBlockId,
-        value.sourceMessageId,
-        value.ordinal,
-        encodeJson(value.suggestedTargetAgentCardIds),
-        value.suggestedAudience ?? null,
-        value.topic ?? null,
-        value.format,
-        value.content,
-        value.contentDigest,
-        value.parserVersion,
-        value.sourceRange.start,
-        value.sourceRange.end,
-        value.createdAt,
-      );
-    },
-    getRelayBlock(relayBlockId) {
-      const row = store.one<Row>("SELECT * FROM relay_blocks WHERE relay_block_id = ?", relayBlockId);
-      return row ? toRelayBlock(row) : undefined;
-    },
-    listRelayBlocks(runId) {
-      return store.many<Row>(
-        `SELECT relay_blocks.*
-         FROM relay_blocks
-         JOIN session_messages ON session_messages.message_id = relay_blocks.source_message_id
-         WHERE session_messages.run_id = ?
-         ORDER BY session_messages.created_at, relay_blocks.ordinal`,
-        runId,
-      ).map(toRelayBlock);
-    },
-    listRelayBlocksForMessage(messageId) {
-      return store.many<Row>("SELECT * FROM relay_blocks WHERE source_message_id = ? ORDER BY ordinal", messageId).map(toRelayBlock);
-    },
-  };
-
-  const forward: ForwardStore = {
-    createForward(value) {
-      const existing = this.getForward(value.forwardId);
-      if (existing) {
-        assertSameDurableValue(existing, value, "message_forward_id_conflict");
-        return;
-      }
-      const duplicate = this.findForwardByTargetKey(value.taskId, value.runId, value.idempotencyKey, value.targetLogicalSessionId);
-      if (duplicate) {
-        assertSameDurableValue(duplicate, value, "message_forward_idempotency_conflict");
-        return;
-      }
-      store.run(
-        `INSERT INTO message_forwards(forward_id, task_id, run_id, command_id, idempotency_key, expected_task_revision, publish_batch_id, target_idempotency_key, decided_by_logical_session_id, decided_by_session_turn_id, target_logical_session_id, mode, rendered_message_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        value.forwardId,
-        value.taskId,
-        value.runId,
-        value.commandId,
-        value.idempotencyKey,
-        value.expectedTaskRevision,
-        value.publishBatchId ?? null,
-        value.targetIdempotencyKey,
-        value.decidedByLogicalSessionId,
-        value.decidedBySessionTurnId,
-        value.targetLogicalSessionId,
-        value.mode,
-        value.renderedMessageId,
-        value.createdAt,
-      );
-      for (const selection of value.selections) {
-        store.run(
-          `INSERT INTO message_forward_selections(forward_selection_id, forward_id, ordinal, kind, source_message_id, relay_block_id, content_digest)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          selection.forwardSelectionId,
-          selection.forwardId,
-          selection.ordinal,
-          selection.kind,
-          selection.sourceMessageId,
-          selection.relayBlockId ?? null,
-          selection.contentDigest,
-        );
-      }
-    },
-    getForward(forwardId) {
-      const row = store.one<Row>("SELECT * FROM message_forwards WHERE forward_id = ?", forwardId);
-      return row ? toMessageForward(row, listForwardSelections(store, forwardId)) : undefined;
-    },
-    findForwardByTargetKey(taskId, runId, idempotencyKey, targetLogicalSessionId) {
-      const row = store.one<Row>(
-        `SELECT * FROM message_forwards
-         WHERE task_id = ? AND run_id = ? AND idempotency_key = ? AND target_logical_session_id = ?`,
-        taskId,
-        runId,
-        idempotencyKey,
-        targetLogicalSessionId,
-      );
-      return row ? toMessageForward(row, listForwardSelections(store, text(row.forward_id))) : undefined;
-    },
-    listForwards(runId) {
-      return store.many<Row>("SELECT * FROM message_forwards WHERE run_id = ? ORDER BY created_at, forward_id", runId)
-        .map((row) => toMessageForward(row, listForwardSelections(store, text(row.forward_id))));
-    },
-    createBatch(value) {
-      const existing = this.getBatch(value.publishBatchId);
-      if (existing) {
-        assertSameDurableValue(existing, value, "message_forward_batch_id_conflict");
-        return;
-      }
-      const duplicate = this.findBatchByIdempotencyKey(value.taskId, value.runId, value.idempotencyKey);
-      if (duplicate) {
-        assertSameDurableValue(duplicate, value, "message_forward_batch_idempotency_conflict");
-        return;
-      }
-      store.run(
-        `INSERT INTO message_forward_batches(publish_batch_id, task_id, run_id, command_id, idempotency_key, expected_task_revision, fanout_key, decided_by_logical_session_id, decided_by_session_turn_id, target_logical_session_ids_json, selection_digest, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        value.publishBatchId,
-        value.taskId,
-        value.runId,
-        value.commandId,
-        value.idempotencyKey,
-        value.expectedTaskRevision,
-        value.fanoutKey,
-        value.decidedByLogicalSessionId,
-        value.decidedBySessionTurnId,
-        encodeJson(value.targetLogicalSessionIds),
-        value.selectionDigest,
-        value.state,
-        value.createdAt,
-        value.updatedAt,
-      );
-    },
-    getBatch(publishBatchId) {
-      const row = store.one<Row>("SELECT * FROM message_forward_batches WHERE publish_batch_id = ?", publishBatchId);
-      return row ? toMessageForwardBatch(row) : undefined;
-    },
-    findBatchByIdempotencyKey(taskId, runId, idempotencyKey) {
-      const row = store.one<Row>(
-        "SELECT * FROM message_forward_batches WHERE task_id = ? AND run_id = ? AND idempotency_key = ?",
-        taskId,
-        runId,
-        idempotencyKey,
-      );
-      return row ? toMessageForwardBatch(row) : undefined;
-    },
-    findBatchByFanoutKey(taskId, runId, fanoutKey) {
-      const row = store.one<Row>(
-        "SELECT * FROM message_forward_batches WHERE task_id = ? AND run_id = ? AND fanout_key = ?",
-        taskId,
-        runId,
-        fanoutKey,
-      );
-      return row ? toMessageForwardBatch(row) : undefined;
-    },
-    listBatches(runId) {
-      return store.many<Row>("SELECT * FROM message_forward_batches WHERE run_id = ? ORDER BY created_at, publish_batch_id", runId)
-        .map(toMessageForwardBatch);
-    },
-    updateBatch(value) {
-      store.run(
-        "UPDATE message_forward_batches SET state = ?, updated_at = ? WHERE publish_batch_id = ?",
-        value.state,
-        value.updatedAt,
-        value.publishBatchId,
-      );
-    },
-  };
-
-  const humanIntervention: HumanInterventionStore = {
-    createIntervention(value) {
-      const existing = this.getIntervention(value.humanInterventionId);
-      if (existing) {
-        assertSameDurableValue(existing, value, "human_intervention_id_conflict");
-        return;
-      }
-      const duplicate = this.findInterventionByIdempotencyKey(value.taskId, value.runId, value.idempotencyKey);
-      if (duplicate) {
-        assertSameDurableValue(duplicate, value, "human_intervention_idempotency_conflict");
-        return;
-      }
-      store.run(
-        `INSERT INTO human_interventions(human_intervention_id, task_id, run_id, command_id, idempotency_key, expected_task_revision, target_logical_session_id, content, content_digest, affected_session_turn_id, affected_invocation_id, mode, card_message_id, conductor_mirror_message_id, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        value.humanInterventionId,
-        value.taskId,
-        value.runId,
-        value.commandId,
-        value.idempotencyKey,
-        value.expectedTaskRevision,
-        value.targetLogicalSessionId,
-        value.content,
-        value.contentDigest,
-        value.affectedSessionTurnId ?? null,
-        value.affectedInvocationId ?? null,
-        value.mode,
-        value.cardMessageId ?? null,
-        value.conductorMirrorMessageId ?? null,
-        value.state,
-        value.createdAt,
-        value.updatedAt,
-      );
-    },
-    getIntervention(humanInterventionId) {
-      const row = store.one<Row>("SELECT * FROM human_interventions WHERE human_intervention_id = ?", humanInterventionId);
-      return row ? toHumanIntervention(row) : undefined;
-    },
-    findInterventionByIdempotencyKey(taskId, runId, idempotencyKey) {
-      const row = store.one<Row>(
-        "SELECT * FROM human_interventions WHERE task_id = ? AND run_id = ? AND idempotency_key = ?",
-        taskId,
-        runId,
-        idempotencyKey,
-      );
-      return row ? toHumanIntervention(row) : undefined;
-    },
-    listInterventions(runId) {
-      return store.many<Row>("SELECT * FROM human_interventions WHERE run_id = ? ORDER BY created_at, human_intervention_id", runId)
-        .map(toHumanIntervention);
-    },
-    updateIntervention(value) {
-      store.run(
-        `UPDATE human_interventions SET affected_session_turn_id = ?, affected_invocation_id = ?, mode = ?, card_message_id = ?, conductor_mirror_message_id = ?, state = ?, updated_at = ?
-         WHERE human_intervention_id = ?`,
-        value.affectedSessionTurnId ?? null,
-        value.affectedInvocationId ?? null,
-        value.mode,
-        value.cardMessageId ?? null,
-        value.conductorMirrorMessageId ?? null,
-        value.state,
-        value.updatedAt,
-        value.humanInterventionId,
-      );
-    },
-  };
-
-  const inbox: InboxStore = {
-    createInboxItem(value) {
-      const currentRow = store.one<Row>("SELECT * FROM session_inbox_items WHERE inbox_item_id = ?", value.inboxItemId);
-      if (currentRow) {
-        assertSameDurableValue(toSessionInboxItem(currentRow), value, "session_inbox_item_id_conflict");
-        return;
-      }
-      const duplicate = store.one<Row>(
-        `SELECT * FROM session_inbox_items
-         WHERE target_logical_session_id = ? AND rendered_message_id = ?`,
-        value.targetLogicalSessionId,
-        value.renderedMessageId,
-      );
-      if (duplicate) {
-        assertSameDurableValue(toSessionInboxItem(duplicate), value, "session_inbox_item_delivery_conflict");
-        return;
-      }
-      store.run(
-        `INSERT INTO session_inbox_items(inbox_item_id, task_id, run_id, target_logical_session_id, rendered_message_id, forward_id, human_intervention_id, reply_to_logical_session_id, state, lease_id, lease_expires_at, delivery_input_submission_id, revision, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        value.inboxItemId,
-        value.taskId,
-        value.runId,
-        value.targetLogicalSessionId,
-        value.renderedMessageId,
-        value.forwardId ?? null,
-        value.humanInterventionId ?? null,
-        value.replyToLogicalSessionId ?? null,
-        value.state,
-        value.leaseId ?? null,
-        value.leaseExpiresAt ?? null,
-        value.deliveryInputSubmissionId ?? null,
-        value.revision,
-        value.createdAt,
-        value.updatedAt,
-      );
-    },
-    getInboxItem(inboxItemId) {
-      const row = store.one<Row>("SELECT * FROM session_inbox_items WHERE inbox_item_id = ?", inboxItemId);
-      return row ? toSessionInboxItem(row) : undefined;
-    },
-    findInboxItem(input) {
-      const row = store.one<Row>(
-        `SELECT * FROM session_inbox_items
-         WHERE target_logical_session_id = ? AND rendered_message_id = ?`,
-        input.targetLogicalSessionId,
-        input.renderedMessageId,
-      );
-      return row ? toSessionInboxItem(row) : undefined;
-    },
-    listInboxItems(runId) {
-      return store.many<Row>("SELECT * FROM session_inbox_items WHERE run_id = ? ORDER BY created_at, inbox_item_id", runId).map(toSessionInboxItem);
-    },
-    listInboxItemsForSession(logicalSessionId) {
-      return store.many<Row>("SELECT * FROM session_inbox_items WHERE target_logical_session_id = ? ORDER BY created_at, inbox_item_id", logicalSessionId)
-        .map(toSessionInboxItem);
-    },
-    updateInboxItem(value, expectedRevision) {
-      const current = this.getInboxItem(value.inboxItemId);
-      if (!current) throw new Error("session_inbox_item_not_found");
-      if (current.revision !== expectedRevision) throw new Error("stale_session_inbox_item_revision");
-      if (value.revision !== expectedRevision + 1) throw new Error("session_inbox_item_revision_invalid");
-      store.run(
-        `UPDATE session_inbox_items
-         SET state = ?, lease_id = ?, lease_expires_at = ?, delivery_input_submission_id = ?, revision = ?, updated_at = ?
-         WHERE inbox_item_id = ? AND revision = ?`,
-        value.state,
-        value.leaseId ?? null,
-        value.leaseExpiresAt ?? null,
-        value.deliveryInputSubmissionId ?? null,
-        value.revision,
-        value.updatedAt,
-        value.inboxItemId,
-        expectedRevision,
-      );
-    },
-    claimInboxItem(input) {
-      const current = this.getInboxItem(input.inboxItemId);
-      if (!current) throw new Error("session_inbox_item_not_found");
-      if (current.revision !== input.expectedRevision) throw new Error("stale_session_inbox_item_revision");
-      if (current.state !== "pending") throw new Error("session_inbox_item_not_pending");
-      const claimed: SessionInboxItemRecord = {
-        ...current,
-        state: "leased",
-        leaseId: input.leaseId,
-        leaseExpiresAt: input.leaseExpiresAt,
-        revision: current.revision + 1,
-        updatedAt: input.now,
-      };
-      this.updateInboxItem(claimed, input.expectedRevision);
-      return claimed;
-    },
-  };
-
-  const invocation: InvocationStore = {
-    createInput(input, commandId) {
-      store.run(
-        `INSERT INTO input_submissions(input_submission_id, source_inbox_item_id, task_id, run_id, logical_session_id, binding_id, content_message_id, delivery_role, command_id, idempotency_key, content_digest, content, sequence_number, status, provider_effect_id, native_message_id, native_turn_id, evidence_reference_id, supersedes_input_submission_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        input.inputSubmissionId, input.sourceInboxItemId, input.taskId, input.runId, input.logicalSessionId, input.bindingId,
-        input.contentMessageId, input.deliveryRole, commandId, input.idempotencyKey, input.contentDigest, input.content, input.sequenceNumber, input.status,
-        input.providerEffectId ?? null, input.nativeMessageId ?? null, input.nativeTurnId ?? null,
-        input.evidenceReferenceId ?? null, input.supersedesInputSubmissionId ?? null, input.createdAt, input.updatedAt,
-      );
-    },
-    getInput(inputSubmissionId) {
-      const row = store.one<Row>("SELECT * FROM input_submissions WHERE input_submission_id = ?", inputSubmissionId);
-      return row ? toInput(row) : undefined;
-    },
-    findInputByCommandId(commandId) {
-      const row = store.one<Row>("SELECT * FROM input_submissions WHERE command_id = ?", commandId);
-      return row ? toInput(row) : undefined;
-    },
-    listInputs(runId) {
-      return store.many<Row>("SELECT * FROM input_submissions WHERE run_id = ? ORDER BY sequence_number", runId).map(toInput);
-    },
-    updateInput(input) {
-      store.run(
-        `UPDATE input_submissions SET status = ?, provider_effect_id = ?, native_message_id = ?, native_turn_id = ?, evidence_reference_id = ?, supersedes_input_submission_id = ?, updated_at = ? WHERE input_submission_id = ?`,
-        input.status, input.providerEffectId ?? null, input.nativeMessageId ?? null, input.nativeTurnId ?? null,
-        input.evidenceReferenceId ?? null, input.supersedesInputSubmissionId ?? null, input.updatedAt, input.inputSubmissionId,
-      );
-    },
-    createInvocation(invocationRecord) {
-      store.run(
-        `INSERT INTO invocations(invocation_id, task_id, run_id, target_logical_session_id, target_agent_card_id, binding_id, reply_to_logical_session_id, assignment_message_id, final_message_id, status, instruction, acceptance_criteria_json, requested_artifacts_json, priority, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        invocationRecord.invocationId, invocationRecord.taskId, invocationRecord.runId,
-        invocationRecord.targetLogicalSessionId, invocationRecord.targetAgentCardId, invocationRecord.bindingId,
-        invocationRecord.replyToLogicalSessionId, invocationRecord.assignmentMessageId, invocationRecord.finalMessageId ?? null,
-        invocationRecord.status, invocationRecord.instruction,
-        encodeJson(invocationRecord.acceptanceCriteria), encodeJson(invocationRecord.requestedArtifacts),
-        invocationRecord.priority ?? null, invocationRecord.createdAt, invocationRecord.updatedAt,
-      );
-    },
-    getInvocation(invocationId) {
-      const row = store.one<Row>("SELECT * FROM invocations WHERE invocation_id = ?", invocationId);
-      return row ? toInvocation(row) : undefined;
-    },
-    listInvocations(runId) {
-      return store.many<Row>("SELECT * FROM invocations WHERE run_id = ? ORDER BY created_at", runId).map(toInvocation);
-    },
-    updateInvocation(invocationRecord) {
-      store.run(
-        "UPDATE invocations SET final_message_id = ?, status = ?, updated_at = ? WHERE invocation_id = ?",
-        invocationRecord.finalMessageId ?? null,
-        invocationRecord.status,
-        invocationRecord.updatedAt,
-        invocationRecord.invocationId,
-      );
-    },
-    createAttention(attention) {
-      store.run(
-        `INSERT INTO attentions(attention_id, task_id, run_id, binding_id, binding_revision, native_request_id, active_input_submission_id, active_invocation_id, request_json, response_json, status, created_at, updated_at, resolved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        attention.attentionId, attention.taskId, attention.runId, attention.bindingId, attention.bindingRevision,
-        attention.nativeRequestId, attention.activeInputSubmissionId ?? null, attention.activeInvocationId ?? null,
-        encodeJson(attention.request), attention.response ? encodeJson(attention.response) : null, attention.status,
-        attention.createdAt, attention.updatedAt, attention.status === "resolved" ? attention.updatedAt : null,
-      );
-    },
-    getAttention(attentionId) {
-      const row = store.one<Row>("SELECT * FROM attentions WHERE attention_id = ?", attentionId);
-      return row ? toAttention(row) : undefined;
-    },
-    listAttentions(runId) {
-      return store.many<Row>("SELECT * FROM attentions WHERE run_id = ? ORDER BY created_at", runId).map(toAttention);
-    },
-    updateAttention(attention) {
-      store.run(
-        `UPDATE attentions SET response_json = ?, status = ?, updated_at = ?, resolved_at = ? WHERE attention_id = ?`,
-        attention.response ? encodeJson(attention.response) : null, attention.status, attention.updatedAt,
-        attention.status === "resolved" ? attention.updatedAt : null, attention.attentionId,
-      );
-    },
-    enqueue(outbox) { insertOutbox(store, outbox); },
-    claimOutbox(now, leaseUntil) {
-      return store.transaction(() => {
-        const row = store.one<Row>(
-          `SELECT * FROM outbox WHERE state IN ('pending', 'unknown') AND (lease_until IS NULL OR lease_until < ?) ORDER BY created_at LIMIT 1`,
-          now,
-        );
-        if (!row) return undefined;
-        const outbox = toOutbox(row);
-        store.run("UPDATE outbox SET state = ?, attempts = ?, lease_until = ?, updated_at = ? WHERE outbox_id = ?", "leased", outbox.attempts + 1, leaseUntil, now, outbox.outboxId);
-        return { ...outbox, state: "leased" as const, attempts: outbox.attempts + 1, leaseUntil, updatedAt: now };
-      });
-    },
-    settleOutbox(outboxId, state, lastEffect) {
-      const now = store.now();
-      store.run("UPDATE outbox SET state = ?, lease_until = NULL, last_effect_json = ?, updated_at = ? WHERE outbox_id = ?", state, lastEffect ? encodeJson(lastEffect) : null, now, outboxId);
-    },
-  };
-
-  const turn: SessionTurnStore = {
-    createTurn(value) {
-      store.run(
-        `INSERT INTO session_turns(session_turn_id, task_id, run_id, input_submission_id, target_logical_session_id, kind, initiator, trigger, reply_to_logical_session_id, invocation_id, human_intervention_id, affected_session_turn_id, final_message_id, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        value.sessionTurnId,
-        value.taskId,
-        value.runId,
-        value.inputSubmissionId,
-        value.targetLogicalSessionId,
-        value.kind,
-        value.initiator,
-        value.trigger,
-        value.replyToLogicalSessionId ?? null,
-        value.invocationId ?? null,
-        value.humanInterventionId ?? null,
-        value.affectedSessionTurnId ?? null,
-        value.finalMessageId ?? null,
-        value.status,
-        value.createdAt,
-        value.updatedAt,
-      );
-    },
-    getTurn(sessionTurnId) {
-      const row = store.one<Row>("SELECT * FROM session_turns WHERE session_turn_id = ?", sessionTurnId);
-      return row ? toSessionTurn(row) : undefined;
-    },
-    findTurnByInput(inputSubmissionId) {
-      const row = store.one<Row>("SELECT * FROM session_turns WHERE input_submission_id = ?", inputSubmissionId);
-      return row ? toSessionTurn(row) : undefined;
-    },
-    listTurns(runId) {
-      return store.many<Row>("SELECT * FROM session_turns WHERE run_id = ? ORDER BY created_at, session_turn_id", runId).map(toSessionTurn);
-    },
-    listTurnsForSession(logicalSessionId) {
-      return store.many<Row>("SELECT * FROM session_turns WHERE target_logical_session_id = ? ORDER BY created_at, session_turn_id", logicalSessionId).map(toSessionTurn);
-    },
-    updateTurn(value) {
-      store.run(
-        `UPDATE session_turns SET final_message_id = ?, status = ?, updated_at = ? WHERE session_turn_id = ?`,
-        value.finalMessageId ?? null,
-        value.status,
-        value.updatedAt,
-        value.sessionTurnId,
-      );
-    },
-  };
-
-  const providerFact: ProviderFactStore = {
-    recordFact(fact, receivedAt) {
-      const dedupKey = providerFactDedupKey(fact);
-      const existing = store.one<Row>("SELECT fact_json FROM provider_facts WHERE binding_id = ? AND dedup_key = ?", fact.bindingId, dedupKey);
-      if (existing) {
-        const recorded = decodeJson<ProviderFact>(existing.fact_json);
-        if (providerFactFingerprint(recorded) !== providerFactFingerprint(fact)) {
-          throw new Error("provider_fact_dedup_conflict");
-        }
-        return false;
-      }
-      store.run(
-        `INSERT INTO provider_facts(provider_fact_id, binding_id, provider_id, dedup_key, fact_type, fact_json, observed_at, received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        fact.providerFactId, fact.bindingId, fact.provider, dedupKey, fact.kind, encodeJson(fact), fact.observedAt, receivedAt,
-      );
-      return true;
-    },
-    listFacts(bindingIds) {
-      if (bindingIds.length === 0) return [];
-      const placeholders = bindingIds.map(() => "?").join(",");
-      return store.many<Row>(
-        `SELECT fact_json FROM provider_facts WHERE binding_id IN (${placeholders}) ORDER BY observed_at, provider_fact_id`,
-        ...bindingIds,
-      ).map((row) => decodeJson<ProviderFact>(row.fact_json));
     },
   };
 
@@ -1622,353 +847,12 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
     },
   };
 
-  const artifact: ArtifactStore = {
-    recordArtifact(value) {
-      const existingById = store.one<Row>("SELECT * FROM artifacts WHERE artifact_id = ?", value.artifactId);
-      if (existingById) {
-        const existing = toArtifact(existingById);
-        if (!sameArtifact(existing, value)) throw new Error("artifact_idempotency_conflict");
-        return existing;
-      }
-      if (value.sourceMessageId) {
-        const existingByClaim = store.one<Row>(
-          "SELECT * FROM artifacts WHERE source_message_id = ? AND workspace_relative_path = ?",
-          value.sourceMessageId,
-          value.workspaceRelativePath,
-        );
-        if (existingByClaim) {
-          const existing = toArtifact(existingByClaim);
-          if (!sameArtifact(existing, value)) throw new Error("artifact_claim_conflict");
-          return existing;
-        }
-      }
-      store.run(
-        `INSERT INTO artifacts(artifact_id, task_id, run_id, workspace_relative_path, content_digest, source_invocation_id, source_provider_fact_id, source_message_id, evidence_reference_ids_json, verified_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        value.artifactId, value.taskId, value.runId, value.workspaceRelativePath, value.contentDigest,
-        value.sourceInvocationId ?? null, value.sourceProviderFactId ?? null, value.sourceMessageId ?? null,
-        encodeJson(value.evidenceReferenceIds), value.verifiedAt,
-      );
-      return toArtifact(store.one<Row>("SELECT * FROM artifacts WHERE artifact_id = ?", value.artifactId)!);
-    },
-    listArtifacts(runId) {
-      return store.many<Row>("SELECT * FROM artifacts WHERE run_id = ? ORDER BY verified_at", runId).map(toArtifact);
-    },
-    listArtifactsForTask(taskId) {
-      return store.many<Row>("SELECT * FROM artifacts WHERE task_id = ? ORDER BY verified_at, artifact_id", taskId).map(toArtifact);
-    },
-    getArtifact(artifactId) {
-      const row = store.one<Row>("SELECT * FROM artifacts WHERE artifact_id = ?", artifactId);
-      return row ? toArtifact(row) : undefined;
-    },
-    findArtifactByClaim(sourceMessageId, workspaceRelativePath) {
-      const row = store.one<Row>(
-        "SELECT * FROM artifacts WHERE source_message_id = ? AND workspace_relative_path = ?",
-        sourceMessageId,
-        workspaceRelativePath,
-      );
-      return row ? toArtifact(row) : undefined;
-    },
-  };
-
-  const retention: TaskRetentionStore = {
-    getPermanentDeleteIntent(commandId) {
-      const row = store.one<Row>("SELECT * FROM task_permanent_delete_intents WHERE command_id = ?", commandId);
-      return row ? toTaskPermanentDeleteIntent(row) : undefined;
-    },
-    getPermanentDeleteIntentForTask(taskId) {
-      const row = store.one<Row>("SELECT * FROM task_permanent_delete_intents WHERE task_id = ?", taskId);
-      return row ? toTaskPermanentDeleteIntent(row) : undefined;
-    },
-    getPermanentDeleteTombstone(commandId) {
-      const row = store.one<Row>("SELECT * FROM task_permanent_delete_tombstones WHERE command_id = ?", commandId);
-      return row ? toTaskPermanentDeleteTombstone(row) : undefined;
-    },
-    preparePermanentDelete(intent) {
-      return store.transaction(() => {
-        const existingByCommand = store.one<Row>("SELECT * FROM task_permanent_delete_intents WHERE command_id = ?", intent.commandId);
-        if (existingByCommand) {
-          const existing = toTaskPermanentDeleteIntent(existingByCommand);
-          assertSamePermanentDeleteIntent(existing, intent);
-          return existing;
-        }
-        const existingByTask = store.one<Row>("SELECT command_id FROM task_permanent_delete_intents WHERE task_id = ?", intent.taskId);
-        if (existingByTask) throw new Error("task_permanent_delete_in_progress");
-        const task = store.one<Row>("SELECT revision, trashed_at FROM tasks WHERE task_id = ?", intent.taskId);
-        if (!task) throw new Error("task_not_found");
-        if (number(task.revision) !== intent.expectedRevision) throw new Error("stale_task_revision");
-        if (!optionalText(task.trashed_at)) throw new Error("task_not_in_recycle_bin");
-        if (new Set(intent.artifactIds).size !== intent.artifactIds.length) throw new Error("task_permanent_delete_artifact_ids_duplicate");
-        for (const artifactId of intent.artifactIds) {
-          const artifact = store.one<Row>("SELECT task_id FROM artifacts WHERE artifact_id = ?", artifactId);
-          if (!artifact || text(artifact.task_id) !== intent.taskId) throw new Error("task_permanent_delete_artifact_not_registered");
-        }
-        store.run(
-          `INSERT INTO task_permanent_delete_intents(command_id, task_id, expected_revision, artifact_ids_json, payload_fingerprint, prepared_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          intent.commandId,
-          intent.taskId,
-          intent.expectedRevision,
-          encodeJson(intent.artifactIds),
-          intent.payloadFingerprint,
-          intent.preparedAt,
-        );
-        return intent;
-      });
-    },
-    completePermanentDelete(input) {
-      return store.transaction(() => {
-        const existing = store.one<Row>("SELECT * FROM task_permanent_delete_tombstones WHERE command_id = ?", input.commandId);
-        if (existing) {
-          const tombstone = toTaskPermanentDeleteTombstone(existing);
-          if (tombstone.taskId !== input.taskId || tombstone.payloadFingerprint !== input.payloadFingerprint) {
-            throw new Error("runtime_command_id_reused_with_different_payload");
-          }
-          return tombstone;
-        }
-        const intentRow = store.one<Row>("SELECT * FROM task_permanent_delete_intents WHERE command_id = ?", input.commandId);
-        if (!intentRow) throw new Error("task_permanent_delete_intent_not_found");
-        const intent = toTaskPermanentDeleteIntent(intentRow);
-        if (intent.taskId !== input.taskId || intent.payloadFingerprint !== input.payloadFingerprint) {
-          throw new Error("runtime_command_id_reused_with_different_payload");
-        }
-        if (input.result.taskId !== input.taskId) throw new Error("task_permanent_delete_result_task_mismatch");
-        deleteTaskGraph(store, input.taskId);
-        const tombstone: TaskPermanentDeleteTombstone = {
-          commandId: input.commandId,
-          taskId: input.taskId,
-          payloadFingerprint: input.payloadFingerprint,
-          result: input.result,
-          deletedAt: input.result.deletedAt,
-        };
-        store.run(
-          `INSERT INTO task_permanent_delete_tombstones(command_id, task_id, payload_fingerprint, result_json, deleted_at)
-           VALUES (?, ?, ?, ?, ?)`,
-          tombstone.commandId,
-          tombstone.taskId,
-          tombstone.payloadFingerprint,
-          encodeJson(tombstone.result),
-          tombstone.deletedAt,
-        );
-        return tombstone;
-      });
-    },
-  };
-
-  const presentation: PresentationStore = {
-    savePresentation(value) {
-      store.run(
-        `INSERT INTO presentation_leases(presentation_lease_id, binding_id, descriptor_json, expires_at, revoked_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(presentation_lease_id) DO UPDATE SET descriptor_json = excluded.descriptor_json, expires_at = excluded.expires_at, revoked_at = excluded.revoked_at`,
-        value.presentationLeaseId, value.bindingId, encodeJson(value), value.expiresAt, value.revokedAt ?? null, store.now(),
-      );
-    },
-    getPresentation(presentationLeaseId) {
-      const row = store.one<Row>("SELECT descriptor_json FROM presentation_leases WHERE presentation_lease_id = ?", presentationLeaseId);
-      return row ? decodeJson<SessionPresentation>(row.descriptor_json) : undefined;
-    },
-    revokePresentation(presentationLeaseId, revokedAt) {
-      const current = this.getPresentation(presentationLeaseId);
-      if (!current) throw new Error("presentation_lease_not_found");
-      if (current.revokedAt) return current;
-      const revoked: SessionPresentation = { ...current, revokedAt };
-      store.run(
-        "UPDATE presentation_leases SET descriptor_json = ?, revoked_at = ? WHERE presentation_lease_id = ?",
-        encodeJson(revoked),
-        revokedAt,
-        presentationLeaseId,
-      );
-      return revoked;
-    },
-    listPresentations(bindingIds, now) {
-      if (bindingIds.length === 0) return [];
-      const placeholders = bindingIds.map(() => "?").join(",");
-      return store.many<Row>(`SELECT descriptor_json FROM presentation_leases WHERE binding_id IN (${placeholders}) AND expires_at > ? AND revoked_at IS NULL`, ...bindingIds, now)
-        .map((row) => decodeJson<SessionPresentation>(row.descriptor_json));
-    },
-  };
-
-  const read: RuntimeReadStore = {
-    readModel(now, request = {}) {
-      const { taskId, templateId } = request;
-      const workspaceLibrary = {
-        authorizations: workspace.listAuthorizations().map(({ workspaceId, displayName, authorizedAt }) => ({
-          workspaceId,
-          displayName,
-          authorizedAt,
-        })),
-      };
-      const templateLibrary = { templates: templateTask.listTemplateLibrary(), drafts: templateTask.listDrafts() };
-      const taskLibrary = { tasks: templateTask.listTasks() };
-      const selectedTemplate = templateId ? templateTask.getTemplate(templateId) : undefined;
-      const template: TemplateSelectionReadModel | undefined = selectedTemplate ? {
-        template: selectedTemplate,
-        // Version history is deliberately a focused read.  It does not expose
-        // mutable Draft content, asset bytes, native Provider data, or cwd.
-        versions: templateTask.listTemplateVersions(selectedTemplate.templateId).map(toTemplateVersionReadModel),
-      } : undefined;
-      const base = {
-        generatedAt: now,
-        configuration: {
-          metaProfileOptions: [],
-          executionProfileReadiness: [],
-          taskSetupDrafts: configuration.listTaskSetupDrafts(),
-          metaSessions: configuration.listMetaSessions(),
-          metaMessages: configuration.listMetaMessages(),
-          metaPatchProposals: configuration.listMetaPatchProposals(),
-          metaTurns: configuration.listMetaTurns().map(toMetaTurnReadModel),
-        },
-        workspaceLibrary,
-        templateLibrary,
-        ...(template ? { template } : {}),
-        taskLibrary,
-      };
-      if (!taskId) return base;
-      const task = templateTask.getTask(taskId);
-      if (!task) return base;
-      // Artifact references contain a Host-private relative path. Read models
-      // retain only managed identity and basename, while Timeline derivation
-      // receives the private records inside this Store boundary.
-      const artifacts = artifact.listArtifactsForTask(task.taskId);
-      const managedArtifacts = artifacts.map(toManagedArtifactReadModel);
-      const activeRun = task.activeRunId ? templateTask.getRun(task.activeRunId) : undefined;
-      if (!activeRun) {
-        const logicalSessions: readonly LogicalSessionRecord[] = [];
-        const bindings: readonly ProviderSessionBindingRecord[] = [];
-        const inputs: readonly InputSubmissionRecord[] = [];
-        const invocations: readonly InvocationRecord[] = [];
-        const sessionTurns: readonly SessionTurnRecord[] = [];
-        const messages: readonly SessionMessageRecord[] = [];
-        const relayBlocks: readonly RelayBlockRecord[] = [];
-        const messageForwards: readonly MessageForwardRecord[] = [];
-        const messageForwardBatches: readonly MessageForwardBatchRecord[] = [];
-        const humanInterventions: readonly HumanInterventionRecord[] = [];
-        const inboxItems: readonly SessionInboxItemRecord[] = [];
-        const attentions: readonly AttentionRecord[] = [];
-        return {
-          ...base,
-          task: {
-            task,
-            logicalSessions,
-            bindings,
-            inputs,
-            invocations,
-            sessionTurns,
-            messages,
-            relayBlocks,
-            messageForwards,
-            messageForwardBatches,
-            humanInterventions,
-            inboxItems,
-            attentions,
-            providerActivities: [],
-            artifacts: managedArtifacts,
-            presentations: [],
-            timeline: deriveTaskTimeline({
-              task,
-              bindings,
-              inputs,
-              invocations,
-              sessionTurns,
-              messages,
-              relayBlocks,
-              messageForwards,
-              humanInterventions,
-              inboxItems,
-              attentions,
-              artifacts,
-              providerFacts: [],
-            }),
-          },
-        };
-      }
-      const logicalSessions = binding.listLogicalSessions(activeRun.runId);
-      const bindings = binding.listBindings(activeRun.runId);
-      const inputs = invocation.listInputs(activeRun.runId);
-      const invocations = invocation.listInvocations(activeRun.runId);
-      const sessionTurns = turn.listTurns(activeRun.runId);
-      const messages = message.listMessages(activeRun.runId);
-      const relayBlocks = message.listRelayBlocks(activeRun.runId);
-      const messageForwards = forward.listForwards(activeRun.runId);
-      const messageForwardBatches = forward.listBatches(activeRun.runId);
-      const humanInterventions = humanIntervention.listInterventions(activeRun.runId);
-      const inboxItems = inbox.listInboxItems(activeRun.runId);
-      const attentions = invocation.listAttentions(activeRun.runId);
-      const providerFacts = providerFact.listFacts(bindings.map((item) => item.bindingId));
-      const providerActivities = deriveProviderActivities({ bindings, sessionTurns, providerFacts });
-      return {
-        ...base,
-        task: {
-          task,
-          activeRun,
-          logicalSessions,
-          bindings,
-          inputs,
-          invocations,
-          sessionTurns,
-          messages,
-          relayBlocks,
-          messageForwards,
-          messageForwardBatches,
-          humanInterventions,
-          inboxItems,
-          attentions,
-          providerActivities,
-          artifacts: managedArtifacts,
-          presentations: presentation.listPresentations(bindings.map((item) => item.bindingId), now),
-          timeline: deriveTaskTimeline({
-            task,
-            activeRun,
-            bindings,
-            inputs,
-            invocations,
-            sessionTurns,
-            messages,
-            relayBlocks,
-            messageForwards,
-            humanInterventions,
-            inboxItems,
-            attentions,
-            artifacts,
-            providerFacts,
-          }),
-        },
-      };
-    },
-  };
-
   return {
     transaction: (work) => store.transaction(work),
     templateTask,
-    binding,
-    message,
-    forward,
-    humanIntervention,
-    inbox,
-    turn,
-    invocation,
-    providerFact,
     command,
-    artifact,
-    retention,
-    presentation,
     workspace,
     configuration,
-    read,
-  };
-}
-
-function toTemplateVersionReadModel(version: TemplateVersionRecord): TemplateVersionReadModel {
-  return {
-    templateVersionId: version.templateVersionId,
-    templateId: version.templateId,
-    version: version.version,
-    definition: version.definition,
-    definitionHash: version.definitionHash,
-    ...(version.assetManifestHash ? { assetManifestHash: version.assetManifestHash } : {}),
-    createdAt: version.createdAt,
-    publishedAt: version.publishedAt,
   };
 }
 
@@ -2016,6 +900,18 @@ function toMetaTurn(row: Row): MetaTurnRecord {
   if (leasedFromStatus !== undefined && !isMetaTurnDispatchStatus(leasedFromStatus)) {
     throw new Error("runtime_store_meta_turn_lease_origin_invalid");
   }
+  const profile = validateMetaProfileSnapshot(decodeJson<unknown>(row.profile_json));
+  return isMetaProfileDefinitionV3(profile)
+    ? toMetaTurnWithProfile(row, status, leasedFromStatus, profile)
+    : toMetaTurnWithProfile(row, status, leasedFromStatus, profile);
+}
+
+function toMetaTurnWithProfile<Profile extends MetaProfileSnapshot>(
+  row: Row,
+  status: MetaTurnStatus,
+  leasedFromStatus: MetaTurnDispatchStatus | undefined,
+  profile: Profile,
+): MetaTurnRecordBase<Profile> {
   return compact({
     metaTurnId: text(row.meta_turn_id),
     metaSessionId: text(row.meta_session_id),
@@ -2024,7 +920,7 @@ function toMetaTurn(row: Row): MetaTurnRecord {
     userMetaMessageId: text(row.user_meta_message_id),
     assistantMetaMessageId: text(row.assistant_meta_message_id),
     metaPatchProposalId: text(row.meta_patch_proposal_id),
-    profile: decodeJson<MetaProfileDefinition>(row.profile_json),
+    profile,
     mode: requiredMetaSessionMode(row.mode),
     targetRevision: number(row.target_revision),
     systemInstructions: text(row.system_instructions),
@@ -2060,8 +956,56 @@ function toMetaTurnReadModel(turn: MetaTurnRecord): MetaTurnReadModel {
   });
 }
 
+function requiredAcpMetaProfile(profile: MetaProfileSnapshot): MetaProfileDefinitionV3 {
+  const validated = validateMetaProfileSnapshot(profile);
+  if (!isMetaProfileDefinitionV3(validated)) throw new Error("meta_profile_v2_read_only");
+  return validated;
+}
+
+function isAcpMetaTurnV3(turn: MetaTurnRecord): turn is AcpMetaTurnRecordV3 {
+  return isMetaProfileDefinitionV3(turn.profile);
+}
+
+function requiredAcpMetaTurn(turn: MetaTurnRecord): AcpMetaTurnRecordV3 {
+  if (!isAcpMetaTurnV3(turn)) throw new Error("meta_profile_v2_read_only");
+  return turn;
+}
+
+function metaSessionImmutable(session: MetaSessionRecord) {
+  return {
+    metaSessionId: session.metaSessionId,
+    ownerId: session.ownerId,
+    mode: session.mode,
+    target: session.target,
+    metaProfileOptionId: session.metaProfileOptionId,
+    metaProfile: session.metaProfile,
+    createdAt: session.createdAt,
+  };
+}
+
+function metaProposalImmutable(proposal: MetaPatchProposalRecord) {
+  return {
+    metaPatchProposalId: proposal.metaPatchProposalId,
+    metaSessionId: proposal.metaSessionId,
+    ownerId: proposal.ownerId,
+    mode: proposal.mode,
+    target: proposal.target,
+    sourceMetaProfileOptionId: proposal.sourceMetaProfileOptionId,
+    sourceMetaProfile: proposal.sourceMetaProfile,
+    sourceMetaSessionRevision: proposal.sourceMetaSessionRevision,
+    targetRevision: proposal.targetRevision,
+    operations: proposal.operations,
+    summary: proposal.summary,
+    rationale: proposal.rationale,
+    validationIssues: proposal.validationIssues,
+    createdAt: proposal.createdAt,
+  };
+}
+
 function assertNewMetaTurnInput(input: CreateMetaTurnStorageInput): void {
   const { session, expectedSessionRevision, userMessage, turn } = input;
+  requiredAcpMetaProfile(session.metaProfile);
+  requiredAcpMetaProfile(turn.profile);
   if (!turn.metaTurnId.startsWith("meta_turn_")) throw new Error("meta_turn_id_invalid");
   if (!turn.commandId.startsWith("command_")) throw new Error("meta_turn_command_id_invalid");
   if (!turn.idempotencyKey) throw new Error("meta_turn_idempotency_key_required");
@@ -2122,6 +1066,13 @@ function requiredMetaTurn(store: SqliteRuntimeStore, metaTurnId: string): MetaTu
   const row = store.one<Row>("SELECT * FROM meta_turns WHERE meta_turn_id = ?", metaTurnId);
   if (!row) throw new Error("meta_turn_not_found");
   return toMetaTurn(row);
+}
+
+function requiredAcpMetaTurnRecord(
+  store: SqliteRuntimeStore,
+  metaTurnId: string,
+): AcpMetaTurnRecordV3 {
+  return requiredAcpMetaTurn(requiredMetaTurn(store, metaTurnId));
 }
 
 function updateMetaTurnDispatchState(store: SqliteRuntimeStore, turn: MetaTurnRecord): void {
@@ -2224,35 +1175,6 @@ function assertCompletedMetaTurnReplay(
   }
 }
 
-function insertSession(store: SqliteRuntimeStore, session: LogicalSessionRecord): void {
-  store.run(
-    `INSERT INTO logical_sessions(logical_session_id, task_id, run_id, agent_card_id, kind, execution_profile_id, status, ordinal, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    session.logicalSessionId, session.taskId, session.runId, session.agentCardId, session.kind, session.executionProfileId,
-    session.status, session.ordinal, session.createdAt, session.updatedAt,
-  );
-}
-
-function insertBinding(store: SqliteRuntimeStore, binding: ProviderSessionBindingRecord): void {
-  store.run(
-    `INSERT INTO provider_session_bindings(binding_id, task_id, run_id, logical_session_id, execution_profile_id, provider_id, provider_host_id, native_binding_ref, binding_revision, status, recoverable, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    binding.bindingId, binding.taskId, binding.runId, binding.logicalSessionId, binding.executionProfileId, binding.provider,
-    binding.providerHostId ?? null, binding.nativeBindingRef ?? null, binding.bindingRevision, binding.status,
-    binding.recoverable ? 1 : 0, binding.createdAt, binding.updatedAt,
-  );
-}
-
-function insertOutbox(store: SqliteRuntimeStore, outbox: OutboxRecord): void {
-  store.run(
-    `INSERT INTO outbox(outbox_id, command_id, provider_id, kind, binding_id, payload_json, state, attempts, lease_until, last_effect_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    outbox.outboxId, outbox.commandId, outbox.provider, outbox.kind, outbox.bindingId ?? null, encodeJson(outbox.payload),
-    outbox.state, outbox.attempts, outbox.leaseUntil ?? null, outbox.lastEffect ? encodeJson(outbox.lastEffect) : null,
-    outbox.createdAt, outbox.updatedAt,
-  );
-}
-
 function toTemplate(row: Row): TemplateRecord {
   return compact({
     templateId: text(row.template_id), slug: text(row.slug), title: text(row.title),
@@ -2262,11 +1184,18 @@ function toTemplate(row: Row): TemplateRecord {
 }
 
 function toTemplateVersion(row: Row): TemplateVersionRecord {
+  const schemaVersion = number(row.schema_version);
+  const definition = schemaVersion === 2
+    ? validateTemplateDefinition(decodeJson<unknown>(row.definition_json))
+    : schemaVersion === 3
+      ? validateTemplateDefinitionV3(decodeJson<unknown>(row.definition_json))
+      : undefined;
+  if (!definition) throw new Error("runtime_store_template_version_schema_unsupported");
   return {
     templateVersionId: text(row.template_version_id),
     templateId: text(row.template_id),
     version: number(row.version),
-    definition: decodeJson<TemplateDefinition>(row.definition_json),
+    definition,
     definitionHash: text(row.definition_hash),
     assetManifestHash: optionalText(row.asset_manifest_hash) ?? EMPTY_TEMPLATE_ASSET_MANIFEST_HASH,
     createdAt: text(row.created_at),
@@ -2292,7 +1221,9 @@ function toTemplateAsset(row: Row): TemplateAssetRecord {
 function toDraft(row: Row): TemplateDraftRecord {
   return compact({
     templateDraftId: text(row.draft_id), templateId: optionalText(row.template_id), baseTemplateVersionId: optionalText(row.base_template_version_id),
-    metadata: decodeJson<TemplateDraftRecord["metadata"]>(row.metadata_json), definition: decodeJson<TemplateDefinition>(row.definition_json), status: text(row.status) as TemplateDraftRecord["status"], ownerId: text(row.owner_id),
+    metadata: decodeJson<TemplateDraftRecord["metadata"]>(row.metadata_json),
+    definition: validateTemplateDefinitionSnapshot(decodeJson<unknown>(row.definition_json)),
+    status: text(row.status) as TemplateDraftRecord["status"], ownerId: text(row.owner_id),
     revision: number(row.revision), createdAt: text(row.created_at), updatedAt: text(row.updated_at),
   });
 }
@@ -2315,13 +1246,23 @@ function toTaskSetupDraft(row: Row): TaskSetupDraftRecord {
 }
 
 function toMetaSession(row: Row): MetaSessionRecord {
+  const profile = validateMetaProfileSnapshot(decodeJson<unknown>(row.meta_profile_json));
+  return isMetaProfileDefinitionV3(profile)
+    ? toMetaSessionWithProfile(row, profile)
+    : toMetaSessionWithProfile(row, profile);
+}
+
+function toMetaSessionWithProfile<Profile extends MetaProfileSnapshot>(
+  row: Row,
+  metaProfile: Profile,
+): MetaSessionRecordFor<Profile> {
   const targetKind = text(row.target_kind);
   const mode = text(row.mode);
   const base = {
     metaSessionId: text(row.meta_session_id),
     ownerId: text(row.owner_id),
     metaProfileOptionId: text(row.meta_profile_option_id),
-    metaProfile: decodeJson<MetaSessionRecord["metaProfile"]>(row.meta_profile_json),
+    metaProfile,
     state: text(row.state) as MetaSessionRecord["state"],
     revision: number(row.revision),
     createdAt: text(row.created_at),
@@ -2349,6 +1290,16 @@ function toMetaMessage(row: Row): MetaMessageRecord {
 }
 
 function toMetaPatchProposal(row: Row): MetaPatchProposalRecord {
+  const profile = validateMetaProfileSnapshot(decodeJson<unknown>(row.source_meta_profile_json));
+  return isMetaProfileDefinitionV3(profile)
+    ? toMetaPatchProposalWithProfile(row, profile)
+    : toMetaPatchProposalWithProfile(row, profile);
+}
+
+function toMetaPatchProposalWithProfile<Profile extends MetaProfileSnapshot>(
+  row: Row,
+  sourceMetaProfile: Profile,
+): MetaPatchProposalRecordFor<Profile> {
   const targetKind = text(row.target_kind);
   const targetId = text(row.target_id);
   const target = targetKind === "template_draft"
@@ -2364,7 +1315,7 @@ function toMetaPatchProposal(row: Row): MetaPatchProposalRecord {
     mode: text(row.mode) as MetaPatchProposalRecord["mode"],
     target,
     sourceMetaProfileOptionId: text(row.source_meta_profile_option_id),
-    sourceMetaProfile: decodeJson<MetaPatchProposalRecord["sourceMetaProfile"]>(row.source_meta_profile_json),
+    sourceMetaProfile,
     sourceMetaSessionRevision: number(row.source_meta_session_revision),
     targetRevision: number(row.target_revision),
     operations: decodeJson<MetaPatchProposalRecord["operations"]>(row.operations_json),
@@ -2397,17 +1348,50 @@ function toTask(row: Row): TaskRecord {
 }
 
 function toArchitectureSnapshot(row: Row): TaskArchitectureSnapshot {
-  return {
+  const definition = validateTemplateDefinitionSnapshot(decodeJson<unknown>(row.definition_json));
+  if (definition.schemaVersion === 3) {
+    return validateTaskArchitectureSnapshotV3({
+      schemaVersion: 3,
+      architectureSnapshotId: text(row.architecture_snapshot_id),
+      taskId: text(row.task_id),
+      templateId: text(row.template_id),
+      templateVersionId: text(row.template_version_id),
+      templateDefinitionHash: text(row.template_definition_hash),
+      definition,
+      taskInputValues: decodeJson<unknown>(row.task_input_values_json),
+      taskTitle: text(row.task_title),
+      taskGoal: text(row.task_goal),
+      taskGoalContent: text(row.task_goal_content),
+      taskGoalContentDigest: text(row.task_goal_content_digest),
+      taskGoalCompilerVersion: text(row.task_goal_compiler_version),
+      workspace: decodeJson<unknown>(row.workspace_json),
+      createdAt: text(row.created_at),
+    });
+  }
+  return validateTaskArchitectureSnapshotV2({
     architectureSnapshotId: text(row.architecture_snapshot_id), taskId: text(row.task_id), templateId: text(row.template_id),
     templateVersionId: text(row.template_version_id), templateDefinitionHash: text(row.template_definition_hash),
-    definition: decodeJson<TemplateDefinition>(row.definition_json),
-    taskInputValues: decodeJson<TaskArchitectureSnapshot["taskInputValues"]>(row.task_input_values_json),
+    definition,
+    taskInputValues: decodeJson<TaskArchitectureSnapshotV2["taskInputValues"]>(row.task_input_values_json),
     taskGoalContent: text(row.task_goal_content),
     taskGoalContentDigest: text(row.task_goal_content_digest),
-    taskGoalCompilerVersion: text(row.task_goal_compiler_version) as TaskArchitectureSnapshot["taskGoalCompilerVersion"],
-    workspace: decodeJson<TaskArchitectureSnapshot["workspace"]>(row.workspace_json),
+    taskGoalCompilerVersion: text(row.task_goal_compiler_version) as TaskArchitectureSnapshotV2["taskGoalCompilerVersion"],
+    workspace: decodeJson<TaskArchitectureSnapshotV2["workspace"]>(row.workspace_json),
     createdAt: text(row.created_at),
-  };
+  });
+}
+
+function validateTaskArchitectureSnapshotV2(value: TaskArchitectureSnapshotV2): TaskArchitectureSnapshotV2 {
+  const definition = validateTemplateDefinition(value.definition);
+  const workspace = value.workspace;
+  if (!workspace || typeof workspace.workspaceId !== "string" || !workspace.workspaceId.startsWith("workspace_")
+    || typeof workspace.cwd !== "string" || !workspace.cwd.trim()) {
+    throw new Error("runtime_store_task_architecture_v2_workspace_invalid");
+  }
+  if (value.templateDefinitionHash !== hashDefinition(definition as unknown as JsonValue)) {
+    throw new Error("runtime_store_task_architecture_definition_hash_mismatch");
+  }
+  return Object.freeze({ ...value, definition, workspace: Object.freeze({ ...workspace }) });
 }
 
 function toWorkspaceAuthorization(row: Row): WorkspaceAuthorizationRecord {
@@ -2423,273 +1407,6 @@ function toRun(row: Row): TaskRunRecord {
   return compact({ runId: text(row.run_id), taskId: text(row.task_id), conductorLogicalSessionId: text(row.conductor_logical_session_id), status: text(row.status) as TaskRunRecord["status"], runNumber: number(row.run_number), startedAt: text(row.started_at), endedAt: optionalText(row.ended_at), revision: number(row.revision) });
 }
 
-function toLogicalSession(row: Row): LogicalSessionRecord {
-  return { logicalSessionId: text(row.logical_session_id), taskId: text(row.task_id), runId: text(row.run_id), kind: text(row.kind) as LogicalSessionRecord["kind"], agentCardId: text(row.agent_card_id), executionProfileId: text(row.execution_profile_id), status: text(row.status) as LogicalSessionRecord["status"], ordinal: number(row.ordinal), createdAt: text(row.created_at), updatedAt: text(row.updated_at) };
-}
-
-function toBinding(row: Row): ProviderSessionBindingRecord {
-  return compact({ bindingId: text(row.binding_id), taskId: text(row.task_id), runId: text(row.run_id), logicalSessionId: text(row.logical_session_id), executionProfileId: text(row.execution_profile_id), provider: text(row.provider_id) as ProviderSessionBindingRecord["provider"], providerHostId: optionalText(row.provider_host_id), nativeBindingRef: optionalText(row.native_binding_ref), bindingRevision: number(row.binding_revision), status: text(row.status) as ProviderSessionBindingRecord["status"], recoverable: number(row.recoverable) === 1, createdAt: text(row.created_at), updatedAt: text(row.updated_at) });
-}
-
-function toInput(row: Row): InputSubmissionRecord {
-  return compact({ inputSubmissionId: text(row.input_submission_id), sourceInboxItemId: text(row.source_inbox_item_id), taskId: text(row.task_id), runId: text(row.run_id), logicalSessionId: text(row.logical_session_id), bindingId: text(row.binding_id), contentMessageId: text(row.content_message_id), deliveryRole: text(row.delivery_role) as InputSubmissionRecord["deliveryRole"], content: text(row.content), contentDigest: text(row.content_digest), sequenceNumber: number(row.sequence_number), idempotencyKey: text(row.idempotency_key), status: text(row.status) as InputSubmissionRecord["status"], providerEffectId: optionalText(row.provider_effect_id), nativeMessageId: optionalText(row.native_message_id), nativeTurnId: optionalText(row.native_turn_id), evidenceReferenceId: optionalText(row.evidence_reference_id), supersedesInputSubmissionId: optionalText(row.supersedes_input_submission_id), createdAt: text(row.created_at), updatedAt: text(row.updated_at) });
-}
-
-function toInvocation(row: Row): InvocationRecord {
-  return compact({ invocationId: text(row.invocation_id), taskId: text(row.task_id), runId: text(row.run_id), replyToLogicalSessionId: text(row.reply_to_logical_session_id), targetLogicalSessionId: text(row.target_logical_session_id), targetAgentCardId: text(row.target_agent_card_id), bindingId: text(row.binding_id), assignmentMessageId: text(row.assignment_message_id), instruction: text(row.instruction), acceptanceCriteria: decodeJson<readonly string[]>(row.acceptance_criteria_json), requestedArtifacts: decodeJson<readonly string[]>(row.requested_artifacts_json), priority: optionalText(row.priority) as InvocationRecord["priority"], finalMessageId: optionalText(row.final_message_id), status: text(row.status) as InvocationRecord["status"], createdAt: text(row.created_at), updatedAt: text(row.updated_at) });
-}
-
-function toSessionMessage(row: Row): SessionMessageRecord {
-  return compact({
-    messageId: text(row.message_id),
-    taskId: text(row.task_id),
-    runId: text(row.run_id),
-    sourceLogicalSessionId: optionalText(row.source_logical_session_id),
-    sourceSessionTurnId: optionalText(row.source_session_turn_id),
-    sourceHumanInterventionId: optionalText(row.source_human_intervention_id),
-    invocationId: optionalText(row.invocation_id),
-    kind: text(row.kind) as SessionMessageRecord["kind"],
-    content: text(row.content),
-    contentDigest: text(row.content_digest),
-    taskGoalCompilerVersion: optionalText(row.task_goal_compiler_version) as SessionMessageRecord["taskGoalCompilerVersion"],
-    createdAt: text(row.created_at),
-  });
-}
-
-function toRelayBlock(row: Row): RelayBlockRecord {
-  return compact({
-    relayBlockId: text(row.relay_block_id),
-    sourceMessageId: text(row.source_message_id),
-    ordinal: number(row.ordinal),
-    suggestedTargetAgentCardIds: decodeJson<readonly string[]>(row.suggested_target_agent_card_ids_json),
-    suggestedAudience: optionalText(row.suggested_audience) as RelayBlockRecord["suggestedAudience"],
-    topic: optionalText(row.topic),
-    format: text(row.format) as RelayBlockRecord["format"],
-    content: text(row.content),
-    contentDigest: text(row.content_digest),
-    parserVersion: number(row.parser_version),
-    sourceRange: { start: number(row.source_start), end: number(row.source_end) },
-    createdAt: text(row.created_at),
-  });
-}
-
-function toSessionInboxItem(row: Row): SessionInboxItemRecord {
-  return compact({
-    inboxItemId: text(row.inbox_item_id),
-    taskId: text(row.task_id),
-    runId: text(row.run_id),
-    targetLogicalSessionId: text(row.target_logical_session_id),
-    renderedMessageId: text(row.rendered_message_id),
-    forwardId: optionalText(row.forward_id),
-    humanInterventionId: optionalText(row.human_intervention_id),
-    replyToLogicalSessionId: optionalText(row.reply_to_logical_session_id),
-    state: text(row.state) as SessionInboxItemRecord["state"],
-    leaseId: optionalText(row.lease_id),
-    leaseExpiresAt: optionalText(row.lease_expires_at),
-    deliveryInputSubmissionId: optionalText(row.delivery_input_submission_id),
-    revision: number(row.revision),
-    createdAt: text(row.created_at),
-    updatedAt: text(row.updated_at),
-  });
-}
-
-function listForwardSelections(store: SqliteRuntimeStore, forwardId: string): MessageForwardRecord["selections"] {
-  return store.many<Row>("SELECT * FROM message_forward_selections WHERE forward_id = ? ORDER BY ordinal", forwardId)
-    .map((row) => compact({
-      forwardSelectionId: text(row.forward_selection_id),
-      forwardId: text(row.forward_id),
-      ordinal: number(row.ordinal),
-      kind: text(row.kind) as MessageForwardRecord["selections"][number]["kind"],
-      sourceMessageId: text(row.source_message_id),
-      relayBlockId: optionalText(row.relay_block_id),
-      contentDigest: text(row.content_digest),
-    }));
-}
-
-function toMessageForward(row: Row, selections: MessageForwardRecord["selections"]): MessageForwardRecord {
-  return compact({
-    forwardId: text(row.forward_id),
-    taskId: text(row.task_id),
-    runId: text(row.run_id),
-    commandId: text(row.command_id),
-    idempotencyKey: text(row.idempotency_key),
-    expectedTaskRevision: number(row.expected_task_revision),
-    publishBatchId: optionalText(row.publish_batch_id),
-    targetIdempotencyKey: text(row.target_idempotency_key),
-    decidedByLogicalSessionId: text(row.decided_by_logical_session_id),
-    decidedBySessionTurnId: text(row.decided_by_session_turn_id),
-    targetLogicalSessionId: text(row.target_logical_session_id),
-    mode: text(row.mode) as MessageForwardRecord["mode"],
-    selections,
-    renderedMessageId: text(row.rendered_message_id),
-    createdAt: text(row.created_at),
-  });
-}
-
-function toMessageForwardBatch(row: Row): MessageForwardBatchRecord {
-  return {
-    publishBatchId: text(row.publish_batch_id),
-    taskId: text(row.task_id),
-    runId: text(row.run_id),
-    commandId: text(row.command_id),
-    idempotencyKey: text(row.idempotency_key),
-    expectedTaskRevision: number(row.expected_task_revision),
-    fanoutKey: text(row.fanout_key),
-    decidedByLogicalSessionId: text(row.decided_by_logical_session_id),
-    decidedBySessionTurnId: text(row.decided_by_session_turn_id),
-    targetLogicalSessionIds: decodeJson<readonly string[]>(row.target_logical_session_ids_json),
-    selectionDigest: text(row.selection_digest),
-    state: text(row.state) as MessageForwardBatchRecord["state"],
-    createdAt: text(row.created_at),
-    updatedAt: text(row.updated_at),
-  };
-}
-
-function toHumanIntervention(row: Row): HumanInterventionRecord {
-  return compact({
-    humanInterventionId: text(row.human_intervention_id),
-    taskId: text(row.task_id),
-    runId: text(row.run_id),
-    commandId: text(row.command_id),
-    idempotencyKey: text(row.idempotency_key),
-    expectedTaskRevision: number(row.expected_task_revision),
-    targetLogicalSessionId: text(row.target_logical_session_id),
-    content: text(row.content),
-    contentDigest: text(row.content_digest),
-    affectedSessionTurnId: optionalText(row.affected_session_turn_id),
-    affectedInvocationId: optionalText(row.affected_invocation_id),
-    mode: text(row.mode) as HumanInterventionRecord["mode"],
-    cardMessageId: optionalText(row.card_message_id),
-    conductorMirrorMessageId: optionalText(row.conductor_mirror_message_id),
-    state: text(row.state) as HumanInterventionRecord["state"],
-    createdAt: text(row.created_at),
-    updatedAt: text(row.updated_at),
-  });
-}
-
-function toSessionTurn(row: Row): SessionTurnRecord {
-  return compact({
-    sessionTurnId: text(row.session_turn_id),
-    taskId: text(row.task_id),
-    runId: text(row.run_id),
-    inputSubmissionId: text(row.input_submission_id),
-    targetLogicalSessionId: text(row.target_logical_session_id),
-    kind: text(row.kind) as SessionTurnRecord["kind"],
-    initiator: text(row.initiator) as SessionTurnRecord["initiator"],
-    trigger: text(row.trigger) as SessionTurnRecord["trigger"],
-    replyToLogicalSessionId: optionalText(row.reply_to_logical_session_id),
-    invocationId: optionalText(row.invocation_id),
-    humanInterventionId: optionalText(row.human_intervention_id),
-    affectedSessionTurnId: optionalText(row.affected_session_turn_id),
-    finalMessageId: optionalText(row.final_message_id),
-    status: text(row.status) as SessionTurnRecord["status"],
-    createdAt: text(row.created_at),
-    updatedAt: text(row.updated_at),
-  });
-}
-
-function toAttention(row: Row): AttentionRecord {
-  return compact({ attentionId: text(row.attention_id), taskId: text(row.task_id), runId: text(row.run_id), bindingId: text(row.binding_id), bindingRevision: number(row.binding_revision), nativeRequestId: text(row.native_request_id), activeInputSubmissionId: optionalText(row.active_input_submission_id), activeInvocationId: optionalText(row.active_invocation_id), request: decodeJson<JsonObject>(row.request_json), response: row.response_json ? decodeJson<JsonObject>(row.response_json) : undefined, status: text(row.status) as AttentionRecord["status"], createdAt: text(row.created_at), updatedAt: text(row.updated_at) });
-}
-
-function toArtifact(row: Row): ArtifactReference {
-  return compact({ artifactId: text(row.artifact_id), taskId: text(row.task_id), runId: text(row.run_id), workspaceRelativePath: text(row.workspace_relative_path), contentDigest: text(row.content_digest), sourceInvocationId: optionalText(row.source_invocation_id), sourceProviderFactId: optionalText(row.source_provider_fact_id), sourceMessageId: optionalText(row.source_message_id), evidenceReferenceIds: decodeJson<readonly string[]>(row.evidence_reference_ids_json), verifiedAt: text(row.verified_at) });
-}
-
-function sameArtifact(left: ArtifactReference, right: ArtifactReference): boolean {
-  return left.artifactId === right.artifactId
-    && left.taskId === right.taskId
-    && left.runId === right.runId
-    && left.workspaceRelativePath === right.workspaceRelativePath
-    && left.contentDigest === right.contentDigest
-    && left.sourceInvocationId === right.sourceInvocationId
-    && left.sourceProviderFactId === right.sourceProviderFactId
-    && left.sourceMessageId === right.sourceMessageId
-    && JSON.stringify(left.evidenceReferenceIds) === JSON.stringify(right.evidenceReferenceIds);
-}
-
-function toManagedArtifactReadModel(artifact: ArtifactReference): ManagedArtifactReadModel {
-  return {
-    artifactId: artifact.artifactId,
-    taskId: artifact.taskId,
-    runId: artifact.runId,
-    displayName: artifactDisplayName(artifact.workspaceRelativePath),
-    contentDigest: artifact.contentDigest,
-    ...(artifact.sourceInvocationId ? { sourceInvocationId: artifact.sourceInvocationId } : {}),
-    verifiedAt: artifact.verifiedAt,
-  };
-}
-
-function toTaskPermanentDeleteIntent(row: Row): TaskPermanentDeleteIntent {
-  return {
-    commandId: text(row.command_id),
-    taskId: text(row.task_id),
-    expectedRevision: number(row.expected_revision),
-    artifactIds: decodeJson<readonly string[]>(row.artifact_ids_json),
-    payloadFingerprint: text(row.payload_fingerprint),
-    preparedAt: text(row.prepared_at),
-  };
-}
-
-function toTaskPermanentDeleteTombstone(row: Row): TaskPermanentDeleteTombstone {
-  return {
-    commandId: text(row.command_id),
-    taskId: text(row.task_id),
-    payloadFingerprint: text(row.payload_fingerprint),
-    result: decodeJson<TaskPermanentDeleteResult>(row.result_json),
-    deletedAt: text(row.deleted_at),
-  };
-}
-
-function assertSamePermanentDeleteIntent(left: TaskPermanentDeleteIntent, right: TaskPermanentDeleteIntent): void {
-  if (
-    left.taskId !== right.taskId
-    || left.expectedRevision !== right.expectedRevision
-    || left.payloadFingerprint !== right.payloadFingerprint
-    || left.artifactIds.length !== right.artifactIds.length
-    || left.artifactIds.some((artifactId, index) => artifactId !== right.artifactIds[index])
-  ) {
-    throw new Error("runtime_command_id_reused_with_different_payload");
-  }
-}
-
-/** Deletes only rows owned by one Task, in FK dependency order. */
-function deleteTaskGraph(store: SqliteRuntimeStore, taskId: string): void {
-  const bindingSelector = "SELECT binding_id FROM provider_session_bindings WHERE task_id = ?";
-  store.run(`DELETE FROM presentation_leases WHERE binding_id IN (${bindingSelector})`, taskId);
-  store.run(`DELETE FROM outbox WHERE binding_id IN (${bindingSelector})`, taskId);
-  store.run(`DELETE FROM provider_facts WHERE binding_id IN (${bindingSelector})`, taskId);
-  store.run(`DELETE FROM async_operations WHERE binding_id IN (${bindingSelector})`, taskId);
-  store.run("DELETE FROM attentions WHERE task_id = ?", taskId);
-  store.run("DELETE FROM artifacts WHERE task_id = ?", taskId);
-  store.run("UPDATE session_inbox_items SET delivery_input_submission_id = NULL WHERE task_id = ?", taskId);
-  store.run("DELETE FROM session_turns WHERE task_id = ?", taskId);
-  store.run("DELETE FROM input_submissions WHERE task_id = ?", taskId);
-  store.run("DELETE FROM session_inbox_items WHERE task_id = ?", taskId);
-  store.run("DELETE FROM human_interventions WHERE task_id = ?", taskId);
-  store.run("DELETE FROM message_forward_selections WHERE forward_id IN (SELECT forward_id FROM message_forwards WHERE task_id = ?)", taskId);
-  store.run("DELETE FROM message_forwards WHERE task_id = ?", taskId);
-  store.run("DELETE FROM message_forward_batches WHERE task_id = ?", taskId);
-  store.run("UPDATE session_messages SET invocation_id = NULL WHERE task_id = ?", taskId);
-  store.run("DELETE FROM invocations WHERE task_id = ?", taskId);
-  store.run(
-    "DELETE FROM relay_blocks WHERE source_message_id IN (SELECT message_id FROM session_messages WHERE task_id = ?)",
-    taskId,
-  );
-  store.run("DELETE FROM session_messages WHERE task_id = ?", taskId);
-  store.run("DELETE FROM provider_session_bindings WHERE task_id = ?", taskId);
-  store.run("DELETE FROM logical_sessions WHERE task_id = ?", taskId);
-  store.run("DELETE FROM task_runs WHERE task_id = ?", taskId);
-  // The pending-intent FK must be removed before its Task owner, whereas the
-  // tombstone is intentionally inserted after deletion and has no Task FK.
-  store.run("DELETE FROM task_permanent_delete_intents WHERE task_id = ?", taskId);
-  // Configuration audit survives Task retention deletion, but cannot retain a
-  // live foreign key to the intentionally removed Task row.
-  store.run("UPDATE task_setup_drafts SET created_task_id = NULL WHERE created_task_id = ?", taskId);
-  store.run("DELETE FROM tasks WHERE task_id = ?", taskId);
-  store.run("DELETE FROM task_architecture_snapshots WHERE task_id = ?", taskId);
-}
-
 function toStoredCommand(row: Row): StoredCommand {
   return {
     commandId: text(row.command_id),
@@ -2698,10 +1415,6 @@ function toStoredCommand(row: Row): StoredCommand {
     result: decodeJson<RuntimeCommandResult>(row.result_json),
     acceptedAt: text(row.accepted_at),
   };
-}
-
-function toOutbox(row: Row): OutboxRecord {
-  return compact({ outboxId: text(row.outbox_id), commandId: text(row.command_id), provider: text(row.provider_id), kind: text(row.kind) as OutboxRecord["kind"], bindingId: optionalText(row.binding_id), payload: decodeJson<JsonObject>(row.payload_json), state: text(row.state) as OutboxRecord["state"], attempts: number(row.attempts), leaseUntil: optionalText(row.lease_until), lastEffect: row.last_effect_json ? decodeJson<JsonObject>(row.last_effect_json) : undefined, createdAt: text(row.created_at), updatedAt: text(row.updated_at) });
 }
 
 /**

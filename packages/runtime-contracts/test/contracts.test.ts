@@ -2,13 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalJson,
   hashDefinition,
+  HOST_OBSERVED_EVIDENCE_MARKER,
   parseTemplatePackageYaml,
   providerFactDedupKey,
+  providerFactFingerprint,
   serializeTemplatePackageYaml,
   validateTemplateDefinition,
   validateTemplatePackage,
 } from "../src";
-import type { ManagedArtifactReadModel, RuntimeCommand } from "../src";
+import type { ExecutionProfileReadinessReadModel, RuntimeCommand } from "../src";
 import { providerFactFixture, templatePackageFixture } from "../../test-kit/src";
 
 describe("runtime contracts", () => {
@@ -50,6 +52,37 @@ describe("runtime contracts", () => {
     })).toThrow(/managed capability: resume_binding/);
   });
 
+  it("keeps v2 provider evidence fields as non-authoritative compatibility metadata", () => {
+    const source = templatePackageFixture().definition;
+    const definition = validateTemplateDefinition({
+      ...source,
+      executionProfiles: source.executionProfiles.map((profile) => ({
+        ...profile,
+        providerVersion: HOST_OBSERVED_EVIDENCE_MARKER,
+        protocolFingerprint: HOST_OBSERVED_EVIDENCE_MARKER,
+      })),
+    });
+
+    expect(definition.executionProfiles[0]).toMatchObject({
+      providerVersion: "host-observed",
+      protocolFingerprint: "host-observed",
+    });
+
+    const readiness: ExecutionProfileReadinessReadModel = {
+      templateVersionId: "template_version_observed",
+      executionProfileId: "profile_observed",
+      status: "available",
+      unavailableReasons: [],
+      missingCapabilities: [],
+      observedProviderVersion: "0.147.0",
+      observedProtocolFingerprint: "sha256:live-protocol",
+    };
+    expect(readiness).toMatchObject({
+      observedProviderVersion: "0.147.0",
+      observedProtocolFingerprint: "sha256:live-protocol",
+    });
+  });
+
   it("uses provider event, source cursor, then watermark fingerprints for Fact dedup", () => {
     expect(providerFactDedupKey(providerFactFixture())).toContain("event:event-001");
     expect(providerFactDedupKey(providerFactFixture({ deduplication: { sourceInstanceId: "host-a", cursor: "42" } })))
@@ -59,19 +92,34 @@ describe("runtime contracts", () => {
     expect(() => providerFactDedupKey(providerFactFixture({ deduplication: {} }))).toThrow("provider_fact_deduplication_evidence_required");
   });
 
+  it("replays one native Provider event across Binding recovery but rejects semantic changes", () => {
+    const fact = providerFactFixture();
+    expect(providerFactFingerprint({
+      ...fact,
+      bindingRevision: fact.bindingRevision + 1,
+      deduplication: { ...fact.deduplication, sourceInstanceId: "reopened-host" },
+    })).toBe(providerFactFingerprint(fact));
+    expect(providerFactFingerprint({ ...fact, payload: { changed: true } }))
+      .not.toBe(providerFactFingerprint(fact));
+    expect(providerFactFingerprint({
+      ...fact,
+      correlation: { ...fact.correlation, inputSubmissionId: "input_other" },
+    })).not.toBe(providerFactFingerprint(fact));
+  });
+
   it("exposes Task creation as an authorized workspace ID, never a raw cwd", () => {
     type CreateTask = Extract<RuntimeCommand, { readonly type: "task.create" }>;
     const command: CreateTask = {
       type: "task.create",
       commandId: "command_workspace_contract",
       issuedAt: "2026-08-06T00:00:00.000Z",
-      taskId: "task_workspace_contract",
       ownerId: "user_workspace_contract",
       workspaceId: "workspace_workspace_contract",
       taskSetupDraftId: "task_setup_draft_workspace_contract",
       expectedTaskSetupRevision: 1,
     };
     expect(command).toEqual(expect.objectContaining({ workspaceId: "workspace_workspace_contract" }));
+    expect(command).not.toHaveProperty("taskId");
     expect(JSON.stringify(command)).not.toMatch(/cwd|canonicalDirectory|workspace"\s*:/);
 
     if (false) {
@@ -81,6 +129,12 @@ describe("runtime contracts", () => {
         workspace: { workspaceId: "workspace_workspace_contract", cwd: "/forbidden" },
       };
       void rejectedLegacyShape;
+      const rejectedRendererIdentity: CreateTask = {
+        ...command,
+        // @ts-expect-error Runtime, not Renderer, allocates the Task identity.
+        taskId: "task_renderer_forbidden",
+      };
+      void rejectedRendererIdentity;
     }
   });
 
@@ -115,39 +169,4 @@ describe("runtime contracts", () => {
     }
   });
 
-  it("uses managed Artifact IDs for retention preview/delete and never publishes a path", () => {
-    type DeleteTask = Extract<RuntimeCommand, { readonly type: "task.permanently_delete" }>;
-    const command: DeleteTask = {
-      type: "task.permanently_delete",
-      commandId: "command_delete_contract",
-      issuedAt: "2026-08-06T00:00:00.000Z",
-      taskId: "task_delete_contract",
-      expectedRevision: 4,
-      artifactIds: ["artifact_verified_contract"],
-    };
-    const projection: ManagedArtifactReadModel = {
-      artifactId: "artifact_verified_contract",
-      taskId: "task_delete_contract",
-      runId: "run_delete_contract",
-      displayName: "result.md",
-      contentDigest: "sha256:contract",
-      verifiedAt: "2026-08-06T00:00:00.000Z",
-    };
-    expect(JSON.stringify({ command, projection })).not.toMatch(/cwd|path|relative|absolute/i);
-
-    if (false) {
-      const rejectedPathEscape: DeleteTask = {
-        ...command,
-        // @ts-expect-error Delete accepts registered Artifact IDs only.
-        artifactPaths: ["reports/result.md"],
-      };
-      const rejectedProjection: ManagedArtifactReadModel = {
-        ...projection,
-        // @ts-expect-error Renderer projection deliberately omits the registered relative path.
-        workspaceRelativePath: "reports/result.md",
-      };
-      void rejectedPathEscape;
-      void rejectedProjection;
-    }
-  });
 });

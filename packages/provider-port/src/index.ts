@@ -2,7 +2,6 @@ import type {
   AttentionId,
   ExecutionProfileDefinition,
   InputSubmissionId,
-  InvocationId,
   ProviderCapabilities,
   ProviderCapability,
   ProviderEffect,
@@ -21,8 +20,15 @@ import type {
 import * as implementation from "./index.mjs";
 
 export * from "./meta.js";
+export * from "./scoped-tools.js";
 
-export interface ProtocolPin {
+import type {
+  ProviderScopedToolRegistration,
+  ProviderScopedToolTurnContext,
+} from "./scoped-tools.js";
+
+/** Provider version and protocol fingerprint observed at Host startup. */
+export interface ProviderProtocolObservation {
   readonly providerVersion: string;
   readonly protocolFingerprint: string;
 }
@@ -62,7 +68,11 @@ export interface ProviderPortBindingRequest {
   readonly commandId?: string;
   readonly idempotencyKey?: string;
   readonly inputSubmissionId?: InputSubmissionId;
-  readonly invocationId?: InvocationId;
+  /**
+   * Role-scoped native tool schemas. Runtime orchestration and Workspace tools
+   * are separate capability classes and must never share one registration.
+   */
+  readonly scopedToolRegistration?: ProviderScopedToolRegistration;
 }
 
 export interface EnsureBindingRequest extends ProviderPortBindingRequest {
@@ -71,20 +81,22 @@ export interface EnsureBindingRequest extends ProviderPortBindingRequest {
 
 export interface SubmitDeliveryRequest extends ProviderPortBindingRequest {
   readonly inputSubmissionId: InputSubmissionId;
+  /** Runtime correlation only; never a Provider-native identity or content field. */
+  readonly sessionTurnId?: string;
   readonly idempotencyKey: string;
   readonly content: string;
+  /** Short-lived Host endpoint bound to this managed SessionTurn. */
+  readonly scopedToolTurnContext?: ProviderScopedToolTurnContext;
 }
 
 export interface InterruptRequest extends ProviderPortBindingRequest {
   readonly idempotencyKey: string;
-  readonly invocationId?: InvocationId;
 }
 
 export interface AttentionReplyRequest extends ProviderPortBindingRequest {
   readonly attentionId: AttentionId;
   readonly nativeRequestId: string;
   readonly activeInputSubmissionId?: InputSubmissionId;
-  readonly activeInvocationId?: InvocationId;
   readonly response: Record<string, unknown>;
 }
 
@@ -125,7 +137,6 @@ export interface NativeProviderFact {
   readonly bindingRevision?: number;
   readonly inputSubmissionId?: string;
   readonly sessionTurnId?: string;
-  readonly invocationId?: string;
   readonly attentionId?: string;
   readonly nativeMessageId?: string;
   readonly nativeTurnId?: string;
@@ -140,12 +151,13 @@ export interface ProviderTransport {
   readonly supportedOperations?: readonly ProviderTransportOperation[];
   /**
    * Optional semantic proof cap for a concrete native transport. Operation
-   * presence only proves a route exists; a version spike may establish that a
-   * smaller subset is safe to advertise. Omitted keeps conservative
-   * operation-derived capability gating for test and future direct transports.
+   * presence only proves a route exists; current structural/live qualification
+   * may establish that a smaller subset is safe to advertise. Omitted keeps
+   * conservative operation-derived capability gating for test and future direct
+   * transports.
    */
   readonly verifiedCapabilities?: readonly ProviderCapability[];
-  inspectProtocol?(): Promise<ProtocolPin>;
+  inspectProtocol?(): Promise<ProviderProtocolObservation>;
   request(input: { readonly operation: string; readonly request: unknown }): Promise<{
     readonly acceptance?: "accepted" | "rejected" | "unknown";
     readonly accepted?: boolean;
@@ -161,7 +173,7 @@ export interface ProviderTransport {
 
 export interface ProviderAdapterConfig {
   readonly provider: ProviderKind;
-  readonly declaredProtocol: ProtocolPin;
+  readonly startupProtocolObservation: ProviderProtocolObservation;
   readonly capabilities: readonly ProviderCapability[];
   readonly transport: ProviderTransport;
   readonly mapNativeFact?: (nativeFact: unknown, context: {
@@ -195,7 +207,7 @@ export const normalizeProviderFact: (input: {
 }) => ProviderFact = implementation.normalizeProviderFact;
 export const createProtocolGatedProviderAdapter: (config: ProviderAdapterConfig) => ProviderPort = implementation.createProtocolGatedProviderAdapter;
 export const createScriptedProviderTransport: (input?: {
-  readonly protocol: ProtocolPin;
+  readonly protocol: ProviderProtocolObservation;
   readonly effects?: Record<string, unknown>;
   readonly streams?: Record<string, readonly NativeProviderFact[]>;
   readonly reconciliations?: Record<string, readonly NativeProviderFact[]>;

@@ -10,7 +10,7 @@
  * IPC facade.  Neither route starts a legacy desktop/runtime process.
  */
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -59,13 +59,56 @@ export async function findAvailablePort(startPort, attempts = 25, isAvailable = 
 }
 
 export function createElectronEnvironment({ baseEnvironment, runtime, workbenchUrl }) {
-  return {
+  const environment = {
     ...baseEnvironment,
     AGENT_WORKSPACE_RUNTIME_URL: runtime.url,
-    AGENT_WORKSPACE_RUNTIME_TOKEN: runtime.token,
+    AGENT_WORKSPACE_RUNTIME_DESKTOP_TOKEN: runtime.desktopToken,
     AGENT_WORKSPACE_RUNTIME_ORIGIN: workbenchUrl,
     AGENT_WORKSPACE_WORKBENCH_URL: workbenchUrl,
   };
+  delete environment.AGENT_WORKSPACE_RUNTIME_TOKEN;
+  delete environment.AGENT_WORKSPACE_RUNTIME_EVIDENCE_TOKEN;
+  delete environment.AGENT_WORKSPACE_RUNTIME_ALLOWED_ORIGINS;
+  return environment;
+}
+
+export function createRuntimeTokens(environment = process.env, createSecret = () => randomBytes(32).toString("base64url")) {
+  const browserToken = environment.AGENT_WORKSPACE_RUNTIME_TOKEN?.trim() || createSecret();
+  const desktopToken = environment.AGENT_WORKSPACE_RUNTIME_DESKTOP_TOKEN?.trim() || createSecret();
+  const evidenceToken = environment.AGENT_WORKSPACE_RUNTIME_EVIDENCE_TOKEN?.trim() || createSecret();
+  const tokens = [browserToken, desktopToken, evidenceToken];
+  if (tokens.some((token) => token.length < 16 || /\s/u.test(token)) || new Set(tokens).size !== tokens.length) {
+    throw new Error("formal_dev_runtime_tokens_invalid");
+  }
+  return Object.freeze({ browserToken, desktopToken, evidenceToken });
+}
+
+/**
+ * The formal launcher is the supervisor for its one Runtime Host child.  It
+ * therefore mints a fresh Host epoch and verifier for that child instead of
+ * relying on an embedded Host fallback.  A recovery proof is never inherited:
+ * this launcher does not restart a predecessor and cannot attest its death.
+ */
+export function createAcpHostEpochLaunchEnvironment(
+  baseEnvironment = process.env,
+  createEpoch = () => `host_epoch_${randomBytes(24).toString("base64url")}`,
+  createPublicKey = () => generateKeyPairSync("ed25519").publicKey
+    .export({ type: "spki", format: "der" })
+    .toString("base64url"),
+) {
+  const hostEpoch = createEpoch();
+  const publicKey = createPublicKey();
+  if (typeof hostEpoch !== "string" || !/^host_epoch_[A-Za-z0-9_-]{8,256}$/u.test(hostEpoch)
+    || typeof publicKey !== "string" || !/^[A-Za-z0-9_-]{32,}$/u.test(publicKey)) {
+    throw new Error("formal_dev_acp_host_epoch_invalid");
+  }
+  const environment = {
+    ...baseEnvironment,
+    AGENT_WORKSPACE_ACP_HOST_EPOCH: hostEpoch,
+    AGENT_WORKSPACE_ACP_HOST_EPOCH_PUBLIC_KEY: publicKey,
+  };
+  delete environment.AGENT_WORKSPACE_ACP_HOST_EPOCH_RECOVERY_PROOF;
+  return Object.freeze(environment);
 }
 
 async function main() {
@@ -75,14 +118,14 @@ async function main() {
     5188,
     "AGENT_WORKSPACE_PORT",
   );
-  const token = process.env.AGENT_WORKSPACE_RUNTIME_TOKEN?.trim() || randomBytes(32).toString("base64url");
+  const tokens = createRuntimeTokens();
 
   installShutdownHandlers();
-  const runtimeProcess = spawnRuntimeHost(token);
-  const runtimeAddress = await waitForRuntime(runtimeProcess);
   const workbenchPort = await findAvailablePort(requestedWorkbenchPort);
   const workbenchUrl = `http://${loopbackHost}:${workbenchPort}/`;
-  const runtime = Object.freeze({ ...runtimeAddress, token });
+  const runtimeProcess = spawnRuntimeHost(tokens, workbenchUrl);
+  const runtimeAddress = await waitForRuntime(runtimeProcess);
+  const runtime = Object.freeze({ ...runtimeAddress, ...tokens });
   const viteProcess = spawnFormalVite({ runtime, workbenchPort });
   await waitForHttp(workbenchUrl, VITE_START_TIMEOUT_MS);
 
@@ -101,18 +144,21 @@ async function main() {
   await shutdown(0);
 }
 
-function spawnRuntimeHost(token) {
+function spawnRuntimeHost(tokens, workbenchUrl) {
   const tsxEntry = path.join(repositoryRoot, "node_modules", "tsx", "dist", "cli.mjs");
   const runtimeEntry = path.join(repositoryRoot, "apps", "runtime-host", "src", "index.ts");
   if (!existsSync(tsxEntry) || !existsSync(runtimeEntry)) {
     throw new Error("formal_dev_runtime_host_launcher_missing: run pnpm install");
   }
   return spawnTracked(process.execPath, [tsxEntry, runtimeEntry], {
-    env: {
+    env: createAcpHostEpochLaunchEnvironment({
       ...process.env,
       AGENT_WORKSPACE_RUNTIME_PORT: "0",
-      AGENT_WORKSPACE_RUNTIME_TOKEN: token,
-    },
+      AGENT_WORKSPACE_RUNTIME_TOKEN: tokens.browserToken,
+      AGENT_WORKSPACE_RUNTIME_DESKTOP_TOKEN: tokens.desktopToken,
+      AGENT_WORKSPACE_RUNTIME_EVIDENCE_TOKEN: tokens.evidenceToken,
+      AGENT_WORKSPACE_RUNTIME_ALLOWED_ORIGINS: JSON.stringify([new URL(workbenchUrl).origin]),
+    }),
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
@@ -120,6 +166,14 @@ function spawnRuntimeHost(token) {
 function spawnFormalVite({ runtime, workbenchPort }) {
   const viteEntry = path.join(repositoryRoot, "node_modules", "vite", "bin", "vite.js");
   if (!existsSync(viteEntry)) throw new Error("formal_dev_vite_launcher_missing: run pnpm install");
+  const environment = {
+    ...process.env,
+    AGENT_WORKSPACE_RUNTIME_URL: runtime.url,
+    AGENT_WORKSPACE_RUNTIME_PORT: String(runtime.port),
+    AGENT_WORKSPACE_RUNTIME_TOKEN: runtime.browserToken,
+  };
+  delete environment.AGENT_WORKSPACE_RUNTIME_DESKTOP_TOKEN;
+  delete environment.AGENT_WORKSPACE_RUNTIME_EVIDENCE_TOKEN;
   return spawnTracked(process.execPath, [
     viteEntry,
     "--config", "vite.runtime.config.ts",
@@ -127,11 +181,7 @@ function spawnFormalVite({ runtime, workbenchPort }) {
     "--port", String(workbenchPort),
     "--strictPort",
   ], {
-    env: {
-      ...process.env,
-      AGENT_WORKSPACE_RUNTIME_PORT: String(runtime.port),
-      AGENT_WORKSPACE_RUNTIME_TOKEN: runtime.token,
-    },
+    env: environment,
     stdio: "inherit",
   });
 }

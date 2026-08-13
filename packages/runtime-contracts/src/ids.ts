@@ -4,26 +4,28 @@ export type TemplateDraftId = string;
 export type TaskId = string;
 export type TaskRunId = string;
 export type LogicalSessionId = string;
+export type CardSessionSlotId = string;
+export type ConductorPlanningFenceId = string;
+export type SessionControlAuditId = string;
+export type WorkspaceFileObservationId = string;
+export type WorkspaceEffectIntentId = string;
 export type ArchitectureSnapshotId = string;
 export type ProviderHostId = string;
 export type ProviderSessionBindingId = string;
 export type SessionMessageId = string;
 export type RelayBlockId = string;
-export type MessageForwardBatchId = string;
 export type MessageForwardId = string;
-export type ForwardSelectionId = string;
 export type HumanInterventionId = string;
 export type SessionInboxItemId = string;
 export type InputSubmissionId = string;
 export type SessionTurnId = string;
-export type InvocationId = string;
 export type ProviderFactId = string;
 export type AttentionId = string;
-export type ArtifactId = string;
 export type PresentationLeaseId = string;
 export type AsyncOperationId = string;
 export type RuntimeCommandId = string;
 export type ExecutionProfileId = string;
+export type ExecutionProfileRevisionId = string;
 export type AgentCardId = string;
 export type WorkspaceId = string;
 export type EvidenceReferenceId = string;
@@ -42,26 +44,28 @@ export type IdPrefix =
   | "task"
   | "run"
   | "logical_session"
+  | "card_session_slot"
+  | "planning_fence"
+  | "session_control"
+  | "workspace_file_observation"
+  | "workspace_effect"
   | "architecture"
   | "provider_host"
   | "binding"
   | "message"
   | "relay_block"
-  | "message_forward_batch"
   | "message_forward"
-  | "forward_selection"
   | "human_intervention"
   | "inbox"
   | "input"
   | "session_turn"
-  | "invocation"
   | "provider_fact"
   | "attention"
-  | "artifact"
   | "presentation"
   | "async_operation"
   | "command"
   | "profile"
+  | "profile_revision"
   | "agent_card"
   | "workspace"
   | "evidence"

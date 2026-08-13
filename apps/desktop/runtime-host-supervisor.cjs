@@ -19,6 +19,9 @@ function createRuntimeHostSupervisor({
   environment = process.env,
   spawn = spawnChildProcess,
   randomBytes = crypto.randomBytes,
+  hostEpochRecoverySigner = createHostEpochRecoverySigner(),
+  allowedOrigins = [],
+  rendererOrigin,
   launcher = runtimeHostLauncherFromEnvironment(environment, repositoryRoot),
   startTimeoutMs = DEFAULT_START_TIMEOUT_MS,
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
@@ -26,14 +29,22 @@ function createRuntimeHostSupervisor({
   const runtimeDataDirectory = requiredPath(dataDirectory, "runtime_host_data_directory_required");
   if (typeof spawn !== "function") throw new TypeError("runtime_host_spawn_required");
   if (typeof randomBytes !== "function") throw new TypeError("runtime_host_random_bytes_required");
+  assertHostEpochRecoverySigner(hostEpochRecoverySigner);
   if (!Number.isSafeInteger(startTimeoutMs) || startTimeoutMs < 1) throw new TypeError("runtime_host_start_timeout_invalid");
   if (!Number.isSafeInteger(stopTimeoutMs) || stopTimeoutMs < 1) throw new TypeError("runtime_host_stop_timeout_invalid");
   assertLauncher(launcher);
+  const normalizedAllowedOrigins = normalizeAllowedOrigins(allowedOrigins);
+  const normalizedRendererOrigin = rendererOrigin === undefined ? undefined : normalizeOrigin(rendererOrigin);
+  if (normalizedRendererOrigin && !normalizedAllowedOrigins.includes(normalizedRendererOrigin)) {
+    throw new Error("runtime_host_renderer_origin_not_allowed");
+  }
 
   let child;
   let connection;
   let starting;
   let stopping;
+  let activeHostEpoch;
+  let confirmedDeadHostEpoch;
 
   return Object.freeze({
     start,
@@ -44,6 +55,7 @@ function createRuntimeHostSupervisor({
   async function start() {
     if (connection) return connection;
     if (starting) return starting;
+    if (child) throw new Error("runtime_host_previous_process_exit_unconfirmed");
 
     starting = launch().finally(() => {
       starting = undefined;
@@ -52,13 +64,42 @@ function createRuntimeHostSupervisor({
   }
 
   async function launch() {
-    const token = bridgeToken(randomBytes);
+    const browserToken = bridgeToken(randomBytes);
+    const desktopToken = bridgeToken(randomBytes);
+    const evidenceToken = bridgeToken(randomBytes);
+    if (new Set([browserToken, desktopToken, evidenceToken]).size !== 3) {
+      throw new Error("runtime_host_token_generation_failed");
+    }
+    const hostEpoch = hostEpochId(randomBytes);
+    const staleHostEpoch = inspectHostEpochLease(runtimeDataDirectory);
+    if (staleHostEpoch && !confirmedDeadHostEpoch) {
+      throw new Error("runtime_host_acp_epoch_recovery_unconfirmed");
+    }
+    if (staleHostEpoch && staleHostEpoch !== confirmedDeadHostEpoch) {
+      throw new Error("runtime_host_acp_epoch_recovery_lineage_mismatch");
+    }
+    const recoveryProof = staleHostEpoch
+      ? hostEpochRecoverySigner.sign({
+          runtimeDataDirectory: runtimeDataDirectory,
+          deadHostEpoch: confirmedDeadHostEpoch,
+          newHostEpoch: hostEpoch,
+        })
+      : undefined;
     const childEnvironment = {
       ...environment,
       AGENT_WORKSPACE_RUNTIME_DATA_DIR: runtimeDataDirectory,
       AGENT_WORKSPACE_RUNTIME_PORT: "0",
-      AGENT_WORKSPACE_RUNTIME_TOKEN: token,
+      AGENT_WORKSPACE_RUNTIME_TOKEN: browserToken,
+      AGENT_WORKSPACE_RUNTIME_DESKTOP_TOKEN: desktopToken,
+      AGENT_WORKSPACE_RUNTIME_EVIDENCE_TOKEN: evidenceToken,
+      AGENT_WORKSPACE_RUNTIME_ALLOWED_ORIGINS: JSON.stringify(normalizedAllowedOrigins),
+      AGENT_WORKSPACE_ACP_HOST_EPOCH: hostEpoch,
+      AGENT_WORKSPACE_ACP_HOST_EPOCH_PUBLIC_KEY: hostEpochRecoverySigner.publicKey,
+      ...(recoveryProof
+        ? { AGENT_WORKSPACE_ACP_HOST_EPOCH_RECOVERY_PROOF: recoveryProof }
+        : {}),
     };
+    if (!recoveryProof) delete childEnvironment.AGENT_WORKSPACE_ACP_HOST_EPOCH_RECOVERY_PROOF;
     if (launcher.electronRunAsNode) childEnvironment.ELECTRON_RUN_AS_NODE = "1";
 
     child = spawn(launcher.command, launcher.args, {
@@ -71,6 +112,16 @@ function createRuntimeHostSupervisor({
       child = undefined;
       throw new Error("runtime_host_process_stdio_unavailable");
     }
+    const launchedChild = child;
+    activeHostEpoch = hostEpoch;
+    launchedChild.once("exit", () => {
+      if (child === launchedChild) {
+        child = undefined;
+        connection = undefined;
+      }
+      if (activeHostEpoch === hostEpoch) activeHostEpoch = undefined;
+      confirmedDeadHostEpoch = hostEpoch;
+    });
     child.stdout.setEncoding?.("utf8");
     child.stderr.setEncoding?.("utf8");
 
@@ -83,35 +134,30 @@ function createRuntimeHostSupervisor({
 
       const cleanup = () => {
         clearTimeout(timeout);
-        child?.stdout?.off?.("data", onStdout);
-        child?.stderr?.off?.("data", onStderr);
-        child?.off?.("error", onStartupError);
-        child?.off?.("exit", onStartupExit);
+        launchedChild.stdout?.off?.("data", onStdout);
+        launchedChild.stderr?.off?.("data", onStderr);
+        launchedChild.off?.("error", onStartupError);
+        launchedChild.off?.("exit", onStartupExit);
       };
       const complete = (value) => {
         if (settled) return;
         settled = true;
         cleanup();
         connection = value;
+        confirmedDeadHostEpoch = undefined;
         resolve(value);
       };
       const fail = (error) => {
         if (settled) return;
         settled = true;
         cleanup();
-        const failedChild = child;
-        child = undefined;
-        try {
-          // A timeout is not proof that the child exited.  Terminate the child
-          // we launched so a failed Desktop start cannot leave a Host behind.
-          failedChild?.kill?.("SIGTERM");
-        } catch {
-          // Exit and spawn races are harmless here.
-        }
         // Child stderr can contain environment-dependent data.  Do not bubble
         // it into an Electron-visible error where a credential could leak.
         void errorOutput;
-        reject(error);
+        void terminateChildAndConfirm(launchedChild, stopTimeoutMs).then(
+          () => reject(error),
+          () => reject(new Error("runtime_host_start_cleanup_unconfirmed")),
+        );
       };
       const onStdout = (chunk) => {
         output += String(chunk);
@@ -120,7 +166,7 @@ function createRuntimeHostSupervisor({
         for (const line of lines) {
           let ready;
           try {
-            ready = parseRuntimeHostReady(line, token);
+            ready = parseRuntimeHostReady(line, desktopToken, normalizedRendererOrigin);
           } catch (error) {
             fail(error instanceof Error ? error : new Error("runtime_host_ready_invalid"));
             return;
@@ -146,7 +192,7 @@ function createRuntimeHostSupervisor({
 
   async function stop() {
     if (stopping) return stopping;
-    if (!child || (child.exitCode !== undefined && child.exitCode !== null) || child.killed === true) {
+    if (!child || hasConfirmedExit(child)) {
       child = undefined;
       connection = undefined;
       return undefined;
@@ -154,31 +200,118 @@ function createRuntimeHostSupervisor({
 
     const target = child;
     connection = undefined;
-    stopping = new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        try {
-          target.kill("SIGKILL");
-        } catch {
-          // The process may have finished between the liveness check and kill.
-        }
-        resolve();
-      }, stopTimeoutMs);
-      timeout.unref?.();
-      target.once("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-      try {
-        target.kill("SIGTERM");
-      } catch {
-        clearTimeout(timeout);
-        resolve();
-      }
-    }).finally(() => {
-      if (child === target) child = undefined;
+    stopping = terminateChildAndConfirm(target, stopTimeoutMs).finally(() => {
       stopping = undefined;
     });
     return stopping;
+  }
+}
+
+async function terminateChildAndConfirm(target, timeoutMs) {
+  if (hasConfirmedExit(target)) return;
+  if (await signalAndWaitForExit(target, "SIGTERM", timeoutMs)) return;
+  if (await signalAndWaitForExit(target, "SIGKILL", timeoutMs)) return;
+  throw new Error("runtime_host_stop_unconfirmed");
+}
+
+function signalAndWaitForExit(target, signal, timeoutMs) {
+  if (hasConfirmedExit(target)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const complete = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      target.off?.("exit", onExit);
+      resolve(value);
+    };
+    const onExit = () => complete(true);
+    const timeout = setTimeout(() => complete(hasConfirmedExit(target)), timeoutMs);
+    target.once("exit", onExit);
+    try {
+      target.kill(signal);
+    } catch {
+      complete(hasConfirmedExit(target));
+    }
+  });
+}
+
+function hasConfirmedExit(target) {
+  return (target.exitCode !== undefined && target.exitCode !== null)
+    || (target.signalCode !== undefined && target.signalCode !== null);
+}
+
+function createHostEpochRecoverySigner() {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+  const publicKeyText = publicKey.export({ type: "spki", format: "der" }).toString("base64url");
+  return Object.freeze({
+    publicKey: publicKeyText,
+    sign({ runtimeDataDirectory, deadHostEpoch, newHostEpoch }) {
+      const payload = Buffer.from(JSON.stringify({
+        schemaVersion: 1,
+        runtimeRootDigest: crypto.createHash("sha256").update(fs.realpathSync(runtimeDataDirectory)).digest("hex"),
+        deadHostEpoch,
+        newHostEpoch,
+        nonce: crypto.randomBytes(24).toString("base64url"),
+      }), "utf8");
+      const signature = crypto.sign(null, payload, privateKey);
+      return Buffer.from(JSON.stringify({
+        payload: payload.toString("base64url"),
+        signature: signature.toString("base64url"),
+      }), "utf8").toString("base64url");
+    },
+  });
+}
+
+function hostEpochId(randomBytes) {
+  const value = randomBytes(24);
+  if (!Buffer.isBuffer(value) || value.length < 16) throw new Error("runtime_host_epoch_generation_failed");
+  return `host_epoch_${value.toString("base64url")}`;
+}
+
+function inspectHostEpochLease(runtimeDataDirectory) {
+  const lease = path.join(runtimeDataDirectory, ".acp-host-epoch.lease");
+  let descriptor;
+  try {
+    const rootStat = fs.lstatSync(runtimeDataDirectory);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || (rootStat.mode & 0o777) !== 0o700) {
+      throw new Error("runtime_host_acp_runtime_root_unsafe");
+    }
+    const before = fs.lstatSync(lease);
+    if (!before.isFile() || before.isSymbolicLink() || (before.mode & 0o777) !== 0o600) {
+      throw new Error("runtime_host_acp_epoch_lease_unsafe");
+    }
+    if (typeof fs.constants.O_NOFOLLOW !== "number") {
+      throw new Error("runtime_host_acp_no_follow_unavailable");
+    }
+    descriptor = fs.openSync(lease, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const opened = fs.fstatSync(descriptor);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino
+      || (opened.mode & 0o777) !== 0o600 || opened.size < 1 || opened.size > 4_096) {
+      throw new Error("runtime_host_acp_epoch_lease_unsafe");
+    }
+    const parsed = JSON.parse(fs.readFileSync(descriptor, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || Object.keys(parsed).sort().join(",") !== "hostEpoch,schemaVersion"
+      || parsed.schemaVersion !== 1
+      || typeof parsed.hostEpoch !== "string"
+      || !/^host_epoch_[A-Za-z0-9_-]{8,256}$/u.test(parsed.hostEpoch)) {
+      throw new Error("runtime_host_acp_epoch_lease_unsafe");
+    }
+    return parsed.hostEpoch;
+  } catch (error) {
+    if (error && error.code === "ENOENT") return false;
+    if (error instanceof SyntaxError) throw new Error("runtime_host_acp_epoch_lease_unsafe");
+    throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function assertHostEpochRecoverySigner(value) {
+  if (!value || typeof value.publicKey !== "string" || !value.publicKey
+    || typeof value.sign !== "function") {
+    throw new TypeError("runtime_host_epoch_recovery_signer_invalid");
   }
 }
 
@@ -219,7 +352,7 @@ function parseLauncherArgs(value) {
   return parsed;
 }
 
-function parseRuntimeHostReady(line, token) {
+function parseRuntimeHostReady(line, token, origin) {
   let parsed;
   try {
     parsed = JSON.parse(line);
@@ -231,7 +364,11 @@ function parseRuntimeHostReady(line, token) {
   if ((url.protocol !== "http:" && url.protocol !== "https:") || !isLoopbackHostname(url.hostname)) {
     throw new Error("runtime_host_ready_url_invalid");
   }
-  return Object.freeze({ baseUrl: url.toString().replace(/\/$/, ""), token });
+  return Object.freeze({
+    baseUrl: url.toString().replace(/\/$/, ""),
+    token,
+    ...(origin ? { origin } : {}),
+  });
 }
 
 function bridgeToken(randomBytes) {
@@ -242,6 +379,30 @@ function bridgeToken(randomBytes) {
 
 function isLoopbackHostname(value) {
   return value === "127.0.0.1" || value === "::1" || value === "[::1]" || value === "localhost";
+}
+
+function normalizeAllowedOrigins(value) {
+  if (!Array.isArray(value)) throw new TypeError("runtime_host_allowed_origins_invalid");
+  const origins = value.map(normalizeOrigin);
+  if (new Set(origins).size !== origins.length) throw new TypeError("runtime_host_allowed_origins_invalid");
+  return Object.freeze(origins);
+}
+
+function normalizeOrigin(value) {
+  if (typeof value !== "string" || !value.trim() || /[\r\n]/.test(value)) {
+    throw new TypeError("runtime_host_origin_invalid");
+  }
+  let url;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new TypeError("runtime_host_origin_invalid");
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:")
+    || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new TypeError("runtime_host_origin_invalid");
+  }
+  return url.origin;
 }
 
 function requiredPath(value, code) {

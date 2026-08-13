@@ -6,6 +6,7 @@ describe("FakeMetaAgent contract harness", () => {
   it("records start/reconcile independently and exposes explicit ambiguous outcomes", async () => {
     const provider = createFakeMetaAgent({ provider: "opencode" });
     const request: MetaAgentTurnRequest = {
+      metaSessionId: "meta_session_fake",
       metaTurnId: "meta_turn_fake",
       userMetaMessageId: "meta_message_fake_user",
       idempotencyKey: "fake-meta-turn-1",

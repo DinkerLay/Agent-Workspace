@@ -63,7 +63,7 @@ describe("ProviderPort primitives", () => {
     assert.equal(fact.evidenceReferenceId, "evidence_history_77");
   });
 
-  it("accepts assistant_final with a managed input or Invocation correlation and native text", () => {
+  it("accepts assistant_final with managed input correlation and native text", () => {
     const fact = normalizeProviderFact({
       provider: "claude-code",
       bindingId: "binding-a",
@@ -71,12 +71,12 @@ describe("ProviderPort primitives", () => {
       nativeFact: {
         kind: "assistant_final",
         providerEventId: "event-final",
-        invocationId: "invocation-a",
+        inputSubmissionId: "input-a",
         payload: { content: "Worker reply" },
       },
     });
     assert.equal(fact.kind, "assistant_final");
-    assert.equal(fact.correlation.invocationId, "invocation-a");
+    assert.equal(fact.correlation.inputSubmissionId, "input-a");
     assert.equal(fact.payload.content, "Worker reply");
     const relayFact = normalizeProviderFact({
       provider: "claude-code",
@@ -99,10 +99,10 @@ describe("ProviderPort primitives", () => {
       bindingRevision: 1,
       nativeFact: {
         kind: "assistant_final",
-        providerEventId: "event-final-no-invocation",
+        providerEventId: "event-final-no-input",
         payload: { content: "Worker reply" },
       },
-    }), /assistant_final\.inputSubmissionId_or_invocationId_required/);
+    }), /assistant_final\.inputSubmissionId_required/);
     assert.throws(() => normalizeProviderFact({
       provider: "claude-code",
       bindingId: "binding-a",
@@ -110,7 +110,7 @@ describe("ProviderPort primitives", () => {
       nativeFact: {
         kind: "assistant_final",
         providerEventId: "event-final-no-content",
-        invocationId: "invocation-a",
+        inputSubmissionId: "input-a",
         payload: {},
       },
     }), /assistant_final\.payload\.content/);
@@ -170,15 +170,15 @@ describe("ProviderPort primitives", () => {
   });
 
   it("fails closed when a direct transport does not declare a required operation", async () => {
-    const pin = { providerVersion: "fixture-1", protocolFingerprint: "sha256:fixture" };
+    const observation = { providerVersion: "fixture-1", protocolFingerprint: "sha256:fixture" };
     const transport = {
       supportedOperations: ["inspect_protocol"],
-      inspectProtocol: async () => pin,
+      inspectProtocol: async () => observation,
       request: async () => ({ accepted: true }),
     };
     const adapter = createProtocolGatedProviderAdapter({
       provider: "opencode",
-      declaredProtocol: pin,
+      startupProtocolObservation: observation,
       capabilities: ["create_binding", "resume_binding"],
       transport,
     });
@@ -186,8 +186,8 @@ describe("ProviderPort primitives", () => {
       executionProfileId: "profile_fixture",
       provider: "opencode",
       model: "fixture",
-      providerVersion: pin.providerVersion,
-      protocolFingerprint: pin.protocolFingerprint,
+      providerVersion: observation.providerVersion,
+      protocolFingerprint: observation.protocolFingerprint,
       capabilityPolicy: {
         requiredCapabilities: ["create_binding"],
         allowedTools: [],
@@ -204,17 +204,17 @@ describe("ProviderPort primitives", () => {
   });
 
   it("lets a native transport cap operation-derived capabilities to live-proven semantics", async () => {
-    const pin = { providerVersion: "native-1", protocolFingerprint: "sha256:native" };
+    const observation = { providerVersion: "native-1", protocolFingerprint: "sha256:native" };
     const transport = {
       supportedOperations: ["inspect_protocol", "ensure_binding", "submit_delivery", "reconcile_binding", "request_interrupt"],
       verifiedCapabilities: ["create_binding", "resume_binding", "input_correlation", "provider_receipt", "reconcile", "interrupt"],
-      inspectProtocol: async () => pin,
+      inspectProtocol: async () => observation,
       request: async () => ({ accepted: true }),
       reconcile: async () => [],
     };
     const adapter = createProtocolGatedProviderAdapter({
       provider: "opencode",
-      declaredProtocol: pin,
+      startupProtocolObservation: observation,
       capabilities: ["create_binding", "resume_binding", "input_correlation", "provider_receipt", "reconcile", "interrupt", "native_child"],
       transport,
     });
@@ -222,8 +222,8 @@ describe("ProviderPort primitives", () => {
       executionProfileId: "profile_native",
       provider: "opencode",
       model: "native",
-      providerVersion: pin.providerVersion,
-      protocolFingerprint: pin.protocolFingerprint,
+      providerVersion: observation.providerVersion,
+      protocolFingerprint: observation.protocolFingerprint,
       capabilityPolicy: {
         requiredCapabilities: ["create_binding"],
         allowedTools: [],
@@ -236,39 +236,131 @@ describe("ProviderPort primitives", () => {
     assert.ok(!report.capabilities.includes("native_child"));
   });
 
+  it("retains the Host-startup protocol observation and fails closed on later transport drift", async () => {
+    const startupObservation = { providerVersion: "runtime-1", protocolFingerprint: "sha256:runtime-1" };
+    let liveProtocol = { providerVersion: "runtime-1", protocolFingerprint: "sha256:runtime-1" };
+    const transport = {
+      supportedOperations: ["inspect_protocol", "ensure_binding"],
+      inspectProtocol: async () => liveProtocol,
+      request: async () => ({ acceptance: "accepted" }),
+    };
+    const adapter = createProtocolGatedProviderAdapter({
+      provider: "opencode",
+      startupProtocolObservation: startupObservation,
+      capabilities: ["create_binding"],
+      transport,
+    });
+    const profile = {
+      executionProfileId: "profile_runtime_discovery",
+      provider: "opencode",
+      model: "fixture",
+      providerVersion: "profile-1",
+      protocolFingerprint: "sha256:profile-1",
+      capabilityPolicy: {
+        requiredCapabilities: ["create_binding"],
+        allowedTools: [],
+        permissionMode: "ask",
+        maxConcurrentTurns: 1,
+        maxNativeChildren: 0,
+      },
+    };
+
+    const first = await adapter.describeCapabilities(profile);
+    assert.equal(first.available, true);
+    assert.equal(first.providerVersion, "runtime-1");
+    assert.equal(first.protocolFingerprint, "sha256:runtime-1");
+
+    liveProtocol = { providerVersion: "runtime-2", protocolFingerprint: "sha256:runtime-2" };
+    const drifted = await adapter.describeCapabilities(profile);
+    assert.equal(drifted.available, false);
+    assert.equal(drifted.providerVersion, "runtime-2");
+    assert.equal(drifted.protocolFingerprint, "sha256:runtime-2");
+    assert.ok(drifted.unavailableReasons.includes("transport_protocol_observation_drift"));
+    await assert.rejects(
+      adapter.ensureBinding({
+        bindingId: "binding-runtime-discovery",
+        bindingRevision: 1,
+        executionProfile: profile,
+        workspace: { workspaceId: "workspace-runtime-discovery", cwd: "/tmp/runtime-discovery" },
+        bootstrap: {
+          purpose: "task_conductor",
+          agentCardId: "agent-card-runtime-discovery",
+          systemPrompt: "Observe the live protocol.",
+          capabilityRefs: [],
+          dispatchRegistry: [],
+        },
+      }),
+      (error) => error?.code === "provider_unavailable"
+        && error?.report?.unavailableReasons?.includes("transport_protocol_observation_drift"),
+    );
+  });
+
+  it("reports an incomplete live protocol observation as unavailable evidence", async () => {
+    const transport = {
+      supportedOperations: ["inspect_protocol", "ensure_binding"],
+      inspectProtocol: async () => ({ providerVersion: "runtime-1" }),
+      request: async () => ({ acceptance: "accepted" }),
+    };
+    const adapter = createProtocolGatedProviderAdapter({
+      provider: "opencode",
+      startupProtocolObservation: { providerVersion: "configured-1", protocolFingerprint: "sha256:configured" },
+      capabilities: ["create_binding"],
+      transport,
+    });
+    const report = await adapter.describeCapabilities({
+      executionProfileId: "profile_incomplete_observation",
+      provider: "opencode",
+      model: "fixture",
+      providerVersion: "profile-1",
+      protocolFingerprint: "sha256:profile-1",
+      capabilityPolicy: {
+        requiredCapabilities: ["create_binding"],
+        allowedTools: [],
+        permissionMode: "ask",
+        maxConcurrentTurns: 1,
+        maxNativeChildren: 0,
+      },
+    });
+
+    assert.equal(report.available, false);
+    assert.equal(report.providerVersion, "runtime-1");
+    assert.equal(report.protocolFingerprint, undefined);
+    assert.ok(report.unavailableReasons.includes("observed_protocolFingerprint_missing"));
+  });
+
   it("rejects legacy adapter/profile aliases instead of silently translating them", async () => {
-    const pin = { providerVersion: "strict-1", protocolFingerprint: "sha256:strict" };
+    const observation = { providerVersion: "strict-1", protocolFingerprint: "sha256:strict" };
     const transport = {
       supportedOperations: ["inspect_protocol", "ensure_binding", "submit_delivery", "reconcile_binding", "request_interrupt"],
-      inspectProtocol: async () => pin,
+      inspectProtocol: async () => observation,
       request: async () => ({ accepted: true }),
       reconcile: async () => [],
     };
 
     assert.throws(() => createProtocolGatedProviderAdapter({
       providerId: "opencode",
-      declaredProtocol: pin,
+      startupProtocolObservation: observation,
       capabilities: [],
       transport,
     }), /provider must be a non-empty string/);
 
     const adapter = createProtocolGatedProviderAdapter({
       provider: "opencode",
-      declaredProtocol: pin,
+      startupProtocolObservation: observation,
       capabilities: ["create_binding", "resume_binding", "input_correlation", "provider_receipt", "reconcile", "interrupt"],
       transport,
     });
     await assert.rejects(
       adapter.describeCapabilities({
         providerId: "opencode",
-        protocol: { providerVersion: pin.providerVersion, schemaFingerprint: pin.protocolFingerprint },
+        protocol: { providerVersion: observation.providerVersion, schemaFingerprint: observation.protocolFingerprint },
         requiredCapabilities: ["createResume"],
       }),
       /Execution profile capabilityPolicy is missing/,
     );
     assert.throws(() => createProtocolGatedProviderAdapter({
       provider: "opencode",
-      declaredProtocol: pin,
+      startupProtocolObservation: observation,
       capabilities: { createResume: true },
       transport,
     }), /Provider capabilities must be an array/);

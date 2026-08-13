@@ -1,4 +1,8 @@
-import type { WorkspaceAuthorizationRecord, WorkspaceReference } from "@agent-workspace/runtime-contracts";
+import {
+  type WorkspaceAuthorizationRecord,
+  type WorkspaceReference,
+  type WorkspaceReferenceV3,
+} from "@agent-workspace/runtime-contracts";
 
 /**
  * Host-owned filesystem boundary. The application can ask for canonical
@@ -6,6 +10,14 @@ import type { WorkspaceAuthorizationRecord, WorkspaceReference } from "@agent-wo
  */
 export interface WorkspaceDirectoryResolver {
   readonly canonicalizeDirectory: (directory: string) => Promise<CanonicalWorkspaceDirectory>;
+  readonly digestGrant: (grant: WorkspaceGrantSealInput) => string;
+}
+
+export interface WorkspaceGrantSealInput {
+  readonly schemaVersion: 1;
+  readonly workspaceId: WorkspaceAuthorizationRecord["workspaceId"];
+  readonly canonicalDirectory: string;
+  readonly authorizedAt: WorkspaceAuthorizationRecord["authorizedAt"];
 }
 
 export interface CanonicalWorkspaceDirectory {
@@ -31,4 +43,32 @@ export async function resolveAuthorizedWorkspace(
     cwd: authorization.canonicalDirectory,
     displayName: authorization.displayName,
   };
+}
+
+/**
+ * ACP-era Task snapshots retain only an opaque grant digest. The Host still
+ * revalidates the canonical directory immediately before freezing the
+ * snapshot, but the absolute directory never crosses this return boundary.
+ */
+export async function resolveAuthorizedWorkspaceV3(
+  resolver: WorkspaceDirectoryResolver,
+  authorization: WorkspaceAuthorizationRecord,
+): Promise<WorkspaceReferenceV3> {
+  const resolved = await resolver.canonicalizeDirectory(authorization.canonicalDirectory);
+  if (resolved.canonicalDirectory !== authorization.canonicalDirectory) {
+    throw new Error("workspace_authorization_stale");
+  }
+  const grantDigest = resolver.digestGrant(Object.freeze({
+    schemaVersion: 1,
+    workspaceId: authorization.workspaceId,
+    canonicalDirectory: authorization.canonicalDirectory,
+    authorizedAt: authorization.authorizedAt,
+  }));
+  if (!/^sha256:[a-f0-9]{64}$/u.test(grantDigest)) {
+    throw new Error("workspace_grant_digest_invalid");
+  }
+  return Object.freeze({
+    workspaceId: authorization.workspaceId,
+    grantDigest,
+  });
 }

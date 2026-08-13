@@ -5,7 +5,103 @@ import { isDeepStrictEqual } from "node:util";
 
 export type JourneyOutcome = "PASS" | "FAIL" | "BLOCKED_CAPABILITY" | "NOT_EXERCISED" | "NOT_APPLICABLE";
 
+export type JourneyEvidenceClass =
+  | "deterministic_fake"
+  | "browser_rendered"
+  | "electron_ipc"
+  | "qualified_acp_provider"
+  | "qualified_acp_meta"
+  | "superseded_protocol";
+
+export type JourneyEvidenceSurface = "domain" | "runtime-host" | "browser" | "desktop" | "provider";
+
+export type JourneyEvidenceIssuer =
+  | "runtime_host"
+  | "browser_ui_driver"
+  | "electron_ui_driver"
+  | "opencode_acp_task_attestor"
+  | "codex_acp_task_attestor"
+  | "acp_meta_attestor"
+  | "superseded_protocol_fixture";
+
+export type JourneyEvidenceDigests = Readonly<{
+  sourceDigest: string;
+  buildDigest: string;
+  schemaDigest: string;
+  providerPolicyDigest: string;
+  policyDigest: string;
+}>;
+
+export type JourneyEvidenceLineage = Readonly<{
+  runtimeInstanceId: string;
+}>;
+
+export type JourneyEvidenceStream = Readonly<{
+  issuer: JourneyEvidenceIssuer;
+  evidenceClass: JourneyEvidenceClass;
+  surface: JourneyEvidenceSurface;
+}>;
+
+export type JourneyReleaseIdentity = Readonly<{
+  releaseRunId: string;
+  nonce: string;
+  digests: JourneyEvidenceDigests;
+}>;
+
+export type JourneyEvidenceAuthorityInput = JourneyReleaseIdentity & Readonly<{
+  bundleCellId: string;
+  scenarioId: string;
+  lineage: JourneyEvidenceLineage;
+}>;
+
+declare const JOURNEY_EVIDENCE_AUTHORITY_TYPE: unique symbol;
+
+export type JourneyEvidenceAuthority = JourneyEvidenceAuthorityInput & JourneyEvidenceStream & Readonly<{
+  [JOURNEY_EVIDENCE_AUTHORITY_TYPE]: true;
+}>;
+
+export type JourneyEvidenceCellDeclaration = Readonly<{
+  bundleCellId: string;
+  scenarioId: string;
+  lineage: JourneyEvidenceLineage;
+  required: boolean;
+  streams: readonly JourneyEvidenceStream[];
+}>;
+
+export type JourneyEvidenceMatrix = JourneyReleaseIdentity & Readonly<{
+  cells: readonly JourneyEvidenceCellDeclaration[];
+}>;
+
+export type JourneyEvidenceCellResult = JourneyEvidenceAuthorityInput & JourneyEvidenceStream & Readonly<{
+  journeyId: string;
+  outcome: JourneyOutcome;
+}>;
+
 export type DeepSearchCheckpoint = "DS-01" | "DS-02" | "DS-03" | "DS-04" | "DS-05" | "DS-06" | "DS-07" | "DS-08" | "DS-09";
+
+export type FullJourneyCheckpoint =
+  | "J-01"
+  | "J-02"
+  | "J-03"
+  | "J-04"
+  | "J-05"
+  | "J-06"
+  | "J-07"
+  | "J-08"
+  | "J-09"
+  | "J-10"
+  | "J-11"
+  | "J-12";
+
+export type JourneyCheckpointName = DeepSearchCheckpoint | FullJourneyCheckpoint;
+
+export const DEEP_SEARCH_CHECKPOINTS = Object.freeze([
+  "DS-01", "DS-02", "DS-03", "DS-04", "DS-05", "DS-06", "DS-07", "DS-08", "DS-09",
+] as const satisfies readonly DeepSearchCheckpoint[]);
+
+export const FULL_JOURNEY_CHECKPOINTS = Object.freeze([
+  "J-01", "J-02", "J-03", "J-04", "J-05", "J-06", "J-07", "J-08", "J-09", "J-10", "J-11", "J-12",
+] as const satisfies readonly FullJourneyCheckpoint[]);
 
 export type JourneyAssertion = Readonly<{
   id: string;
@@ -30,8 +126,7 @@ export type JourneyCheckpointSummary = Readonly<{
 }>;
 
 export type JourneyCheckpoint = Readonly<{
-  checkpoint: DeepSearchCheckpoint;
-  surface: "domain" | "runtime-host" | "browser" | "desktop" | "provider";
+  checkpoint: JourneyCheckpointName;
   eventKind: "command_recorded" | "effect_accepted" | "provider_fact_observed" | "domain_transition" | "read_model_projected" | "surface_rendered" | "assertion" | "cleanup";
   observedAt: string;
   identities?: Readonly<Record<string, string>>;
@@ -40,15 +135,22 @@ export type JourneyCheckpoint = Readonly<{
   assertions: readonly JourneyAssertion[];
 }>;
 
-const CHECKPOINTS = new Set<DeepSearchCheckpoint>([
-  "DS-01", "DS-02", "DS-03", "DS-04", "DS-05", "DS-06", "DS-07", "DS-08", "DS-09",
+const CHECKPOINTS = new Set<JourneyCheckpointName>([
+  ...DEEP_SEARCH_CHECKPOINTS,
+  ...FULL_JOURNEY_CHECKPOINTS,
 ]);
 
 const OUTCOMES = new Set<JourneyOutcome>([
   "PASS", "FAIL", "BLOCKED_CAPABILITY", "NOT_EXERCISED", "NOT_APPLICABLE",
 ]);
 
-const SURFACES = new Set<JourneyCheckpoint["surface"]>(["domain", "runtime-host", "browser", "desktop", "provider"]);
+const EVIDENCE_CLASSES = new Set<JourneyEvidenceClass>([
+  "deterministic_fake", "browser_rendered", "electron_ipc", "qualified_acp_provider", "qualified_acp_meta", "superseded_protocol",
+]);
+const SURFACES = new Set<JourneyEvidenceSurface>(["domain", "runtime-host", "browser", "desktop", "provider"]);
+const ISSUERS = new Set<JourneyEvidenceIssuer>([
+  "runtime_host", "browser_ui_driver", "electron_ui_driver", "opencode_acp_task_attestor", "codex_acp_task_attestor", "acp_meta_attestor", "superseded_protocol_fixture",
+]);
 const EVENT_KINDS = new Set<JourneyCheckpoint["eventKind"]>([
   "command_recorded", "effect_accepted", "provider_fact_observed", "domain_transition", "read_model_projected", "surface_rendered", "assertion", "cleanup",
 ]);
@@ -62,7 +164,21 @@ const MANIFEST_FILE = "manifest.json";
 const LEDGER_FILE = "checkpoint-ledger.jsonl";
 const ASSERTIONS_FILE = "assertions.json";
 const CHECKSUMS_FILE = "checksums.sha256";
-const MANIFEST_RESERVED_FIELDS = new Set(["schemaVersion", "journeyId"]);
+const MANIFEST_RESERVED_FIELDS = new Set([
+  "schemaVersion", "journeyId", "releaseRunId", "nonce", "bundleCellId", "scenarioId", "issuer", "evidenceClass", "surface", "status", "outcome", "digests", "lineage", "checkpointContract",
+]);
+const EVIDENCE_SCHEMA_VERSION = 3;
+const DIGEST_FIELDS = ["sourceDigest", "buildDigest", "schemaDigest", "providerPolicyDigest", "policyDigest"] as const;
+const AUTHORITY_REGISTRY = new WeakSet<object>();
+const AUTHORITY_PROFILE: Readonly<Record<JourneyEvidenceIssuer, Readonly<{ evidenceClass: JourneyEvidenceClass; surface: JourneyEvidenceSurface }>>> = Object.freeze({
+  runtime_host: Object.freeze({ evidenceClass: "deterministic_fake", surface: "runtime-host" }),
+  browser_ui_driver: Object.freeze({ evidenceClass: "browser_rendered", surface: "browser" }),
+  electron_ui_driver: Object.freeze({ evidenceClass: "electron_ipc", surface: "desktop" }),
+  opencode_acp_task_attestor: Object.freeze({ evidenceClass: "qualified_acp_provider", surface: "provider" }),
+  codex_acp_task_attestor: Object.freeze({ evidenceClass: "qualified_acp_provider", surface: "provider" }),
+  acp_meta_attestor: Object.freeze({ evidenceClass: "qualified_acp_meta", surface: "provider" }),
+  superseded_protocol_fixture: Object.freeze({ evidenceClass: "superseded_protocol", surface: "runtime-host" }),
+});
 
 const SENSITIVE_TEXT = [
   /\bsk-(?:proj-)?[A-Za-z0-9_-]{8,}\b/i,
@@ -89,22 +205,23 @@ const PUBLIC_RUNTIME_ID_PREFIXES = new Set([
   "task",
   "run",
   "logical_session",
+  "card_session_slot",
+  "planning_fence",
+  "session_control",
+  "workspace_file_observation",
+  "workspace_effect",
   "architecture",
   "provider_host",
   "binding",
   "message",
   "relay_block",
-  "message_forward_batch",
   "message_forward",
-  "forward_selection",
   "human_intervention",
   "inbox",
   "input",
   "session_turn",
-  "invocation",
   "provider_fact",
   "attention",
-  "artifact",
   "presentation",
   "async_operation",
   "command",
@@ -114,6 +231,7 @@ const PUBLIC_RUNTIME_ID_PREFIXES = new Set([
   "evidence",
   "task_setup_draft",
   "meta_session",
+  "meta_turn",
   "meta_patch_proposal",
   "meta_profile",
   "meta_profile_option",
@@ -134,6 +252,20 @@ const PUBLIC_IDENTITY_FIELDS: Readonly<Record<string, string>> = {
   taskRunId: "run",
   logicalSession: "logical_session",
   logicalSessionId: "logical_session",
+  cardSessionSlot: "card_session_slot",
+  cardSessionSlotId: "card_session_slot",
+  planningFence: "planning_fence",
+  planningFenceId: "planning_fence",
+  conductorPlanningFenceId: "planning_fence",
+  sessionControl: "session_control",
+  sessionControlId: "session_control",
+  sessionControlAuditId: "session_control",
+  workspaceFileObservation: "workspace_file_observation",
+  workspaceFileObservationId: "workspace_file_observation",
+  observationId: "workspace_file_observation",
+  workspaceEffect: "workspace_effect",
+  workspaceEffectId: "workspace_effect",
+  workspaceEffectIntentId: "workspace_effect",
   architecture: "architecture",
   architectureId: "architecture",
   architectureSnapshotId: "architecture",
@@ -148,12 +280,8 @@ const PUBLIC_IDENTITY_FIELDS: Readonly<Record<string, string>> = {
   sourceMessageId: "message",
   relayBlock: "relay_block",
   relayBlockId: "relay_block",
-  messageForwardBatch: "message_forward_batch",
-  messageForwardBatchId: "message_forward_batch",
   messageForward: "message_forward",
   messageForwardId: "message_forward",
-  forwardSelection: "forward_selection",
-  forwardSelectionId: "forward_selection",
   humanIntervention: "human_intervention",
   humanInterventionId: "human_intervention",
   inbox: "inbox",
@@ -164,15 +292,10 @@ const PUBLIC_IDENTITY_FIELDS: Readonly<Record<string, string>> = {
   inputSubmissionId: "input",
   sessionTurn: "session_turn",
   sessionTurnId: "session_turn",
-  invocation: "invocation",
-  invocationId: "invocation",
-  sourceInvocationId: "invocation",
   providerFact: "provider_fact",
   providerFactId: "provider_fact",
   attention: "attention",
   attentionId: "attention",
-  artifact: "artifact",
-  artifactId: "artifact",
   presentation: "presentation",
   presentationId: "presentation",
   presentationLeaseId: "presentation",
@@ -195,6 +318,8 @@ const PUBLIC_IDENTITY_FIELDS: Readonly<Record<string, string>> = {
   taskSetupDraftId: "task_setup_draft",
   metaSession: "meta_session",
   metaSessionId: "meta_session",
+  metaTurn: "meta_turn",
+  metaTurnId: "meta_turn",
   metaPatchProposal: "meta_patch_proposal",
   metaPatchProposalId: "meta_patch_proposal",
   metaProfile: "meta_profile",
@@ -212,9 +337,112 @@ const SEMANTIC_OBSERVATION_FIELDS = new Set([
   "event", "events", "eventKind", "eventKinds", "factKind", "factKinds", "kind", "kinds", "mode", "outcome", "reason", "recovery", "state", "states", "status", "statuses", "surface", "writer",
 ]);
 
+export function createRuntimeHostEvidenceAuthority(input: JourneyEvidenceAuthorityInput): JourneyEvidenceAuthority {
+  return createEvidenceAuthority("runtime_host", input);
+}
+
+export function createBrowserEvidenceAuthority(input: JourneyEvidenceAuthorityInput): JourneyEvidenceAuthority {
+  return createEvidenceAuthority("browser_ui_driver", input);
+}
+
+export function createElectronEvidenceAuthority(input: JourneyEvidenceAuthorityInput): JourneyEvidenceAuthority {
+  return createEvidenceAuthority("electron_ui_driver", input);
+}
+
+export function createOpenCodeAcpTaskEvidenceAuthority(input: JourneyEvidenceAuthorityInput): JourneyEvidenceAuthority {
+  return createEvidenceAuthority("opencode_acp_task_attestor", input);
+}
+
+export function createCodexAcpTaskEvidenceAuthority(input: JourneyEvidenceAuthorityInput): JourneyEvidenceAuthority {
+  return createEvidenceAuthority("codex_acp_task_attestor", input);
+}
+
+export function createAcpMetaEvidenceAuthority(input: JourneyEvidenceAuthorityInput): JourneyEvidenceAuthority {
+  return createEvidenceAuthority("acp_meta_attestor", input);
+}
+
+export function createSupersededEvidenceAuthority(input: JourneyEvidenceAuthorityInput): JourneyEvidenceAuthority {
+  return createEvidenceAuthority("superseded_protocol_fixture", input);
+}
+
+export function verifyJourneyEvidenceMatrix(
+  matrix: JourneyEvidenceMatrix,
+  results: readonly JourneyEvidenceCellResult[],
+): void {
+  const release = validateReleaseIdentity(matrix);
+  if (!Array.isArray(matrix.cells) || matrix.cells.length === 0) throw new Error("journey_evidence_matrix_cells_required");
+
+  const cells = new Map<string, JourneyEvidenceCellDeclaration>();
+  for (const cell of matrix.cells) {
+    validateCellDeclaration(cell);
+    const key = cellKey(cell);
+    if (cells.has(key)) throw new Error("journey_evidence_matrix_cell_duplicate");
+    cells.set(key, cell);
+  }
+
+  if (!Array.isArray(results)) throw new Error("journey_evidence_results_invalid");
+  const observedStreams = new Map<string, Set<string>>();
+  for (const result of results) {
+    validateCellResult(result);
+    if (!isDeepStrictEqual(release, releaseIdentityOf(result))) {
+      throw new Error("journey_evidence_release_mismatch");
+    }
+    const key = cellKey(result);
+    const declaration = cells.get(key);
+    if (!declaration) throw new Error("journey_evidence_cell_not_declared");
+    const expectedStreams = new Set(declaration.streams.map(streamKey));
+    const observedStreamKey = streamKey(result);
+    if (!expectedStreams.has(observedStreamKey)) throw new Error("journey_evidence_stream_not_declared");
+
+    const streams = observedStreams.get(key) ?? new Set<string>();
+    if (streams.has(observedStreamKey)) throw new Error("journey_evidence_stream_duplicate");
+    streams.add(observedStreamKey);
+    observedStreams.set(key, streams);
+
+    const normalizedLineage = normalizeLineage(result.lineage);
+    if (!isDeepStrictEqual(normalizeLineage(declaration.lineage), normalizedLineage)) {
+      throw new Error("journey_evidence_cell_lineage_mismatch");
+    }
+    if (declaration.required && result.outcome !== "PASS") {
+      throw new Error("journey_evidence_required_cell_not_pass");
+    }
+  }
+
+  for (const [key, declaration] of cells) {
+    if (!declaration.required) continue;
+    const streams = observedStreams.get(key);
+    if (!streams || declaration.streams.some((stream) => !streams.has(streamKey(stream)))) {
+      throw new Error("journey_evidence_required_cell_missing");
+    }
+  }
+}
+
+function createEvidenceAuthority(
+  issuer: JourneyEvidenceIssuer,
+  input: JourneyEvidenceAuthorityInput,
+): JourneyEvidenceAuthority {
+  const release = validateReleaseIdentity(input);
+  validateCellIdentity(input);
+  const lineage = normalizeLineage(input.lineage);
+  const profile = AUTHORITY_PROFILE[issuer];
+  const authority = {
+    ...release,
+    bundleCellId: input.bundleCellId,
+    scenarioId: input.scenarioId,
+    lineage,
+    issuer,
+    evidenceClass: profile.evidenceClass,
+    surface: profile.surface,
+  } as JourneyEvidenceAuthority;
+  Object.freeze(authority);
+  AUTHORITY_REGISTRY.add(authority);
+  return authority;
+}
+
 export class JourneyEvidenceRecorder {
   readonly #root: string;
   readonly #journeyId: string;
+  readonly #authority: JourneyEvidenceAuthority;
   readonly #providedAliasKey?: Uint8Array;
   #aliasKey?: Uint8Array;
   #sequence = 0;
@@ -222,17 +450,35 @@ export class JourneyEvidenceRecorder {
   #finalized = false;
   #queue: Promise<void> = Promise.resolve();
   readonly #assertions = new Map<string, JourneyAssertion>();
-  readonly #recordedCheckpoints = new Set<DeepSearchCheckpoint>();
+  readonly #recordedCheckpoints = new Set<JourneyCheckpointName>();
+  readonly #requiredCheckpoints: ReadonlySet<JourneyCheckpointName>;
 
-  constructor(input: Readonly<{ root: string; journeyId: string; aliasKey?: Uint8Array }>) {
+  constructor(input: Readonly<{
+    root: string;
+    journeyId: string;
+    authority: JourneyEvidenceAuthority;
+    aliasKey?: Uint8Array;
+    /** Runner-owned checkpoint contract. Scenario manifests cannot override it. */
+    requiredCheckpoints?: readonly JourneyCheckpointName[];
+  }>) {
     if (!path.isAbsolute(input.root)) throw new Error("journey_evidence_root_must_be_absolute");
     if (input.journeyId.length > 128 || !/^journey_[A-Za-z0-9-]+$/.test(input.journeyId)) throw new Error("journey_evidence_id_invalid");
+    if (!input.authority || !AUTHORITY_REGISTRY.has(input.authority)) throw new Error("journey_evidence_authority_invalid");
     if (input.aliasKey && (input.aliasKey.byteLength < 16 || input.aliasKey.byteLength > 128)) {
       throw new Error("journey_evidence_alias_key_invalid");
     }
     this.#root = input.root;
     this.#journeyId = input.journeyId;
+    this.#authority = input.authority;
     this.#providedAliasKey = input.aliasKey ? Uint8Array.from(input.aliasKey) : undefined;
+    const requiredCheckpoints = input.requiredCheckpoints ?? DEEP_SEARCH_CHECKPOINTS;
+    if (!Array.isArray(requiredCheckpoints)
+      || requiredCheckpoints.length === 0
+      || new Set(requiredCheckpoints).size !== requiredCheckpoints.length
+      || requiredCheckpoints.some((checkpoint) => !CHECKPOINTS.has(checkpoint))) {
+      throw new Error("journey_evidence_required_checkpoints_invalid");
+    }
+    this.#requiredCheckpoints = new Set(requiredCheckpoints);
   }
 
   initialize(manifest: Readonly<Record<string, unknown>>): Promise<void> {
@@ -251,7 +497,13 @@ export class JourneyEvidenceRecorder {
       const ledgerFile = path.join(this.#root, LEDGER_FILE);
       const aliasKeyFile = path.join(this.#root, ALIAS_KEY_FILE);
       const existingManifest = await readJsonIfExists(manifestFile);
-      const expectedManifest = { schemaVersion: 1, journeyId: this.#journeyId, ...manifest };
+      const expectedManifest = {
+        schemaVersion: EVIDENCE_SCHEMA_VERSION,
+        journeyId: this.#journeyId,
+        ...serializeAuthority(this.#authority),
+        ...manifest,
+        checkpointContract: [...this.#requiredCheckpoints],
+      };
 
       if (existingManifest !== undefined) {
         if (!isDeepStrictEqual(existingManifest, expectedManifest)) throw new Error("journey_evidence_manifest_mismatch");
@@ -304,8 +556,9 @@ export class JourneyEvidenceRecorder {
       const sequence = this.#sequence + 1;
       const entry = {
         ...checkpoint,
-        schemaVersion: 1,
+        schemaVersion: EVIDENCE_SCHEMA_VERSION,
         journeyId: this.#journeyId,
+        ...serializeAuthority(this.#authority),
         sequence,
       };
       assertEvidenceSafe(entry);
@@ -353,7 +606,7 @@ export class JourneyEvidenceRecorder {
     outcome: JourneyOutcome;
     assertions: readonly JourneyAssertion[];
     residualRisks: readonly string[];
-  }>): Promise<void> {
+  }>): Promise<JourneyEvidenceCellResult> {
     return this.#enqueue(async () => {
       this.#assertWritable();
       assertEvidenceSafe(input);
@@ -371,22 +624,28 @@ export class JourneyEvidenceRecorder {
       }
       if (input.outcome === "PASS") {
         const combined = [...this.#assertions.values(), ...finalAssertions];
-        if (combined.some((assertion) => assertion.required !== false && isUnsatisfiedForPass(assertion.outcome))) {
+        if (combined.some((assertion) => assertion.required !== false && assertion.outcome !== "PASS")) {
           throw new Error("journey_evidence_pass_has_unsatisfied_assertion");
         }
-        if ([...CHECKPOINTS].some((checkpoint) => !this.#recordedCheckpoints.has(checkpoint))) {
+        if ([...this.#requiredCheckpoints].some((checkpoint) => !this.#recordedCheckpoints.has(checkpoint))) {
           throw new Error("journey_evidence_pass_missing_checkpoint");
         }
       }
       await writePrivateJson(path.join(this.#root, ASSERTIONS_FILE), {
-        schemaVersion: 1,
+        schemaVersion: EVIDENCE_SCHEMA_VERSION,
         journeyId: this.#journeyId,
+        ...serializeAuthority(this.#authority),
         outcome: input.outcome,
         assertions: input.assertions,
         residualRisks: input.residualRisks,
       }, "wx");
       await writeChecksums(this.#root);
       this.#finalized = true;
+      return Object.freeze({
+        journeyId: this.#journeyId,
+        ...serializeAuthority(this.#authority),
+        outcome: input.outcome,
+      });
     });
   }
 
@@ -439,12 +698,27 @@ export class JourneyEvidenceRecorder {
       }
       assertEvidenceSafe(entry);
       if (!isPlainObject(entry)
-        || entry.schemaVersion !== 1
+        || entry.schemaVersion !== EVIDENCE_SCHEMA_VERSION
         || entry.journeyId !== this.#journeyId
         || entry.sequence !== index + 1) {
         throw new Error("journey_evidence_ledger_invalid");
       }
-      const { schemaVersion: _schemaVersion, journeyId: _journeyId, sequence: _sequence, ...checkpointFields } = entry;
+      assertEntryAuthority(entry, this.#authority);
+      const {
+        schemaVersion: _schemaVersion,
+        journeyId: _journeyId,
+        sequence: _sequence,
+        releaseRunId: _releaseRunId,
+        nonce: _nonce,
+        bundleCellId: _bundleCellId,
+        scenarioId: _scenarioId,
+        issuer: _issuer,
+        evidenceClass: _evidenceClass,
+        surface: _surface,
+        digests: _digests,
+        lineage: _lineage,
+        ...checkpointFields
+      } = entry;
       const checkpoint = checkpointFields as unknown as JourneyCheckpoint;
       validateCheckpoint(checkpoint);
       this.#assertAssertionsCompatible(checkpoint.assertions);
@@ -511,13 +785,160 @@ function scanEvidenceString(value: string): void {
   if (SENSITIVE_TEXT.some((pattern) => pattern.test(value))) throw new Error("journey_evidence_sensitive_content");
 }
 
+function validateReleaseIdentity(value: JourneyReleaseIdentity): JourneyReleaseIdentity {
+  if (!isPlainObject(value)
+    || !isBoundedIdentifier(value.releaseRunId, "release")
+    || typeof value.nonce !== "string"
+    || value.nonce.length < 16
+    || value.nonce.length > 128
+    || !/^[A-Za-z0-9_-]+$/.test(value.nonce)) {
+    throw new Error("journey_evidence_release_identity_invalid");
+  }
+  return Object.freeze({
+    releaseRunId: value.releaseRunId,
+    nonce: value.nonce,
+    digests: normalizeDigests(value.digests),
+  });
+}
+
+function normalizeDigests(value: JourneyEvidenceDigests): JourneyEvidenceDigests {
+  if (!isPlainObject(value) || !hasOnlyKeys(value, DIGEST_FIELDS)) {
+    throw new Error("journey_evidence_digests_invalid");
+  }
+  const normalized = {} as Record<(typeof DIGEST_FIELDS)[number], string>;
+  for (const field of DIGEST_FIELDS) {
+    const digest = value[field];
+    if (typeof digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(digest)) {
+      throw new Error("journey_evidence_digests_invalid");
+    }
+    normalized[field] = digest;
+  }
+  return Object.freeze(normalized) as JourneyEvidenceDigests;
+}
+
+function validateCellIdentity(value: Readonly<{ bundleCellId: string; scenarioId: string }>): void {
+  if (!isBoundedIdentifier(value.bundleCellId, "cell") || !isBoundedIdentifier(value.scenarioId, "scenario")) {
+    throw new Error("journey_evidence_cell_identity_invalid");
+  }
+}
+
+function normalizeLineage(value: JourneyEvidenceLineage): JourneyEvidenceLineage {
+  if (!isPlainObject(value)
+    || !hasOnlyKeys(value, ["runtimeInstanceId"])
+    || typeof value.runtimeInstanceId !== "string"
+    || value.runtimeInstanceId.length > 128
+    || !/^runtime_instance_[A-Za-z0-9-]+$/.test(value.runtimeInstanceId)) {
+    throw new Error("journey_evidence_lineage_invalid");
+  }
+  return Object.freeze({ runtimeInstanceId: value.runtimeInstanceId });
+}
+
+function validateStream(value: JourneyEvidenceStream): void {
+  if (!isPlainObject(value)
+    || !ISSUERS.has(value.issuer)
+    || !EVIDENCE_CLASSES.has(value.evidenceClass)
+    || !SURFACES.has(value.surface)) {
+    throw new Error("journey_evidence_stream_invalid");
+  }
+  const profile = AUTHORITY_PROFILE[value.issuer];
+  if (profile.evidenceClass !== value.evidenceClass || profile.surface !== value.surface) {
+    throw new Error("journey_evidence_issuer_class_mismatch");
+  }
+}
+
+function validateCellDeclaration(cell: JourneyEvidenceCellDeclaration): void {
+  if (!isPlainObject(cell)
+    || !hasOnlyKeys(cell, ["bundleCellId", "scenarioId", "lineage", "required", "streams"])
+    || typeof cell.required !== "boolean"
+    || !Array.isArray(cell.streams)
+    || cell.streams.length === 0) {
+    throw new Error("journey_evidence_matrix_cell_invalid");
+  }
+  validateCellIdentity(cell);
+  normalizeLineage(cell.lineage);
+  const streams = new Set<string>();
+  for (const stream of cell.streams) {
+    validateStream(stream);
+    const key = streamKey(stream);
+    if (streams.has(key)) throw new Error("journey_evidence_matrix_stream_duplicate");
+    streams.add(key);
+  }
+}
+
+function validateCellResult(result: JourneyEvidenceCellResult): void {
+  if (!isPlainObject(result)
+    || !hasOnlyKeys(result, [
+      "journeyId", "releaseRunId", "nonce", "digests", "bundleCellId", "scenarioId", "lineage",
+      "issuer", "evidenceClass", "surface", "outcome",
+    ])
+    || typeof result.journeyId !== "string"
+    || result.journeyId.length > 128
+    || !/^journey_[A-Za-z0-9-]+$/.test(result.journeyId)
+    || !OUTCOMES.has(result.outcome)) {
+    throw new Error("journey_evidence_result_invalid");
+  }
+  validateReleaseIdentity(result);
+  validateCellIdentity(result);
+  normalizeLineage(result.lineage);
+  validateStream(result);
+}
+
+function serializeAuthority(authority: JourneyEvidenceAuthority): JourneyEvidenceAuthorityInput & JourneyEvidenceStream {
+  return {
+    ...releaseIdentityOf(authority),
+    bundleCellId: authority.bundleCellId,
+    scenarioId: authority.scenarioId,
+    lineage: authority.lineage,
+    issuer: authority.issuer,
+    evidenceClass: authority.evidenceClass,
+    surface: authority.surface,
+  };
+}
+
+function assertEntryAuthority(entry: Readonly<Record<string, unknown>>, authority: JourneyEvidenceAuthority): void {
+  const actual = {
+    releaseRunId: entry.releaseRunId,
+    nonce: entry.nonce,
+    digests: entry.digests,
+    bundleCellId: entry.bundleCellId,
+    scenarioId: entry.scenarioId,
+    lineage: entry.lineage,
+    issuer: entry.issuer,
+    evidenceClass: entry.evidenceClass,
+    surface: entry.surface,
+  };
+  if (!isDeepStrictEqual(actual, serializeAuthority(authority))) throw new Error("journey_evidence_ledger_authority_mismatch");
+}
+
+function releaseIdentityOf(value: JourneyReleaseIdentity): JourneyReleaseIdentity {
+  return {
+    releaseRunId: value.releaseRunId,
+    nonce: value.nonce,
+    digests: value.digests,
+  };
+}
+
+function cellKey(value: Readonly<{ bundleCellId: string; scenarioId: string }>): string {
+  return `${value.bundleCellId}\0${value.scenarioId}`;
+}
+
+function streamKey(value: JourneyEvidenceStream): string {
+  return `${value.issuer}\0${value.evidenceClass}\0${value.surface}`;
+}
+
+function isBoundedIdentifier(value: unknown, prefix: string): value is string {
+  return typeof value === "string"
+    && value.length <= 128
+    && new RegExp(`^${prefix}_[A-Za-z0-9-]+$`).test(value);
+}
+
 function validateCheckpoint(checkpoint: JourneyCheckpoint): void {
   if (!isPlainObject(checkpoint)) throw new Error("journey_checkpoint_invalid");
-  if (!hasOnlyKeys(checkpoint, ["checkpoint", "surface", "eventKind", "observedAt", "identities", "summary", "observation", "assertions"])) {
+  if (!hasOnlyKeys(checkpoint, ["checkpoint", "eventKind", "observedAt", "identities", "summary", "observation", "assertions"])) {
     throw new Error("journey_checkpoint_invalid");
   }
   if (!CHECKPOINTS.has(checkpoint.checkpoint)) throw new Error("journey_checkpoint_name_invalid");
-  if (!SURFACES.has(checkpoint.surface) || !EVENT_KINDS.has(checkpoint.eventKind)) throw new Error("journey_checkpoint_kind_invalid");
+  if (!EVENT_KINDS.has(checkpoint.eventKind)) throw new Error("journey_checkpoint_kind_invalid");
   if (!isCanonicalTimestamp(checkpoint.observedAt)) {
     throw new Error("journey_checkpoint_observed_at_invalid");
   }
@@ -626,10 +1047,6 @@ function assertObservationIdentitySafety(value: unknown, field?: string): void {
   }
   if (!isPlainObject(value)) return;
   for (const [key, entry] of Object.entries(value)) assertObservationIdentitySafety(entry, key);
-}
-
-function isUnsatisfiedForPass(outcome: JourneyOutcome): boolean {
-  return outcome === "FAIL" || outcome === "BLOCKED_CAPABILITY" || outcome === "NOT_EXERCISED";
 }
 
 function isRequired(assertion: JourneyAssertion): boolean {

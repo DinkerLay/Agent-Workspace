@@ -1,20 +1,8 @@
 import type {
-  AgentCardId,
-  AttentionId,
-  ArtifactId,
-  HumanInterventionId,
-  InputSubmissionId,
-  InvocationId,
-  LogicalSessionId,
   MetaPatchProposalId,
   MetaProfileOptionId,
   MetaSessionId,
-  ProviderSessionBindingId,
-  PresentationLeaseId,
-  RelayBlockId,
   RuntimeCommandId,
-  SessionMessageId,
-  SessionTurnId,
   TaskId,
   TaskRunId,
   TaskSetupDraftId,
@@ -23,13 +11,7 @@ import type {
   TemplateVersionId,
   WorkspaceId,
 } from "./ids";
-import type { JsonObject } from "./json";
-import type {
-  ArtifactPreviewReadModel,
-  RuntimeReadModel,
-  TaskPermanentDeletePreview,
-  TaskPermanentDeleteResult,
-} from "./read-models";
+import type { RuntimeReadModel } from "./read-models";
 import type {
   MetaPatchProposalRecord,
   MetaMessageRecord,
@@ -40,9 +22,19 @@ import type {
   TaskRecord,
   TaskRunRecord,
   TaskSetupDraftRecord,
+  TemplateDraftRecord,
   TemplateDraftMetadata,
 } from "./records";
-import type { TaskInputValue, TemplateAssetTransport, TemplateDefinition, TemplatePackage } from "./templates";
+import type {
+  ProviderFamily,
+  TaskInputValue,
+  TemplateAssetTransport,
+  TemplateDefinitionSnapshot,
+  TemplateDefinitionV3,
+  TemplatePackage,
+  TemplatePackageSnapshot,
+} from "./templates";
+import type { AcpProviderSettingsReadModel } from "./provider-settings";
 
 export interface RuntimeCommandBase {
   readonly commandId: RuntimeCommandId;
@@ -59,7 +51,7 @@ export interface CreateTemplateDraftCommand extends RuntimeCommandBase {
   readonly baseTemplateVersionId?: TemplateVersionId;
   readonly ownerId: string;
   readonly metadata: TemplateDraftMetadata;
-  readonly initialDefinition: TemplateDefinition;
+  readonly initialDefinition: TemplateDefinitionSnapshot;
 }
 
 export interface SaveTemplateDraftCommand extends RuntimeCommandBase {
@@ -67,7 +59,17 @@ export interface SaveTemplateDraftCommand extends RuntimeCommandBase {
   readonly templateDraftId: TemplateDraftId;
   readonly expectedRevision: number;
   readonly metadata: TemplateDraftMetadata;
-  readonly definition: TemplateDefinition;
+  readonly definition: TemplateDefinitionSnapshot;
+}
+
+/** Explicit user-reviewed migration; the Runtime allocates the new Draft identity. */
+export interface MigrateTemplateV2ToV3DraftCommand extends RuntimeCommandBase {
+  readonly type: "template.migrate_v2_to_v3_draft";
+  readonly ownerId: string;
+  readonly sourceTemplateVersionId: TemplateVersionId;
+  readonly expectedSourceDefinitionHash: string;
+  readonly metadata: TemplateDraftMetadata;
+  readonly definition: TemplateDefinitionV3;
 }
 
 export interface PublishTemplateDraftCommand extends RuntimeCommandBase {
@@ -182,7 +184,6 @@ export interface RejectMetaPatchCommand extends RuntimeCommandBase {
 
 export interface CreateTaskCommand extends RuntimeCommandBase {
   readonly type: "task.create";
-  readonly taskId: TaskId;
   readonly ownerId: string;
   readonly workspaceId: WorkspaceId;
   readonly taskSetupDraftId: TaskSetupDraftId;
@@ -209,206 +210,56 @@ export interface ResumeTaskCommand extends RuntimeCommandBase {
   readonly runId: TaskRunId;
 }
 
-export interface SubmitTaskInputCommand extends RuntimeCommandBase {
-  readonly type: "task.submit_input";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly runId: TaskRunId;
-  readonly targetLogicalSessionId: LogicalSessionId;
-  readonly content: string;
+/** Explicit Host-owned ACP discovery. Reads never launch a Provider. */
+export interface ProbeAcpProviderModelsCommand extends RuntimeCommandBase {
+  readonly type: "provider.probe_models";
+  readonly providerFamily: ProviderFamily;
 }
 
-/**
- * A caller can intentionally disclose a complete Message, or route only one
- * of its already-extracted RelayBlocks. It can never submit provider-native
- * text, Artifact bytes, paths, or an arbitrary context reference.
- */
-export type MessageSelection =
-  | {
-      readonly kind: "full_message";
-      readonly sourceMessageId: SessionMessageId;
-    }
-  | {
-      readonly kind: "relay_block";
-      readonly sourceMessageId: SessionMessageId;
-      readonly relayBlockId: RelayBlockId;
-    };
-
-export interface InvokeAgentCommand extends RuntimeCommandBase {
-  readonly type: "invocation.invoke_agent";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly runId: TaskRunId;
-  /** The scoped parent Session that is allowed to create this child invocation. */
-  readonly sourceLogicalSessionId: LogicalSessionId;
-  readonly decidedBySessionTurnId: SessionTurnId;
-  readonly idempotencyKey: string;
-  readonly invocationId: InvocationId;
-  readonly agentCardId: AgentCardId;
-  readonly instruction: string;
-  readonly messageSelections: readonly MessageSelection[];
-  readonly acceptanceCriteria: readonly string[];
-  readonly requestedArtifacts?: readonly string[];
-  readonly priority?: "low" | "normal" | "high";
+export interface DiscoverAcpProviderInstallationCommand extends RuntimeCommandBase {
+  readonly type: "provider.discover_installation";
+  readonly providerFamily: ProviderFamily;
 }
 
-/**
- * A normal Agent-to-Agent relay. Unlike invoke_agent it creates neither a
- * child Invocation nor a Provider-to-Provider connection.
- */
-export interface RelayMessageCommand extends RuntimeCommandBase {
-  readonly type: "session.relay_message";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly runId: TaskRunId;
-  readonly sourceLogicalSessionId: LogicalSessionId;
-  readonly decidedBySessionTurnId: SessionTurnId;
-  readonly idempotencyKey: string;
-  readonly targetAgentCardId: AgentCardId;
-  readonly messageSelections: readonly MessageSelection[];
+export type AcpProviderInstallationInput =
+  | Readonly<{
+      kind: "opencode";
+      commandPath: string;
+      authFilePath: string;
+    }>
+  | Readonly<{
+      kind: "codex";
+      codexPath: string;
+      nodePath: string;
+      authFilePath: string;
+    }>
+  | Readonly<{
+      kind: "claude-code";
+      claudePath: string;
+      nodePath: string;
+      settingsFilePath: string;
+    }>;
+
+/** Saves Host-private machine paths. Existing Sessions are never retargeted. */
+export interface ConfigureAcpProviderInstallationCommand extends RuntimeCommandBase {
+  readonly type: "provider.configure_installation";
+  readonly providerFamily: ProviderFamily;
+  readonly installation: AcpProviderInstallationInput;
 }
 
-export interface PublishMessageCommand extends RuntimeCommandBase {
-  readonly type: "session.publish_message";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly runId: TaskRunId;
-  readonly sourceLogicalSessionId: LogicalSessionId;
-  readonly decidedBySessionTurnId: SessionTurnId;
-  readonly idempotencyKey: string;
-  readonly fanoutKey: string;
-  readonly targetAgentCardIds: readonly AgentCardId[];
-  readonly messageSelections: readonly MessageSelection[];
-}
-
-/** Authenticated user intent; Runtime, not Renderer, establishes initiator=human. */
-export interface SendHumanMessageCommand extends RuntimeCommandBase {
-  readonly type: "session.send_human_message";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly runId: TaskRunId;
-  readonly humanInterventionId: HumanInterventionId;
-  readonly idempotencyKey: string;
-  readonly targetLogicalSessionId: LogicalSessionId;
-  readonly content: string;
-}
-
-export interface RequestSessionInterruptCommand extends RuntimeCommandBase {
-  readonly type: "session.request_interrupt";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly runId: TaskRunId;
-  readonly idempotencyKey: string;
-  readonly targetLogicalSessionId: LogicalSessionId;
-  readonly sessionTurnId: SessionTurnId;
-}
-
-export interface RespondAttentionCommand extends RuntimeCommandBase {
-  readonly type: "attention.respond";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly attentionId: AttentionId;
-  readonly bindingId: ProviderSessionBindingId;
-  readonly bindingRevision: number;
-  readonly nativeRequestId: string;
-  readonly activeInputSubmissionId?: InputSubmissionId;
-  readonly activeInvocationId?: InvocationId;
-  readonly response: JsonObject;
-}
-
-export interface StopTaskCommand extends RuntimeCommandBase {
-  readonly type: "task.stop";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly runId: TaskRunId;
-  readonly bindingIds: readonly ProviderSessionBindingId[];
-}
-
-export interface AchieveTaskCommand extends RuntimeCommandBase {
-  readonly type: "task.achieve";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly acceptedArtifactIds: readonly string[];
-  readonly acceptanceNote?: string;
-}
-
-/** Move an explicitly Achieved, quiescent Task to the preserved recycle bin. */
-export interface ArchiveTaskCommand extends RuntimeCommandBase {
-  readonly type: "task.archive";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-}
-
-/** Restore the same Task, Run, bindings and Artifact records from recycle bin. */
-export interface RestoreTaskCommand extends RuntimeCommandBase {
-  readonly type: "task.restore";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-}
-
-/**
- * Renderer asks for a safe, path-free view of every managed Artifact that
- * could be selected for permanent deletion. The Host validates current bytes;
- * the command never accepts a filesystem path.
- */
-export interface PreviewTaskPermanentDeleteCommand extends RuntimeCommandBase {
-  readonly type: "task.preview_permanent_delete";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-}
-
-/**
- * Deletes Runtime Task state and, only for the selected registered Artifact
- * identities, asks the Host to remove unchanged workspace files. Empty
- * selection intentionally preserves all files while deleting Task history.
- */
-export interface PermanentlyDeleteTaskCommand extends RuntimeCommandBase {
-  readonly type: "task.permanently_delete";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly artifactIds: readonly ArtifactId[];
-}
-
-/** Safe content preview of one already registered Artifact identity. */
-export interface PreviewArtifactCommand extends RuntimeCommandBase {
-  readonly type: "artifact.preview";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly artifactId: ArtifactId;
-}
-
-/**
- * Conductor-scoped request to verify one file that a returned Invocation was
- * explicitly asked to produce and declared in its canonical final Message.
- * Runtime derives the Artifact identity and all remaining provenance.
- */
-export interface VerifyRequestedArtifactCommand extends RuntimeCommandBase {
-  readonly type: "artifact.verify_requested";
-  readonly taskId: TaskId;
-  readonly expectedRevision: number;
-  readonly runId: TaskRunId;
-  readonly sourceLogicalSessionId: LogicalSessionId;
-  readonly decidedBySessionTurnId: SessionTurnId;
-  readonly idempotencyKey: string;
-  readonly sourceInvocationId: InvocationId;
-  readonly workspaceRelativePath: string;
-}
-
-export interface OpenSessionPresentationCommand extends RuntimeCommandBase {
-  readonly type: "presentation.open";
-  readonly taskId: TaskId;
-  readonly bindingId: ProviderSessionBindingId;
-}
-
-export interface ReleaseSessionPresentationCommand extends RuntimeCommandBase {
-  readonly type: "presentation.release";
-  readonly presentationLeaseId: PresentationLeaseId;
+/** Future Chat choices only; existing Templates/Sessions remain frozen. */
+export interface ConfigureAcpProviderChatModelsCommand extends RuntimeCommandBase {
+  readonly type: "provider.configure_chat_models";
+  readonly providerFamily: ProviderFamily;
+  readonly modelIds: readonly string[];
+  readonly defaultModelId: string;
 }
 
 /** No generic append-event/raw-provider/PTY/filesystem escape hatch exists. */
 export type RuntimeCommand =
   | CreateTemplateDraftCommand
   | SaveTemplateDraftCommand
+  | MigrateTemplateV2ToV3DraftCommand
   | PublishTemplateDraftCommand
   | ArchiveTemplateCommand
   | ImportTemplateCommand
@@ -426,38 +277,23 @@ export type RuntimeCommand =
   | StartTaskCommand
   | RestartTaskCommand
   | ResumeTaskCommand
-  | SubmitTaskInputCommand
-  | InvokeAgentCommand
-  | RelayMessageCommand
-  | PublishMessageCommand
-  | SendHumanMessageCommand
-  | RequestSessionInterruptCommand
-  | RespondAttentionCommand
-  | StopTaskCommand
-  | AchieveTaskCommand
-  | ArchiveTaskCommand
-  | RestoreTaskCommand
-  | PreviewTaskPermanentDeleteCommand
-  | PermanentlyDeleteTaskCommand
-  | VerifyRequestedArtifactCommand
-  | PreviewArtifactCommand
-  | OpenSessionPresentationCommand
-  | ReleaseSessionPresentationCommand;
+  | ProbeAcpProviderModelsCommand
+  | DiscoverAcpProviderInstallationCommand
+  | ConfigureAcpProviderInstallationCommand
+  | ConfigureAcpProviderChatModelsCommand;
 
 export interface RuntimeCommandResult {
   readonly receipt: RuntimeCommandReceipt;
-  readonly artifactId?: ArtifactId;
   readonly readModel?: RuntimeReadModel;
   readonly task?: TaskRecord;
   readonly run?: TaskRunRecord;
   readonly taskSetupDraft?: TaskSetupDraftRecord;
+  readonly templateDraft?: TemplateDraftRecord;
   readonly metaSession?: MetaSessionRecord;
   readonly metaMessage?: MetaMessageRecord;
   readonly metaPatchProposal?: MetaPatchProposalRecord;
-  readonly templatePackage?: TemplatePackage;
+  readonly templatePackage?: TemplatePackageSnapshot;
   readonly templateAssets?: readonly TemplateAssetTransport[];
   readonly presentation?: SessionPresentation;
-  readonly artifactPreview?: ArtifactPreviewReadModel;
-  readonly permanentDeletePreview?: TaskPermanentDeletePreview;
-  readonly permanentDelete?: TaskPermanentDeleteResult;
+  readonly providerSettings?: AcpProviderSettingsReadModel;
 }

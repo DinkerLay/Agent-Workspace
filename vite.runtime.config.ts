@@ -12,13 +12,13 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig(({ command }) => ({
   root: path.join(root, "apps/workbench"),
   base: command === "build" ? "./" : "/",
-  plugins: [react(), runtimeBridgeBootstrap(command)],
+  plugins: [react(), sessionIdRuntimeBootstrap(command)],
   resolve: { alias: aliases(root) },
   build: {
     outDir: path.join(root, "dist/workbench"),
     emptyOutDir: true,
   },
-  server: runtimeBridgeProxy(),
+  server: sessionIdRuntimeProxy(),
 }));
 
 function aliases(repoRoot: string): Record<string, string> {
@@ -30,44 +30,67 @@ function aliases(repoRoot: string): Record<string, string> {
     "@agent-workspace/runtime-store": source("runtime-store"),
     "@agent-workspace/runtime-client": source("runtime-client"),
     "@agent-workspace/provider-port": source("provider-port"),
-    "@agent-workspace/provider-opencode": source("provider-opencode"),
-    "@agent-workspace/provider-codex": source("provider-codex"),
-    "@agent-workspace/provider-claude-code": source("provider-claude-code"),
     "@agent-workspace/conductor-tools": source("conductor-tools"),
     "@agent-workspace/workbench-ui": source("workbench-ui"),
     "@agent-workspace/test-kit": source("test-kit"),
   };
 }
 
-function runtimeBridgeProxy() {
-  const port = Number(process.env.AGENT_WORKSPACE_RUNTIME_PORT);
-  const token = process.env.AGENT_WORKSPACE_RUNTIME_TOKEN;
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535 || !token) return undefined;
+function sessionIdRuntimeProxy() {
+  const target = runtimeTarget(process.env.AGENT_WORKSPACE_RUNTIME_URL, process.env.AGENT_WORKSPACE_RUNTIME_PORT);
+  const token = nonEmptyText(process.env.AGENT_WORKSPACE_RUNTIME_TOKEN);
+  if (!target || !token) return undefined;
   return {
     proxy: {
       "/runtime": {
-        target: `http://127.0.0.1:${port}`,
+        target,
         changeOrigin: true,
         ws: true,
-        headers: { authorization: `Bearer ${token}` },
+        headers: { authorization: token },
       },
     },
   };
 }
 
-function runtimeBridgeBootstrap(command: string) {
-  if (command !== "serve") return undefined;
-  const token = process.env.AGENT_WORKSPACE_RUNTIME_TOKEN;
-  if (!token) return undefined;
+function sessionIdRuntimeBootstrap(command: string) {
+  const token = command === "serve" ? nonEmptyText(process.env.AGENT_WORKSPACE_RUNTIME_TOKEN) : undefined;
+  const ownerId = nonEmptyText(process.env.AGENT_WORKSPACE_OWNER_ID) ?? "user_local";
+  if (command !== "serve" || !token) return undefined;
   return {
-    name: "agent-workspace-runtime-bridge-bootstrap",
+    name: "agent-workspace-session-id-runtime-bootstrap",
     transformIndexHtml(html: string) {
-      return html.replace(
-        '<meta name="agent-workspace-runtime-bridge-token" content="" />',
-        `<meta name="agent-workspace-runtime-bridge-token" content="${escapeHtmlAttribute(token)}" />`,
-      );
+      return html
+        .replace(
+          '<meta name="agent-workspace-runtime-bridge-token" content="" />',
+          `<meta name="agent-workspace-runtime-bridge-token" content="${escapeHtmlAttribute(token ?? "")}" />`,
+        )
+        .replace(
+          '<meta name="agent-workspace-owner-id" content="" />',
+          `<meta name="agent-workspace-owner-id" content="${escapeHtmlAttribute(ownerId)}" />`,
+        );
     },
   };
+}
+
+function runtimeTarget(urlValue: string | undefined, portValue: string | undefined): string | undefined {
+  const configured = nonEmptyText(urlValue);
+  if (configured) {
+    const url = new URL(configured);
+    if ((url.protocol !== "http:" && url.protocol !== "https:")
+      || url.username || url.password || url.search || url.hash) {
+      throw new Error("session_id_runtime_url_invalid");
+    }
+    url.pathname = url.pathname.replace(/\/+$/u, "");
+    return url.toString().replace(/\/$/u, "");
+  }
+  const port = Number(portValue);
+  return Number.isSafeInteger(port) && port >= 1 && port <= 65_535
+    ? `http://127.0.0.1:${port}`
+    : undefined;
+}
+
+function nonEmptyText(value: string | undefined): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function escapeHtmlAttribute(value: string): string {

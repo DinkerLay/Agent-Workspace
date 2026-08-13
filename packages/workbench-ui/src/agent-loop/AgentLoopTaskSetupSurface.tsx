@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AcpProfileReadinessObservation } from "@agent-workspace/runtime-contracts";
+import { AgentLoopAcpProfileSummary } from "./AgentLoopAcpProfileSummary";
 import { AgentLoopMetaPanel, type AgentLoopMetaPanelController } from "./AgentLoopMetaPanel";
 
 export type AgentLoopTaskSetupSchemaField = Readonly<{
@@ -10,6 +12,32 @@ export type AgentLoopTaskSetupSchemaField = Readonly<{
   options?: readonly Readonly<{ optionId: string; label: string }>[];
   help?: string;
 }>;
+
+export type AgentLoopTaskSetupProfileOptionV2 = Readonly<{
+  /** Missing schemaVersion is historical schema-v2 input, never ACP authority. */
+  schemaVersion?: 2;
+  executionProfileId: string;
+  provider: string;
+  providerLabel: string;
+  model: string;
+  providerVersion?: string;
+  permissionMode: string;
+  requiredCapabilities: readonly string[];
+  readiness: "checking" | "available" | "unavailable" | "version_mismatch" | "capability_missing";
+  unavailableReasons: readonly string[];
+}>;
+
+export type AgentLoopTaskSetupProfileOptionV3 = Readonly<{
+  schemaVersion: 3;
+  executionProfileId: string;
+  permissionMode: "ask" | "preapproved" | "deny";
+  allowedTools: readonly string[];
+  requiredCapabilities: readonly string[];
+  requiredExtensions: readonly string[];
+  readiness: AcpProfileReadinessObservation;
+}>;
+
+export type AgentLoopTaskSetupProfileOption = AgentLoopTaskSetupProfileOptionV2 | AgentLoopTaskSetupProfileOptionV3;
 
 export type AgentLoopTaskSetupViewModel = Readonly<{
   draft: Readonly<{
@@ -30,17 +58,7 @@ export type AgentLoopTaskSetupViewModel = Readonly<{
     valid: boolean;
   }>;
   workspaces: readonly Readonly<{ workspaceId: string; displayName: string }>[];
-  profileOptions: readonly Readonly<{
-    executionProfileId: string;
-    provider: string;
-    providerLabel: string;
-    model: string;
-    providerVersion: string;
-    permissionMode: string;
-    requiredCapabilities: readonly string[];
-    readiness: "checking" | "available" | "unavailable" | "version_mismatch" | "capability_missing";
-    unavailableReasons: readonly string[];
-  }>[];
+  profileOptions: readonly AgentLoopTaskSetupProfileOption[];
 }>;
 
 export type AgentLoopTaskSetupDraftInput = Readonly<{
@@ -78,7 +96,8 @@ type SetupEditor = Readonly<{
 export function AgentLoopTaskSetupSurface({ controller, metaController, onBack, onCreated }: AgentLoopTaskSetupSurfaceProps) {
   const [view, setView] = useState<AgentLoopTaskSetupViewModel>();
   const [editor, setEditor] = useState<SetupEditor>();
-  const [metaVisible, setMetaVisible] = useState(Boolean(metaController));
+  const [metaVisible, setMetaVisible] = useState(false);
+  const [metaPlacement, setMetaPlacement] = useState<"floating" | "docked">("floating");
   const [busy, setBusy] = useState<"save" | "create" | "abandon">();
   const [error, setError] = useState<string>();
   const viewRef = useRef<AgentLoopTaskSetupViewModel | undefined>(undefined);
@@ -241,19 +260,23 @@ export function AgentLoopTaskSetupSurface({ controller, metaController, onBack, 
 
   if (!view || !editor) return <section aria-label="Task Setup" className="awb-agent-loop-task-setup-loading">正在读取 Task Setup Draft…</section>;
   const { draft } = view;
+  const metaAvailable = Boolean(metaController && draft.state === "draft");
+  const metaDocked = metaAvailable && metaVisible && metaPlacement === "docked";
+  const metaScope = { kind: "task_setup" as const, draftId: draft.taskSetupDraftId, draftRevision: draft.revision };
 
   return (
     <section aria-label="Task Setup" className="awb-agent-loop-task-setup-surface">
       <header className="awb-agent-loop-task-setup-head">
         <div><p className="awb-eyebrow">Configuration Draft</p><h1>Task Setup</h1><p>这里保存配置草稿；Create 和 Start 都是之后独立的用户动作。</p></div>
         <div className="awb-actions">
+          {metaAvailable && !metaVisible ? <button className="awb-button awb-button-secondary" data-testid="task-setup-meta-opener" disabled={Boolean(busy)} onClick={() => setMetaVisible(true)} type="button">AI 协助填写</button> : null}
           <button className="awb-button awb-button-secondary" disabled={Boolean(busy)} onClick={onBack} type="button">返回任务</button>
           <button className="awb-button awb-button-danger" disabled={Boolean(busy) || draft.state !== "draft"} onClick={() => void abandon()} type="button">放弃 Setup Draft</button>
         </div>
       </header>
       {error ? <p className="awb-agent-loop-form-error" role="alert">{error}</p> : null}
 
-      <div className="awb-agent-loop-task-setup-grid">
+      <div className={`awb-agent-loop-task-setup-grid ${metaDocked ? "has-meta-dock" : ""}`}>
         <section className="awb-agent-loop-task-setup-editor">
           <section aria-label="Immutable Template Version" className="awb-agent-loop-task-setup-version">
             <div><p className="awb-eyebrow">Exact immutable Version</p><h2>{draft.templateVersion.templateTitle} · v{draft.templateVersion.version}</h2></div>
@@ -261,12 +284,22 @@ export function AgentLoopTaskSetupSurface({ controller, metaController, onBack, 
           </section>
 
           <section aria-label="Execution Profile options" className="awb-agent-loop-task-setup-profiles">
-            <header><div><h2>Execution Profile options</h2><p>这些选项来自所选 Version；不可用项仍显示原因，不会 fallback。</p></div><span>{view.profileOptions.length}</span></header>
-            <div>{view.profileOptions.map((profile) => <article className={`is-${profile.readiness}`} key={profile.executionProfileId}>
-              <header><strong>{profile.providerLabel} · {profile.model}</strong><span>{profileReadinessLabel(profile.readiness)}</span></header>
-              <dl><div><dt>Version</dt><dd>{profile.providerVersion}</dd></div><div><dt>Permission</dt><dd>{profile.permissionMode}</dd></div><div><dt>Capabilities</dt><dd>{profile.requiredCapabilities.join(", ") || "none"}</dd></div></dl>
-              {profile.unavailableReasons.length ? <ul>{profile.unavailableReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
-            </article>)}</div>
+            <header><div><h2>Execution Profile options</h2><p>只显示 Host 投影的安全 ACP observation；不可用项保持可见，不会 fallback。</p></div><span>{view.profileOptions.length}</span></header>
+            <div>{view.profileOptions.map((profile) => isAcpTaskSetupProfile(profile)
+              ? <AgentLoopAcpProfileSummary
+                  allowedTools={profile.allowedTools}
+                  className="awb-agent-loop-task-setup-profile"
+                  key={profile.executionProfileId}
+                  permissionMode={profile.permissionMode}
+                  readiness={profile.readiness}
+                  requiredCapabilities={profile.requiredCapabilities}
+                  requiredExtensions={profile.requiredExtensions}
+                  title={`Execution Profile ${profile.executionProfileId}`}
+                />
+              : <article className="is-unavailable awb-agent-loop-task-setup-profile is-legacy" key={profile.executionProfileId}>
+                  <header><strong>{profile.providerLabel} · {profile.model}</strong><span>v2 历史只读</span></header>
+                  <p>该 direct-provider Profile 不能为新 Run 授权。需要在 Template Draft 中显式迁移到 Host-issued ACP Profile revision。</p>
+                </article>)}</div>
           </section>
 
           <section aria-label="Task Setup fields" className="awb-agent-loop-task-setup-form">
@@ -284,24 +317,32 @@ export function AgentLoopTaskSetupSurface({ controller, metaController, onBack, 
             <span>{dirty ? "有尚未保存的修改" : `已保存 Draft r${draft.revision}`}</span>
             <div>
               <button className="awb-button awb-button-secondary" disabled={Boolean(busy) || !dirty || !locallyValid} onClick={() => void save()} type="button">{busy === "save" ? "保存中…" : "保存 Setup Draft"}</button>
-              <button className="awb-button awb-button-primary" disabled={!canCreate} onClick={() => void createTask()} type="button">{busy === "create" ? "创建中…" : "创建 Task"}</button>
+              <button className="awb-button awb-button-primary" data-testid="task-create" disabled={!canCreate} onClick={() => void createTask()} type="button">{busy === "create" ? "创建中…" : "创建 Task"}</button>
             </div>
           </footer>
         </section>
 
-        <section className="awb-agent-loop-task-setup-meta-column">
-          {metaController && metaVisible ? <AgentLoopMetaPanel
+        {metaController && metaDocked ? <section className="awb-agent-loop-task-setup-meta-column">
+          <AgentLoopMetaPanel
             controller={metaController}
             draftDirty={dirty}
             onClose={() => setMetaVisible(false)}
-            onDockChange={() => undefined}
+            onDockChange={setMetaPlacement}
             onPatchApplied={async () => { await load(); }}
             placement="docked"
-            placementLocked
-            scope={{ kind: "task_setup", draftId: draft.taskSetupDraftId, draftRevision: draft.revision }}
-          /> : <section className="awb-agent-loop-task-setup-meta-empty"><h2>Meta Agent</h2><p>Meta 只读取这个 Task Setup Draft，不会创建或启动 Task。</p>{metaController ? <button className="awb-button awb-button-secondary" onClick={() => setMetaVisible(true)} type="button">打开 Meta panel</button> : <span>Meta controller 尚未接入 Runtime。</span>}</section>}
-        </section>
+            scope={metaScope}
+          />
+        </section> : null}
       </div>
+      {metaController && metaAvailable && metaVisible && metaPlacement === "floating" ? <AgentLoopMetaPanel
+        controller={metaController}
+        draftDirty={dirty}
+        onClose={() => setMetaVisible(false)}
+        onDockChange={setMetaPlacement}
+        onPatchApplied={async () => { await load(); }}
+        placement="floating"
+        scope={metaScope}
+      /> : null}
     </section>
   );
 }
@@ -335,16 +376,12 @@ function fieldValuePresent(value: string | undefined): boolean {
   return Boolean(value?.trim());
 }
 
-function profileReadinessLabel(readiness: AgentLoopTaskSetupViewModel["profileOptions"][number]["readiness"]): string {
-  switch (readiness) {
-    case "available": return "可用";
-    case "checking": return "检查中";
-    case "version_mismatch": return "版本不匹配";
-    case "capability_missing": return "能力缺失";
-    case "unavailable": return "不可用";
-  }
-}
-
 function messageFor(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function isAcpTaskSetupProfile(
+  profile: AgentLoopTaskSetupProfileOption,
+): profile is AgentLoopTaskSetupProfileOptionV3 {
+  return profile.schemaVersion === 3;
 }

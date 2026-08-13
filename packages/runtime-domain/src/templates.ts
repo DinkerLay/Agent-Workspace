@@ -1,14 +1,15 @@
 import {
   hashDefinition,
-  type TemplateDefinition,
+  type TemplateDefinitionSnapshot,
   type TemplateDraftRecord,
   type TemplateDraftMetadata,
   type TemplateId,
-  type TemplatePackage,
+  type TemplatePackageSnapshot,
   type TemplateRecord,
   type TemplateVersionId,
   type TemplateVersionRecord,
-  validateTemplateDefinition,
+  validateTemplateDefinitionSnapshot,
+  validateTemplatePackageSnapshot,
 } from "../../runtime-contracts/src";
 import { assertExpectedRevision, invariant } from "./errors";
 
@@ -17,13 +18,13 @@ export interface CreateTemplateDraftInput {
   readonly templateId?: TemplateId;
   readonly baseTemplateVersionId?: TemplateVersionId;
   readonly metadata: TemplateDraftMetadata;
-  readonly definition: TemplateDefinition;
+  readonly definition: TemplateDefinitionSnapshot;
   readonly ownerId: string;
   readonly now: string;
 }
 
 export function createTemplateDraft(input: CreateTemplateDraftInput): TemplateDraftRecord {
-  validateTemplateDefinition(input.definition);
+  validateTemplateDefinitionSnapshot(input.definition);
   validateDraftMetadata(input.metadata);
   invariant(input.templateDraftId.startsWith("template_draft_"), "template_draft_id_invalid");
   invariant(Boolean(input.ownerId.trim()), "template_draft_owner_required");
@@ -45,13 +46,13 @@ export function saveTemplateDraft(
   draft: TemplateDraftRecord,
   expectedRevision: number,
   metadata: TemplateDraftMetadata,
-  definition: TemplateDefinition,
+  definition: TemplateDefinitionSnapshot,
   now: string,
 ): TemplateDraftRecord {
   invariant(draft.status === "editing", "template_draft_not_editable");
   assertExpectedRevision(draft.revision, expectedRevision);
   validateDraftMetadata(metadata);
-  validateTemplateDefinition(definition);
+  validateTemplateDefinitionSnapshot(definition);
   return { ...draft, metadata, definition, revision: draft.revision + 1, updatedAt: now };
 }
 
@@ -107,7 +108,7 @@ export function publishTemplateDraft(input: PublishTemplateDraftInput): PublishT
   invariant(!template.archivedAt, "template_archived");
   invariant(!draft.templateId || draft.templateId === template.templateId, "template_draft_identity_mismatch");
   invariant(input.templateVersionId.startsWith("template_version_"), "template_version_id_invalid");
-  validateTemplateDefinition(draft.definition);
+  validateTemplateDefinitionSnapshot(draft.definition);
   const existing = input.existingVersions.filter((version) => version.templateId === template.templateId);
   const versionNumber = Math.max(0, ...existing.map((version) => version.version)) + 1;
   const definitionHash = hashDefinition(draft.definition as unknown as import("../../runtime-contracts/src").JsonValue);
@@ -146,10 +147,10 @@ export function archiveTemplate(template: TemplateRecord, expectedRevision: numb
   return { ...template, archivedAt: now, revision: template.revision + 1, updatedAt: now };
 }
 
-export function templateVersionToPackage(template: TemplateRecord, version: TemplateVersionRecord): TemplatePackage {
+export function templateVersionToPackage(template: TemplateRecord, version: TemplateVersionRecord): TemplatePackageSnapshot {
   invariant(version.templateId === template.templateId, "template_version_identity_mismatch");
-  return {
-    schemaVersion: 2,
+  return validateTemplatePackageSnapshot({
+    schemaVersion: version.definition.schemaVersion,
     kind: "agent-workspace/template",
     template: {
       templateId: template.templateId,
@@ -160,5 +161,5 @@ export function templateVersionToPackage(template: TemplateRecord, version: Temp
       definitionHash: version.definitionHash,
     },
     definition: version.definition,
-  };
+  });
 }

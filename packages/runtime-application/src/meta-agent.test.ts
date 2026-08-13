@@ -26,7 +26,11 @@ describe("Meta Agent readiness registry", () => {
     expect(JSON.stringify(registry.readiness(profile))).not.toContain("supersecret");
 
     port.syncFailure = undefined;
-    await expect(registry.probe(profile, { force: true })).resolves.toEqual({ state: "available" });
+    await expect(registry.probe(profile, { force: true })).resolves.toEqual({
+      state: "available",
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
+    });
     expect(port.probes).toBe(2);
   });
 
@@ -44,8 +48,67 @@ describe("Meta Agent readiness registry", () => {
     expect(registry.readiness(profile)).toEqual({
       state: "unavailable",
       reason: "meta_agent_capability_unavailable",
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
     });
     expect(JSON.stringify(registry.readiness(profile))).not.toContain("supersecret");
+  });
+
+  it("projects the current Host observation and fails closed when an available report omits it", async () => {
+    const port = new ReadinessMetaAgent();
+    port.report = {
+      ...matchingMetaReport(),
+      providerVersion: "9.9.9-current",
+      protocolFingerprint: "sha256:current-meta-protocol",
+    };
+    const registry = createMetaAgentRegistry([port]);
+
+    await expect(registry.probe(profile)).resolves.toEqual({
+      state: "available",
+      observedProviderVersion: "9.9.9-current",
+      observedProtocolFingerprint: "sha256:current-meta-protocol",
+    });
+
+    port.report = {
+      provider: "codex",
+      available: true,
+      unavailableReasons: [],
+    };
+    await expect(registry.probe(profile, { force: true })).resolves.toEqual({
+      state: "unavailable",
+      reason: "meta_agent_capability_observation_missing",
+    });
+  });
+
+  it("treats Profile version fields as legacy metadata and preserves a safe structural qualification reason", async () => {
+    const port = new ReadinessMetaAgent();
+    port.report = {
+      provider: "codex",
+      available: false,
+      providerVersion: "0.147.0",
+      protocolFingerprint: `sha256:${"7".repeat(64)}`,
+      unavailableReasons: ["codex_meta_builtin_tools_not_structurally_disableable"],
+    };
+    const registry = createMetaAgentRegistry([port]);
+
+    await expect(registry.probe(profile)).resolves.toEqual({
+      state: "unavailable",
+      reason: "codex_meta_builtin_tools_not_structurally_disableable",
+      observedProviderVersion: "0.147.0",
+      observedProtocolFingerprint: `sha256:${"7".repeat(64)}`,
+    });
+    port.report = { ...port.report, available: true, unavailableReasons: [] };
+    await expect(registry.probe({
+      ...profile,
+      providerVersion: "another-legacy-value",
+      protocolFingerprint: `sha256:${"8".repeat(64)}`,
+    })).resolves.toEqual({
+      state: "unavailable",
+      reason: "codex_meta_builtin_tools_not_structurally_disableable",
+      observedProviderVersion: "0.147.0",
+      observedProtocolFingerprint: `sha256:${"7".repeat(64)}`,
+    });
+    expect(port.probes).toBe(1);
   });
 
   it("bounds a hung probe and permits a later forced recovery", async () => {
@@ -58,7 +121,11 @@ describe("Meta Agent readiness registry", () => {
       reason: "meta_agent_capability_probe_failed",
     });
     port.hang = false;
-    await expect(registry.probe(profile, { force: true })).resolves.toEqual({ state: "available" });
+    await expect(registry.probe(profile, { force: true })).resolves.toEqual({
+      state: "available",
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
+    });
     expect(port.probes).toBe(2);
   });
 
@@ -70,11 +137,17 @@ describe("Meta Agent readiness registry", () => {
     port.report = { ...matchingMetaReport(), available: false, unavailableReasons: ["changed"] };
 
     nowMs += 99;
-    await expect(registry.probe(profile)).resolves.toEqual({ state: "available" });
+    await expect(registry.probe(profile)).resolves.toEqual({
+      state: "available",
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
+    });
     nowMs += 1;
     await expect(registry.probe(profile)).resolves.toEqual({
       state: "unavailable",
       reason: "meta_agent_capability_unavailable",
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
     });
 
     port.report = matchingMetaReport();
@@ -82,10 +155,16 @@ describe("Meta Agent readiness registry", () => {
     const changedModel = { ...profile, model: `${profile.model}-changed` };
     port.report = { ...matchingMetaReport(), available: false, unavailableReasons: [] };
     await registry.probe(changedModel, { force: true });
-    expect(registry.readiness(profile)).toEqual({ state: "available" });
+    expect(registry.readiness(profile)).toEqual({
+      state: "available",
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
+    });
     expect(registry.readiness(changedModel)).toEqual({
       state: "unavailable",
       reason: "meta_agent_capability_unavailable",
+      observedProviderVersion: profile.providerVersion,
+      observedProtocolFingerprint: profile.protocolFingerprint,
     });
   });
 });

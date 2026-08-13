@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { WorkspaceDirectoryResolver } from "@agent-workspace/runtime-application";
@@ -9,6 +10,9 @@ import type { WorkspaceDirectoryResolver } from "@agent-workspace/runtime-applic
  */
 export function createNodeWorkspaceDirectoryResolver(): WorkspaceDirectoryResolver {
   return {
+    digestGrant(grant) {
+      return `sha256:${createHash("sha256").update(JSON.stringify(grant)).digest("hex")}`;
+    },
     async canonicalizeDirectory(directory) {
       if (typeof directory !== "string" || !directory.trim()) {
         throw new Error("workspace_directory_required");

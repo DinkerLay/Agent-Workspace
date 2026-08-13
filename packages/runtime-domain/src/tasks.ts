@@ -2,16 +2,23 @@ import type {
   ArchitectureSnapshotId,
   LogicalSessionId,
   TaskArchitectureSnapshot,
+  TaskArchitectureSnapshotV2,
+  TaskArchitectureSnapshotV3,
   TaskId,
   TaskRecord,
   TaskRunId,
   TaskRunRecord,
   TemplateVersionRecord,
   WorkspaceReference,
+  WorkspaceReferenceV3,
   LogicalSessionRecord,
   TaskInputValue,
 } from "../../runtime-contracts/src";
-import { hashDefinition } from "../../runtime-contracts/src";
+import {
+  hashDefinition,
+  validateTaskArchitectureSnapshotV3,
+  validateTemplateDefinitionV3,
+} from "../../runtime-contracts/src";
 import { assertExpectedRevision, invariant } from "./errors";
 
 export function createTaskArchitectureSnapshot(input: {
@@ -24,7 +31,7 @@ export function createTaskArchitectureSnapshot(input: {
   readonly taskGoalCompilerVersion: "task-goal/v1";
   readonly workspace: WorkspaceReference;
   readonly now: string;
-}): TaskArchitectureSnapshot {
+}): TaskArchitectureSnapshotV2 {
   invariant(input.architectureSnapshotId.startsWith("architecture_"), "architecture_snapshot_id_invalid");
   invariant(input.taskId.startsWith("task_"), "task_id_invalid");
   invariant(input.workspace.workspaceId.startsWith("workspace_"), "workspace_id_invalid");
@@ -32,6 +39,7 @@ export function createTaskArchitectureSnapshot(input: {
   invariant(input.taskGoalContent.endsWith("\n") && !input.taskGoalContent.endsWith("\n\n"), "task_goal_content_invalid");
   invariant(input.taskGoalCompilerVersion === "task-goal/v1", "task_goal_compiler_version_invalid");
   invariant(hashDefinition(input.taskGoalContent) === input.taskGoalContentDigest, "task_goal_content_digest_mismatch");
+  invariant(input.templateVersion.definition.schemaVersion === 2, "task_architecture_v2_definition_required");
   return {
     architectureSnapshotId: input.architectureSnapshotId,
     taskId: input.taskId,
@@ -46,6 +54,40 @@ export function createTaskArchitectureSnapshot(input: {
     workspace: input.workspace,
     createdAt: input.now,
   };
+}
+
+/** New Tasks freeze only the portable ACP v3 definition and an opaque Workspace grant. */
+export function createTaskArchitectureSnapshotV3(input: {
+  readonly architectureSnapshotId: ArchitectureSnapshotId;
+  readonly taskId: TaskId;
+  readonly templateVersion: TemplateVersionRecord;
+  readonly taskInputValues: readonly TaskInputValue[];
+  readonly taskTitle: string;
+  readonly taskGoal: string;
+  readonly taskGoalContent: string;
+  readonly taskGoalContentDigest: string;
+  readonly taskGoalCompilerVersion: "task-goal/v1";
+  readonly workspace: WorkspaceReferenceV3;
+  readonly now: string;
+}): TaskArchitectureSnapshotV3 {
+  const definition = validateTemplateDefinitionV3(input.templateVersion.definition);
+  return validateTaskArchitectureSnapshotV3({
+    schemaVersion: 3,
+    architectureSnapshotId: input.architectureSnapshotId,
+    taskId: input.taskId,
+    templateId: input.templateVersion.templateId,
+    templateVersionId: input.templateVersion.templateVersionId,
+    templateDefinitionHash: input.templateVersion.definitionHash,
+    definition,
+    taskInputValues: input.taskInputValues,
+    taskTitle: input.taskTitle,
+    taskGoal: input.taskGoal,
+    taskGoalContent: input.taskGoalContent,
+    taskGoalContentDigest: input.taskGoalContentDigest,
+    taskGoalCompilerVersion: input.taskGoalCompilerVersion,
+    workspace: input.workspace,
+    createdAt: input.now,
+  });
 }
 
 export function createTask(input: {
@@ -184,7 +226,11 @@ export function createCardLogicalSession(input: {
 export function achieveTask(input: {
   readonly task: TaskRecord;
   readonly expectedRevision: number;
-  readonly acceptedArtifactIds: readonly string[];
+  readonly fileStateAnchor?: Readonly<{
+    workspaceRelativePath: string;
+    observedDigest: string;
+    label?: string;
+  }>;
   readonly acceptanceNote?: string;
   readonly now: string;
 }): TaskRecord {
@@ -196,7 +242,7 @@ export function achieveTask(input: {
     ...input.task,
     achievement: {
       achievedAt: input.now,
-      acceptedArtifactIds: [...input.acceptedArtifactIds],
+      ...(input.fileStateAnchor ? { fileStateAnchor: { ...input.fileStateAnchor } } : {}),
       ...(acceptanceNote ? { acceptanceNote } : {}),
     },
     revision: input.task.revision + 1,
@@ -206,7 +252,7 @@ export function achieveTask(input: {
 
 /**
  * Recycle-bin retention preserves the original Task, Runs, native bindings and
- * verified Artifacts. It is intentionally not a Provider-derived lifecycle or
+ * Workspace observation anchors. It is intentionally not a Provider-derived lifecycle or
  * completion state: only a user's explicit Achieve makes a Task recyclable.
  */
 export function archiveTask(input: {

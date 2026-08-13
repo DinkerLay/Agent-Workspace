@@ -1,21 +1,29 @@
 # Agent Workspace
 
-Agent Workspace 是 local-first、有人监督、可恢复的多 Agent 工作台。它不是任何一个 CLI 的
-Web UI：不可变 Template Version 生成冻结的 Task Architecture，统一 Runtime 再协调 Task、Run、
-Logical Session、Provider Binding、输入、Invocation、事实、产物与用户验收。
+Agent Workspace 是 local-first、有人监督、可恢复的多 Agent 工作台。不可变 Template Version 生成冻结的 Task
+Architecture，统一 Runtime 协调 Task、Run、Card Session Slot / LogicalSession、Message / Inbox / Turn、
+Files & Changes 与用户验收。
+
+目标 Provider 边界是 ACP-first、production ACP-only：
 
 ```text
 AgentLoop Renderer (Web / Electron)
-  -> RuntimeClient (IPC or authenticated HTTP/WSS)
-  -> Runtime Host (SQLite, lifecycle, outbox, artifact service)
-  -> ProviderPort -> OpenCode | Codex | Claude Code
+  -> RuntimeClient (IPC or authenticated HTTP(S)/WS(S))
+  -> Runtime Host
+  -> Orchestration Runtime（per TaskRun）
+  -> Session Runtime（per LogicalSession）
+  -> ACP Client -> ACP Agent
+  -> current installed OpenCode / Codex / Claude Agent runtime
 ```
 
-当前权威产品目标是 Runtime-backed AgentLoop：任务三栏、Task Setup、Task-local Session Tabs、统一 Chat、
-Session Presentation、Timeline、Template Studio、配置期 Meta Agent、已完成与回收站。用户可明确向 Card
-发送内容；Runtime 记录 HumanIntervention、全文同步给 Conductor，busy Card 只允许 interrupt-then-send。
-它不嵌入 OpenCode WebUI，不直接调用 Provider，不持有 PTY、SQLite、本地文件系统、Provider credential
-或原生 Session identity。
+Agent Workspace 不直接调用 OpenCode REST、Codex App Server、Claude stream-json 或 Provider SDK；这些细节只允许
+存在于独立 ACP Agent/wrapper 内。当前代码仍处于 direct→ACP cutover：统一 Task/Run/UI kernel 可复用，但 ACP Client、
+Profile resolution、raw-ID隔离、Task/Meta composition与新release matrix尚未全部落地。因此旧native diagnostics和
+direct-provider release bundle不能作为当前完成证据。
+
+Conductor公开编排面仍只有四个动作：`invoke_agent(agentCardId)`、`send_to_session(sessionId, payload)`、
+`interrupt_session(sessionId)`、`close_session(sessionId)`。Meta是配置期Draft assistant；Achieve只能由用户显式
+触发，且不自动Stop。
 
 ## Start
 
@@ -24,21 +32,35 @@ pnpm start       # Runtime Host + formal AgentLoop + Electron
 pnpm start:web   # 同一 Runtime Host + formal AgentLoop browser surface
 ```
 
-`./start.sh` 和 `npm start` 与 `pnpm start` 相同。正式 Browser surface 默认使用
-`http://127.0.0.1:5188`；若端口已被占用，启动器会选择下一个可用端口并打印地址。
+`./start.sh`和`npm start`与`pnpm start`相同。切换完成前，正式入口仍可能在Host内发现旧direct composition；这不代表
+ACP Provider已接通。不得为绕过ACP capability缺失恢复fallback或第二套UI。
 
-Provider 只在 Host 注册，并必须匹配固定版本、protocol fingerprint 与已验证 capability。当前只有
-锁定的 Codex App Server 完成 managed-core native lifecycle evidence；OpenCode/Claude Code Profile
-可编辑、导入和分享，但 Host 会拒绝启动未证明核心 Stop/recovery 语义的 Profile。
+## Provider与版本原则
+
+OpenCode和Codex必须分别作为真实ACP Task Profile通过当前安装的discovery、`initialize`协商、managed lifecycle与所需
+role capability的live qualification。一个Provider不能替另一个出证；“OpenCode Task + Codex companion”不再满足
+双Provider完成口径。Meta使用独立ACP Profile/process/no-tool权限域。
+
+Template/Profile只保存portable requirement：Provider family、ACP Agent kind、protocol major、model/config intent、
+required capabilities与permission policy。Host每个Binding/generation解析当前安装并生成`LocalResolutionSeal`与
+process-local `ACPQualification`。observed version/hash/fingerprint只用于本次运行的drift fence，不是仓库allowlist；
+安装更新后重新discovery/qualification即可重新available。
+
+raw ACP session/request/option/tool ID、absolute cwd、credential与wire payload只留在Host-private map。Domain、SQLite、
+ProviderFact、UI和evidence只使用Workspace opaque ID与脱敏observation。
 
 ## Source of truth
 
-- [Architecture](docs/architecture.md)：唯一产品、状态、目录、Provider、Web/Desktop 边界与测试真相。
-- [Implementation plan](docs/implementation-plan.md)：唯一可执行计划与剩余 gate。
-- [Documentation entry point](docs/README.md)：当前文档与 VCS 历史边界。
+- [Architecture](docs/architecture.md)：唯一产品、owner、OR/SR、ACP、Host、Web/Desktop与验证真相；Section 4.0记录
+  ACP-first原型差异决议。
+- [Implementation plan](docs/implementation-plan.md)：唯一ACP cutover执行计划、当前phase与逐Phase代码迁移账本。
+- [Documentation entry point](docs/README.md)：文档边界与当前实现状态。
 
-历史设计、旧 OpenCode-only lifecycle、旧 PTY/Orca shell、旧 WebUI 和 mockup 已从 working tree 移除；
-需要历史证据时只从 VCS 恢复，不能重新作为 compatibility 输入。
+操作说明受上述权威约束：
+
+- [Runtime Host Provider configuration](apps/runtime-host/PROVIDER_CONFIGURATION.md)
+- [Integration evidence](tests/integration/README.md)
+- [Actual-operation journeys](tests/journeys/README.md)
 
 ## Layout
 
@@ -46,30 +68,37 @@ Provider 只在 Host 注册，并必须匹配固定版本、protocol fingerprint
 apps/
   workbench/       formal AgentLoop Web/Electron Renderer
   desktop/         Electron main/preload/Host supervisor
-  runtime-host/    Host composition, SQLite, auth, Provider registration
+  runtime-host/    Host composition, SQLite, ACP resolution/process/auth
 packages/
   runtime-contracts/ runtime-client/ runtime-domain/ runtime-application/
-  runtime-store/ provider-port/ provider-opencode/ provider-codex/
-  provider-claude-code/ conductor-tools/ workbench-ui/ test-kit/
+  runtime-store/ provider-port/ provider-acp/ conductor-tools/ workbench-ui/ test-kit/
 tests/
-  contracts/ integration/ e2e/
+  contracts/ integration/ e2e/ journeys/
 ```
 
-Templates live in Runtime SQLite as Draft, immutable Version and archive metadata. Explicit
-`.agent-template.yaml` / `.agent-template.zip` files are one-way import/export packages for sharing,
-not a watched second writer. The Template Studio lets a user manually edit each execution profile's
-Provider, model, pin, permission mode and capability policy before publishing a new immutable Version.
+`provider-acp/`是计划中的唯一production Provider实现；在相应phase落地前该路径可以尚不存在。现有
+`provider-opencode`、`provider-codex`、`provider-claude-code`与Host direct bridges是atomic cutover后的删除目标，
+不是并存架构。
 
 ## Verify
 
+文档/静态阶段可运行：
+
 ```bash
 npm run typecheck
-npm test
-npm run test:contracts
+npm run test:vitest
+npm run test:desktop
 npm run test:integration
 npm run test:e2e
-npm run verify
+npm run test:formal-dev-launcher
+npm run verify:session-id-cutover
+git diff --check
 ```
 
-Runtime machine data is in `.agent-workspace-v2/` and ignored by Git. Do not delete it, Provider
-state, credentials or workspace files without a separate path-specific recovery decision.
+`npm run verify:release`仍是未来唯一aggregate release claim，但在ACP-only production graph、OpenCode ACP、Codex ACP、
+独立ACP Meta和fresh matrix完成前必须fail closed，不能运行旧direct native cell得到exit 0。新matrix的cell数在实现时
+重新冻结，不继承旧26；缺当前wrapper/credential/capability时退出`2 / BLOCKED_CAPABILITY`，assertion失败退出1，
+只有同一次fresh ACP bundle全部required PASS才退出0。
+
+Runtime machine data位于`.agent-workspace-v2/`且被Git忽略。没有单独、path-specific恢复决定时，不得删除它、Provider
+state、credential或Workspace文件。

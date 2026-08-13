@@ -13,7 +13,7 @@ import { providerFactDedupKey } from "../../src/index.mjs";
 
 export function registerProviderAdapterContractSuite({ describe, it, assert, providerName, createFixture }) {
   describe(`${providerName} Provider Adapter contract`, () => {
-    it("gates every operation on the frozen provider/version/schema profile", async () => {
+    it("treats version observations as evidence while gating provider identity and capabilities", async () => {
       const fixture = createFixture();
       const available = await fixture.adapter.describeCapabilities(fixture.profile);
       assert.equal(available.available, true);
@@ -22,13 +22,25 @@ export function registerProviderAdapterContractSuite({ describe, it, assert, pro
 
       const staleProfile = {
         ...fixture.profile,
+        providerVersion: "profile-version-that-does-not-match-live-transport",
         protocolFingerprint: "sha256:wrong-schema",
       };
-      const unavailable = await fixture.adapter.describeCapabilities(staleProfile);
+      const observed = await fixture.adapter.describeCapabilities(staleProfile);
+      assert.equal(observed.available, true);
+      assert.equal(observed.providerVersion, available.providerVersion);
+      assert.equal(observed.protocolFingerprint, available.protocolFingerprint);
+      assert.deepEqual(observed.unavailableReasons, []);
+      await fixture.adapter.ensureBinding(fixture.bindingRequest({ executionProfile: staleProfile }));
+
+      const wrongProviderProfile = {
+        ...fixture.profile,
+        provider: fixture.profile.provider === "codex" ? "opencode" : "codex",
+      };
+      const unavailable = await fixture.adapter.describeCapabilities(wrongProviderProfile);
       assert.equal(unavailable.available, false);
-      assert.ok(unavailable.unavailableReasons.includes("execution_profile_protocolFingerprint_mismatch"));
+      assert.ok(unavailable.unavailableReasons.includes("execution_profile_provider_mismatch"));
       await assert.rejects(
-        fixture.adapter.ensureBinding(fixture.bindingRequest({ executionProfile: staleProfile })),
+        fixture.adapter.ensureBinding(fixture.bindingRequest({ executionProfile: wrongProviderProfile })),
         (error) => error?.code === "provider_unavailable",
       );
 
@@ -114,7 +126,6 @@ export function registerProviderAdapterContractSuite({ describe, it, assert, pro
           bindingRevision: 1,
           nativeRequestId: "native-request-1",
           inputSubmissionId: "input-1",
-          invocationId: "invocation-1",
         },
       })]);
       for await (const _fact of fixture.adapter.observeBinding(fixture.bindingRequest())) {
@@ -128,7 +139,6 @@ export function registerProviderAdapterContractSuite({ describe, it, assert, pro
         bindingRevision: 2,
         nativeRequestId: "native-request-1",
         activeInputSubmissionId: "input-1",
-        activeInvocationId: "invocation-1",
       });
       assert.equal(stale.kind, "respond_attention");
       assert.equal(stale.acceptance, "rejected");
@@ -141,7 +151,6 @@ export function registerProviderAdapterContractSuite({ describe, it, assert, pro
         bindingRevision: 1,
         nativeRequestId: "native-request-1",
         activeInputSubmissionId: "input-1",
-        activeInvocationId: "invocation-1",
       });
       assert.equal(current.acceptance, "accepted");
       assert.equal(fixture.transport.calls.filter((call) => call.operation === "respond_attention").length, 1);
@@ -152,18 +161,17 @@ export function registerProviderAdapterContractSuite({ describe, it, assert, pro
       const interrupt = await fixture.adapter.requestInterrupt({
         ...fixture.bindingRequest(),
         idempotencyKey: "interrupt-1",
-        invocationId: "invocation-1",
       });
       assert.equal(interrupt.kind, "request_interrupt");
       assert.equal(interrupt.acceptance, "accepted");
 
       fixture.transport.setReconciliation("binding-1", [fixture.nativeFact("interruptUnknown", {
         eventId: "interrupt-unknown-1",
-        invocationId: "invocation-1",
+        inputSubmissionId: "input-1",
       })]);
       const [fact] = await fixture.adapter.reconcileBinding(fixture.bindingRequest());
       assert.equal(fact.kind, "transport_unknown");
-      assert.equal(fact.correlation.invocationId, "invocation-1");
+      assert.equal(fact.correlation.inputSubmissionId, "input-1");
       assert.notEqual(fact.kind, "interrupt_confirmed");
     });
 

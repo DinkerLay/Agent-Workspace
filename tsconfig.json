@@ -23,9 +23,9 @@
       "@agent-workspace/runtime-store": ["packages/runtime-store/src/index.ts"],
       "@agent-workspace/runtime-client": ["packages/runtime-client/src/index.ts"],
       "@agent-workspace/provider-port": ["packages/provider-port/src/index.ts"],
-      "@agent-workspace/provider-opencode": ["packages/provider-opencode/src/index.ts"],
-      "@agent-workspace/provider-codex": ["packages/provider-codex/src/index.ts"],
-      "@agent-workspace/provider-claude-code": ["packages/provider-claude-code/src/index.ts"],
+      "@agent-workspace/provider-acp/host-private": ["packages/provider-acp/src/host-private.ts"],
+      "@agent-workspace/provider-acp/test-support": ["packages/provider-acp/src/fake-agent.ts"],
+      "@agent-workspace/provider-acp": ["packages/provider-acp/src/index.ts"],
       "@agent-workspace/conductor-tools": ["packages/conductor-tools/src/index.ts"],
       "@agent-workspace/workbench-ui": ["packages/workbench-ui/src/index.ts"],
       "@agent-workspace/test-kit": ["packages/test-kit/src/index.ts"]

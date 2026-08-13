@@ -1,30 +1,19 @@
 import type {
   AgentCardId,
   ArchitectureSnapshotId,
-  ArtifactId,
-  AsyncOperationId,
   AttentionId,
   EvidenceReferenceId,
   ExecutionProfileId,
-  ForwardSelectionId,
-  HumanInterventionId,
   InputSubmissionId,
-  InvocationId,
   LogicalSessionId,
   MetaPatchProposalId,
   MetaMessageId,
   MetaProfileOptionId,
   MetaSessionId,
-  MessageForwardBatchId,
-  MessageForwardId,
   PresentationLeaseId,
   ProviderFactId,
-  ProviderHostId,
   ProviderSessionBindingId,
-  RelayBlockId,
   RuntimeCommandId,
-  SessionInboxItemId,
-  SessionMessageId,
   SessionTurnId,
   TaskId,
   TaskRunId,
@@ -37,12 +26,15 @@ import type {
 import { canonicalJson, hashDefinition, type JsonObject, type JsonValue } from "./json";
 import type {
   ExecutionProfileDefinition,
-  MetaProfileDefinition,
+  MetaProfileDefinitionV2,
+  MetaProfileDefinitionV3,
+  MetaProfileSnapshot,
   ProviderCapability,
   ProviderKind,
   TaskInputValue,
-  TemplateDefinition,
+  TemplateDefinitionSnapshot,
 } from "./templates";
+import type { TaskArchitectureSnapshotV3 } from "./task-architecture-v3";
 
 export type IsoTimestamp = string;
 
@@ -62,7 +54,7 @@ export interface TemplateVersionRecord {
   readonly templateVersionId: TemplateVersionId;
   readonly templateId: TemplateId;
   readonly version: number;
-  readonly definition: TemplateDefinition;
+  readonly definition: TemplateDefinitionSnapshot;
   readonly definitionHash: string;
   /** Always persisted by the Store; optional only for pre-store domain construction. */
   readonly assetManifestHash?: string;
@@ -87,7 +79,7 @@ export interface TemplateDraftRecord {
   readonly baseTemplateVersionId?: TemplateVersionId;
   /** Durable editing metadata for a not-yet-published Template identity. */
   readonly metadata: TemplateDraftMetadata;
-  readonly definition: TemplateDefinition;
+  readonly definition: TemplateDefinitionSnapshot;
   readonly status: "editing" | "published" | "discarded";
   readonly revision: number;
   readonly ownerId: string;
@@ -133,11 +125,11 @@ export type MetaTurnStatus =
   | "ambiguous"
   | "failed";
 
-export type MetaSessionRecord = Readonly<{
+export type MetaSessionRecordFor<Profile extends MetaProfileSnapshot> = Readonly<{
   metaSessionId: MetaSessionId;
   ownerId: string;
   metaProfileOptionId: MetaProfileOptionId;
-  metaProfile: MetaProfileDefinition;
+  metaProfile: Profile;
   state: MetaSessionState;
   revision: number;
   createdAt: IsoTimestamp;
@@ -146,6 +138,10 @@ export type MetaSessionRecord = Readonly<{
   | Readonly<{ mode: "template_design"; target: Extract<MetaSessionTarget, { kind: "template_draft" }> }>
   | Readonly<{ mode: "task_setup"; target: Extract<MetaSessionTarget, { kind: "task_setup_draft" }> }>
 );
+
+export type MetaSessionRecordV2 = MetaSessionRecordFor<MetaProfileDefinitionV2>;
+export type MetaSessionRecordV3 = MetaSessionRecordFor<MetaProfileDefinitionV3>;
+export type MetaSessionRecord = MetaSessionRecordV2 | MetaSessionRecordV3;
 
 export type MetaPatchOperation =
   | Readonly<{ kind: "template_metadata_set"; field: "title" | "slug" | "description"; value: string | null }>
@@ -176,14 +172,14 @@ export interface MetaMessageRecord {
   readonly createdAt: IsoTimestamp;
 }
 
-export interface MetaPatchProposalRecord {
+export interface MetaPatchProposalRecordFor<Profile extends MetaProfileSnapshot> {
   readonly metaPatchProposalId: MetaPatchProposalId;
   readonly metaSessionId: MetaSessionId;
   readonly ownerId: string;
   readonly mode: MetaSessionMode;
   readonly target: MetaSessionTarget;
   readonly sourceMetaProfileOptionId: MetaProfileOptionId;
-  readonly sourceMetaProfile: MetaProfileDefinition;
+  readonly sourceMetaProfile: Profile;
   readonly sourceMetaSessionRevision: number;
   readonly targetRevision: number;
   readonly operations: readonly MetaPatchOperation[];
@@ -197,6 +193,11 @@ export interface MetaPatchProposalRecord {
   readonly updatedAt: IsoTimestamp;
   readonly resolvedAt?: IsoTimestamp;
 }
+
+
+export type MetaPatchProposalRecordV2 = MetaPatchProposalRecordFor<MetaProfileDefinitionV2>;
+export type MetaPatchProposalRecordV3 = MetaPatchProposalRecordFor<MetaProfileDefinitionV3>;
+export type MetaPatchProposalRecord = MetaPatchProposalRecordV2 | MetaPatchProposalRecordV3;
 
 export interface WorkspaceReference {
   readonly workspaceId: WorkspaceId;
@@ -218,13 +219,13 @@ export interface WorkspaceAuthorizationRecord {
 }
 
 /** Frozen at Task creation; template edits never mutate this snapshot. */
-export interface TaskArchitectureSnapshot {
+export interface TaskArchitectureSnapshotV2 {
   readonly architectureSnapshotId: ArchitectureSnapshotId;
   readonly taskId: TaskId;
   readonly templateId: TemplateId;
   readonly templateVersionId: TemplateVersionId;
   readonly templateDefinitionHash: string;
-  readonly definition: TemplateDefinition;
+  readonly definition: Extract<TemplateDefinitionSnapshot, { readonly schemaVersion: 2 }>;
   readonly taskInputValues: readonly TaskInputValue[];
   readonly taskGoalContent: string;
   readonly taskGoalContentDigest: string;
@@ -232,6 +233,9 @@ export interface TaskArchitectureSnapshot {
   readonly workspace: WorkspaceReference;
   readonly createdAt: IsoTimestamp;
 }
+
+/** Durable snapshot union. v2 is historical/read-only; every new Task freezes v3. */
+export type TaskArchitectureSnapshot = TaskArchitectureSnapshotV2 | TaskArchitectureSnapshotV3;
 
 /** Runtime lifecycle only. User acceptance deliberately is not a lifecycle state. */
 export type TaskStatus = "queued" | "running" | "stopping" | "stopped" | "blocked";
@@ -242,7 +246,12 @@ export type TaskStatus = "queued" | "running" | "stopping" | "stopped" | "blocke
  */
 export interface TaskAchievement {
   readonly achievedAt: IsoTimestamp;
-  readonly acceptedArtifactIds: readonly ArtifactId[];
+  /** Session-ID acceptance copies one non-owning, previously observed file state. */
+  readonly fileStateAnchor?: Readonly<{
+    workspaceRelativePath: string;
+    observedDigest: string;
+    label?: string;
+  }>;
   readonly acceptanceNote?: string;
 }
 
@@ -255,7 +264,7 @@ export interface TaskRecord {
   /**
    * Recycle-bin retention is deliberately distinct from Task/Run lifecycle
    * and from the user's explicit Achieve decision. A trashed Task retains its
-   * immutable architecture, Run and verified Artifact records until an
+   * immutable architecture, Run and file observations until an
    * explicit restore or permanent-delete command.
    */
   readonly trashedAt?: IsoTimestamp;
@@ -298,305 +307,6 @@ export interface LogicalSessionRecord {
   readonly executionProfileId: ExecutionProfileId;
   readonly status: LogicalSessionStatus;
   readonly ordinal: number;
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-export type ProviderBindingStatus =
-  | "unbound"
-  | "binding_effect_accepted"
-  | "active"
-  | "recovering"
-  | "release_requested"
-  | "released"
-  | "unrecoverable";
-
-export interface ProviderSessionBindingRecord {
-  readonly bindingId: ProviderSessionBindingId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly logicalSessionId: LogicalSessionId;
-  readonly executionProfileId: ExecutionProfileId;
-  readonly provider: ProviderKind;
-  readonly providerHostId?: ProviderHostId;
-  /** Opaque native identity; Runtime code never derives an ID from it. */
-  readonly nativeBindingRef?: string;
-  readonly bindingRevision: number;
-  readonly status: ProviderBindingStatus;
-  readonly recoverable: boolean;
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-/**
- * The immutable collaboration content record. Provider facts and artifacts are
- * intentionally not substitutes for a SessionMessage: only this record is
- * routable between LogicalSessions.
- */
-export type SessionMessageKind =
-  | "task_goal"
-  | "user_input"
-  | "agent_assignment"
-  | "agent_final"
-  | "relay_forward"
-  | "publish_forward"
-  | "runtime_notice";
-
-export interface SessionMessageRecord {
-  readonly messageId: SessionMessageId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly sourceLogicalSessionId?: LogicalSessionId;
-  readonly sourceSessionTurnId?: SessionTurnId;
-  readonly sourceHumanInterventionId?: HumanInterventionId;
-  readonly invocationId?: InvocationId;
-  readonly kind: SessionMessageKind;
-  readonly content: string;
-  readonly contentDigest: string;
-  /** Present only on a deterministically compiled Task Goal Message. */
-  readonly taskGoalCompilerVersion?: "task-goal/v1";
-  readonly createdAt: IsoTimestamp;
-}
-
-export type RelayBlockFormat = "text/markdown" | "application/json";
-
-/** Character offsets are [start, end) in the original immutable Message text. */
-export interface RelayBlockSourceRange {
-  readonly start: number;
-  readonly end: number;
-}
-
-/** A deterministic, immutable extraction from one SessionMessage. */
-export interface RelayBlockRecord {
-  readonly relayBlockId: RelayBlockId;
-  readonly sourceMessageId: SessionMessageId;
-  /** Zero-based source order among valid blocks in the same Message. */
-  readonly ordinal: number;
-  /** Source-Agent suggestions only. They never grant visibility or trigger routing. */
-  readonly suggestedTargetAgentCardIds: readonly AgentCardId[];
-  readonly suggestedAudience?: "one" | "publish";
-  readonly topic?: string;
-  readonly format: RelayBlockFormat;
-  readonly content: string;
-  readonly contentDigest: string;
-  readonly parserVersion: number;
-  readonly sourceRange: RelayBlockSourceRange;
-  readonly createdAt: IsoTimestamp;
-}
-
-export type MessageForwardMode = "invoke" | "relay" | "publish";
-
-export interface MessageForwardSelectionRecord {
-  readonly forwardSelectionId: ForwardSelectionId;
-  readonly forwardId: MessageForwardId;
-  readonly ordinal: number;
-  readonly kind: "full_message" | "relay_block";
-  readonly sourceMessageId: SessionMessageId;
-  readonly relayBlockId?: RelayBlockId;
-  readonly contentDigest: string;
-}
-
-export interface MessageForwardRecord {
-  readonly forwardId: MessageForwardId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly commandId: RuntimeCommandId;
-  readonly idempotencyKey: string;
-  readonly expectedTaskRevision: number;
-  readonly publishBatchId?: MessageForwardBatchId;
-  readonly targetIdempotencyKey: string;
-  readonly decidedByLogicalSessionId: LogicalSessionId;
-  readonly decidedBySessionTurnId: SessionTurnId;
-  readonly targetLogicalSessionId: LogicalSessionId;
-  readonly mode: MessageForwardMode;
-  readonly selections: readonly MessageForwardSelectionRecord[];
-  readonly renderedMessageId: SessionMessageId;
-  readonly createdAt: IsoTimestamp;
-}
-
-export interface MessageForwardBatchRecord {
-  readonly publishBatchId: MessageForwardBatchId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly commandId: RuntimeCommandId;
-  readonly idempotencyKey: string;
-  readonly expectedTaskRevision: number;
-  readonly fanoutKey: string;
-  readonly decidedByLogicalSessionId: LogicalSessionId;
-  readonly decidedBySessionTurnId: SessionTurnId;
-  readonly targetLogicalSessionIds: readonly LogicalSessionId[];
-  readonly selectionDigest: string;
-  readonly state: "staged" | "materializing" | "settled" | "suppressed";
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-export type HumanInterventionMode = "direct" | "interrupt_then_send" | "attention_response" | "scoped_interrupt";
-export type HumanInterventionState = "requested" | "interrupting" | "awaiting_turn_close" | "ready_to_send" | "sent" | "failed" | "abandoned";
-
-export interface HumanInterventionRecord {
-  readonly humanInterventionId: HumanInterventionId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly commandId: RuntimeCommandId;
-  readonly idempotencyKey: string;
-  readonly expectedTaskRevision: number;
-  readonly targetLogicalSessionId: LogicalSessionId;
-  readonly content: string;
-  readonly contentDigest: string;
-  readonly affectedSessionTurnId?: SessionTurnId;
-  readonly affectedInvocationId?: InvocationId;
-  readonly mode: HumanInterventionMode;
-  readonly cardMessageId?: SessionMessageId;
-  readonly conductorMirrorMessageId?: SessionMessageId;
-  readonly state: HumanInterventionState;
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-export type SessionInboxItemState =
-  | "pending"
-  | "leased"
-  | "delivery_staged"
-  | "delivered"
-  | "ambiguous"
-  | "suppressed";
-
-/**
- * A durable delivery intention. It never contains Provider-native input or a
- * second copy of a Message body; the referenced immutable Message/blocks are
- * rendered only when an InputSubmission is staged.
- */
-export interface SessionInboxItemRecord {
-  readonly inboxItemId: SessionInboxItemId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly targetLogicalSessionId: LogicalSessionId;
-  readonly renderedMessageId: SessionMessageId;
-  readonly forwardId?: MessageForwardId;
-  readonly humanInterventionId?: HumanInterventionId;
-  readonly replyToLogicalSessionId?: LogicalSessionId;
-  readonly state: SessionInboxItemState;
-  /** Present only while a Coordinator owns a short-lived claim. */
-  readonly leaseId?: string;
-  readonly leaseExpiresAt?: IsoTimestamp;
-  /** The one durable input created from this Inbox item, if any. */
-  readonly deliveryInputSubmissionId?: InputSubmissionId;
-  readonly revision: number;
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-export type InputSubmissionStatus =
-  | "staged"
-  | "effect_accepted"
-  | "provider_received"
-  /** Provider has confirmed the associated native turn is actively executing. */
-  | "turn_active"
-  /** A terminal Provider fact made the Binding safe for the next Inbox item. */
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "provider_rejected"
-  | "ambiguous"
-  | "superseded";
-
-export interface InputSubmissionRecord {
-  readonly inputSubmissionId: InputSubmissionId;
-  /** Every current input originates in exactly one durable SessionInboxItem. */
-  readonly sourceInboxItemId: SessionInboxItemId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly logicalSessionId: LogicalSessionId;
-  readonly bindingId: ProviderSessionBindingId;
-  readonly contentMessageId: SessionMessageId;
-  readonly deliveryRole: "user";
-  readonly content: string;
-  readonly contentDigest: string;
-  readonly sequenceNumber: number;
-  readonly idempotencyKey: string;
-  readonly status: InputSubmissionStatus;
-  readonly providerEffectId?: string;
-  readonly nativeMessageId?: string;
-  readonly nativeTurnId?: string;
-  readonly evidenceReferenceId?: EvidenceReferenceId;
-  readonly supersedesInputSubmissionId?: InputSubmissionId;
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-export type SessionTurnInitiator = "human" | "conductor" | "runtime" | "session_agent";
-export type SessionTurnTrigger =
-  | "task_goal"
-  | "human_direct"
-  | "session_agent_return"
-  | "conductor_invocation"
-  | "conductor_relay"
-  | "conductor_publish"
-  | "human_interrupt_then_send"
-  | "attention_continuation"
-  | "runtime_recovery";
-export type SessionTurnStatus =
-  | "staged"
-  | "running"
-  | "awaiting_final"
-  | "interrupt_requested"
-  | "interrupted"
-  | "returned"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "ambiguous";
-
-export interface SessionTurnRecord {
-  readonly sessionTurnId: SessionTurnId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly inputSubmissionId: InputSubmissionId;
-  readonly targetLogicalSessionId: LogicalSessionId;
-  readonly kind: "conductor" | "session_agent";
-  readonly initiator: SessionTurnInitiator;
-  readonly trigger: SessionTurnTrigger;
-  readonly replyToLogicalSessionId?: LogicalSessionId;
-  readonly invocationId?: InvocationId;
-  readonly humanInterventionId?: HumanInterventionId;
-  readonly affectedSessionTurnId?: SessionTurnId;
-  readonly finalMessageId?: SessionMessageId;
-  readonly status: SessionTurnStatus;
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-export type InvocationStatus =
-  | "staged"
-  | "effect_accepted"
-  | "running"
-  /** A terminal turn was observed, but no correlated assistant_final exists yet. */
-  | "awaiting_final"
-  | "returned"
-  | "failed"
-  | "cancel_requested"
-  | "cancelled"
-  | "cancellation_unknown";
-
-export interface InvocationRecord {
-  readonly invocationId: InvocationId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  /** Parent Session that receives the complete final Message. */
-  readonly replyToLogicalSessionId: LogicalSessionId;
-  readonly targetLogicalSessionId: LogicalSessionId;
-  readonly targetAgentCardId: AgentCardId;
-  readonly bindingId: ProviderSessionBindingId;
-  /** Immutable assignment Message delivered to the target Session. */
-  readonly assignmentMessageId: SessionMessageId;
-  readonly instruction: string;
-  readonly acceptanceCriteria: readonly string[];
-  readonly requestedArtifacts: readonly string[];
-  readonly priority?: "low" | "normal" | "high";
-  /** Set exactly once, only after correlated assistant_final + terminal facts. */
-  readonly finalMessageId?: SessionMessageId;
-  readonly status: InvocationStatus;
   readonly createdAt: IsoTimestamp;
   readonly updatedAt: IsoTimestamp;
 }
@@ -656,7 +366,6 @@ export interface ProviderFactDeduplication {
 export interface ProviderFactCorrelation {
   readonly inputSubmissionId?: InputSubmissionId;
   readonly sessionTurnId?: SessionTurnId;
-  readonly invocationId?: InvocationId;
   readonly attentionId?: AttentionId;
   readonly nativeMessageId?: string;
   readonly nativeTurnId?: string;
@@ -689,7 +398,6 @@ export interface ProviderEffect {
   readonly provider: ProviderKind;
   readonly bindingId?: ProviderSessionBindingId;
   readonly inputSubmissionId?: InputSubmissionId;
-  readonly invocationId?: InvocationId;
   readonly attentionId?: AttentionId;
   readonly acceptance: "accepted" | "rejected" | "unknown";
   readonly acceptedAt: IsoTimestamp;
@@ -703,47 +411,6 @@ export interface ProviderCapabilities {
   readonly protocolFingerprint?: string;
   readonly capabilities: readonly ProviderCapability[];
   readonly unavailableReasons: readonly string[];
-}
-
-export type AttentionStatus = "requested" | "response_staged" | "effect_accepted" | "resolved" | "stale" | "expired";
-
-export interface AttentionRecord {
-  readonly attentionId: AttentionId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly bindingId: ProviderSessionBindingId;
-  readonly bindingRevision: number;
-  readonly nativeRequestId: string;
-  readonly activeInputSubmissionId?: InputSubmissionId;
-  readonly activeInvocationId?: InvocationId;
-  readonly request: JsonObject;
-  readonly response?: JsonObject;
-  readonly status: AttentionStatus;
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-export interface AsyncOperationRecord {
-  readonly asyncOperationId: AsyncOperationId;
-  readonly bindingId: ProviderSessionBindingId;
-  readonly invocationId?: InvocationId;
-  readonly nativeOperationRef: string;
-  readonly status: "active" | "completed" | "failed" | "cancelled" | "unknown";
-  readonly createdAt: IsoTimestamp;
-  readonly updatedAt: IsoTimestamp;
-}
-
-export interface ArtifactReference {
-  readonly artifactId: ArtifactId;
-  readonly taskId: TaskId;
-  readonly runId: TaskRunId;
-  readonly workspaceRelativePath: string;
-  readonly contentDigest: string;
-  readonly sourceInvocationId?: InvocationId;
-  readonly sourceProviderFactId?: ProviderFactId;
-  readonly sourceMessageId?: SessionMessageId;
-  readonly evidenceReferenceIds: readonly EvidenceReferenceId[];
-  readonly verifiedAt: IsoTimestamp;
 }
 
 export type SessionPresentationKind = "workspace_transcript_and_composer" | "native_embedded" | "external_handoff" | "unavailable";
@@ -761,7 +428,7 @@ export interface SessionPresentation {
 
 export interface EvidenceReference {
   readonly evidenceReferenceId: EvidenceReferenceId;
-  readonly kind: "provider_history" | "provider_event" | "artifact" | "host_log" | "user_input";
+  readonly kind: "provider_history" | "provider_event" | "host_log" | "user_input";
   readonly digest: string;
   readonly locator: string;
   readonly capturedAt: IsoTimestamp;
@@ -797,10 +464,12 @@ export function providerFactFingerprint(fact: ProviderFact): string {
   return hashDefinition({
     provider: fact.provider,
     bindingId: fact.bindingId,
-    bindingRevision: fact.bindingRevision,
     kind: fact.kind,
-    // Only the selected durable identity is semantic. A reconnect may change
-    // sourceInstanceId while replaying the same providerEventId.
+    // Only the selected durable identity and native semantics are part of a
+    // replay fingerprint. A Host recovery may observe the same native event
+    // through a later Runtime-owned Binding CAS revision (and a different
+    // sourceInstanceId); Store/reducer revision gates still reject facts from
+    // the future before this replay check.
     dedupKey: providerFactDedupKey(fact),
     correlation: fact.correlation as unknown as JsonValue,
     payload: fact.payload,
