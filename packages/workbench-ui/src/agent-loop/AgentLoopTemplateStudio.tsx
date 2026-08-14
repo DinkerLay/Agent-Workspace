@@ -724,7 +724,7 @@ function TemplateDraftWorkspace({
           }} type="button">让 AI 修订 Charter</button> : null}
         </section>
 
-        <section className="awb-template-platform-boundary"><strong>平台边界</strong><p>Conductor 读取 Card 的派发档案；每个 Session Agent 只读取自己的 System Prompt 与 Profile。</p></section>
+        <section className="awb-template-platform-boundary"><strong>上下文边界</strong><p>Conductor 只读取 Session Agent 的派发目录；每个 Session Agent 只读取自己的身份、指令与当前任务。Provider、Model、Effort 保持为独立执行配置。</p></section>
 
         <section aria-label="Session Agent Cards" className="awb-template-agent-section">
           <header><div><h2>Session Agent Cards <span>{definition.agentCards.length} 张</span></h2><p>卡面表达可派发能力；点击后在 Inspector 编辑完整上下文。</p></div><span>选中 ≠ AI 目标</span></header>
@@ -782,12 +782,20 @@ function TemplateDraftWorkspace({
 
       {inspectorOpen ? <aside aria-label="Agent Card Inspector" className="awb-template-inspector">
         <header><div><p className="awb-eyebrow">{selectedCard.kind === "conductor" ? "Conductor Charter" : "Agent Card Inspector"}</p><h2>{selectedCard.title}</h2></div><div className="awb-template-inspector-actions"><span>{selectedCard.kind}</span><button aria-label="收起 Agent Inspector" className="awb-agent-loop-icon-button" data-testid="template-inspector-collapse" onClick={() => setInspectorOpen(false)} title="收起 Agent Inspector" type="button"><PanelRightClose aria-hidden="true" size={16} /></button></div></header>
-        <label>名称<input aria-label={`${selectedCard.title} 名称`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ title: event.target.value })} value={selectedCard.title} /></label>
-        {selectedCard.kind !== "conductor" && selectedCard.dispatchProfile ? <>
-          <label>Conductor 派发标题<input aria-label={`${selectedCard.title} 派发标题`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ dispatchProfile: { ...selectedCard.dispatchProfile!, title: event.target.value } })} value={selectedCard.dispatchProfile.title} /></label>
-          <label>Conductor 派发说明<textarea aria-label={`${selectedCard.title} 派发说明`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ dispatchProfile: { ...selectedCard.dispatchProfile!, description: event.target.value } })} rows={4} value={selectedCard.dispatchProfile.description} /></label>
-        </> : null}
-        <label>{selectedCard.title} System Prompt<textarea aria-label={`${selectedCard.title} System Prompt`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ systemPrompt: event.target.value })} rows={9} value={selectedCard.systemPrompt} /></label>
+        <section aria-label={selectedCard.kind === "conductor" ? "Conductor 身份" : "Session Agent 身份"} className="awb-template-inspector-section">
+          <header><div><h3>{selectedCard.kind === "conductor" ? "Conductor 身份" : "Session Agent 身份"}</h3><p>{selectedCard.kind === "conductor" ? "只进入 Conductor 自己的 Session。" : "只进入这个 Session Agent；Conductor 不会读取这里的内部指令。"}</p></div><span>{selectedCard.kind}</span></header>
+          <label>名称<input aria-label={`${selectedCard.title} 名称`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ title: event.target.value })} value={selectedCard.title} /></label>
+          <label>身份说明<textarea aria-label={`${selectedCard.title} 身份说明`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ role: event.target.value || undefined })} rows={3} value={selectedCard.role ?? ""} /></label>
+        </section>
+        {selectedCard.kind !== "conductor" && selectedCard.dispatchProfile ? <section aria-label="Conductor 派发目录" className="awb-template-inspector-section">
+          <header><div><h3>Conductor 派发目录</h3><p>只提供给 Conductor，用于选择和派发；不会进入这个 Session Agent 的上下文。</p></div></header>
+          <label>派发标题<input aria-label={`${selectedCard.title} 派发标题`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ dispatchProfile: { ...selectedCard.dispatchProfile!, title: event.target.value } })} value={selectedCard.dispatchProfile.title} /></label>
+          <label>派发说明<textarea aria-label={`${selectedCard.title} 派发说明`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ dispatchProfile: { ...selectedCard.dispatchProfile!, description: event.target.value } })} rows={4} value={selectedCard.dispatchProfile.description} /></label>
+        </section> : null}
+        <section aria-label={selectedCard.kind === "conductor" ? "Conductor 指令" : "Session Agent 指令"} className="awb-template-inspector-section">
+          <header><div><h3>{selectedCard.kind === "conductor" ? "Conductor 指令" : "Session Agent 指令"}</h3><p>{selectedCard.kind === "conductor" ? "只进入 Conductor；Session Agent 不会读取。" : "只进入这个 Session Agent；不会提供给 Conductor 或其他 Agent。"}</p></div></header>
+          <label>System Prompt<textarea aria-label={`${selectedCard.title} System Prompt`} disabled={busy || readOnly} onChange={(event) => updateSelectedCard({ systemPrompt: event.target.value })} rows={9} value={selectedCard.systemPrompt} /></label>
+        </section>
         {selectedProfile && selectedProviderFamily ? <fieldset className="awb-template-profile-picker">
           <legend>执行环境</legend>
           <label>Provider<select

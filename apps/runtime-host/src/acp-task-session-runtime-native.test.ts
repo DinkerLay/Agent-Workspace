@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { hashDefinition } from "@agent-workspace/runtime-contracts";
+import {
+  hashDefinition,
+  type ProviderSessionBootstrap,
+} from "@agent-workspace/runtime-contracts";
 import type {
   ProviderScopedToolCall,
   ProviderScopedToolTurnContext,
@@ -32,6 +35,9 @@ const createOpenCodeAcpTaskSessionRuntimeNativeBinding = (options: Readonly<{
   resolveTurnContext?: (input: Readonly<{
     sessionExecutionAttemptId: string;
   }>) => ProviderScopedToolTurnContext | undefined;
+  resolvePromptBootstrap?: (input: Readonly<{
+    sessionExecutionAttemptId: string;
+  }>) => ProviderSessionBootstrap | undefined;
 }>) => createAcpTaskSessionRuntimeNativeBinding({
   driver: OPENCODE_ACP_TASK_NATIVE_DRIVER,
   ...options,
@@ -107,6 +113,49 @@ describe("ACP provider-neutral Task/SR native Binding", () => {
     });
     expect(resolveTurnContext).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.reconcilePrompt).toHaveBeenCalledWith({ attemptId: ATTEMPT_ID });
+  });
+
+  it("renders the frozen identity bootstrap only when the durable attempt resolver admits it", async () => {
+    const fixture = nativeFixture();
+    const resolvePromptBootstrap = vi.fn()
+      .mockReturnValueOnce(Object.freeze({
+        purpose: "task_worker" as const,
+        agentCardId: "agent_card_researcher",
+        kind: "researcher" as const,
+        title: "Evidence Researcher",
+        role: "Investigate only the assigned evidence branch.",
+        systemPrompt: "Return concise, sourced findings.",
+        capabilityRefs: Object.freeze([]),
+      }))
+      .mockReturnValueOnce(undefined);
+    const native = createOpenCodeAcpTaskSessionRuntimeNativeBinding({
+      adapter: fixture.adapter,
+      runtime: fixture.runtime,
+      profile: PROFILE,
+      resolvePromptBootstrap,
+    });
+    const signal = new AbortController().signal;
+
+    await native.submitDelivery({
+      bindingHandle: BINDING_HANDLE,
+      sessionExecutionAttemptId: ATTEMPT_ID,
+      content: "Check source A.",
+      signal,
+    });
+    await native.submitDelivery({
+      bindingHandle: BINDING_HANDLE,
+      sessionExecutionAttemptId: "session_execution_attempt_opencode_task_native_2",
+      content: "Check source B.",
+      signal,
+    });
+
+    expect(fixture.runtime.submitPrompt).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      content: expect.stringMatching(/Evidence Researcher[\s\S]*Return concise, sourced findings\.[\s\S]*Current assignment:\nCheck source A\./u),
+    }));
+    expect(fixture.runtime.submitPrompt).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      content: "Check source B.",
+    }));
+    expect(resolvePromptBootstrap).toHaveBeenCalledTimes(2);
   });
 
   it("maps interrupt/cancel/retire/close without inventing interaction support", async () => {

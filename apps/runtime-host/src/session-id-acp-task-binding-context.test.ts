@@ -66,6 +66,56 @@ describe("Session-ID ACP Task Binding context owner", () => {
     expect(JSON.stringify(context)).not.toMatch(/(?:raw|credential|resolution|nativeBindingRef)/iu);
   });
 
+  it("admits the exact frozen bootstrap only until this LogicalSession has a Provider receipt", async () => {
+    const conductor = createFixture("conductor");
+    const conductorContext = await conductor.resolve();
+    const conductorBootstrap = conductorContext.resolvePromptBootstrap?.({
+      sessionExecutionAttemptId: conductor.attempt.sessionExecutionAttemptId,
+    });
+
+    expect(conductorBootstrap).toMatchObject({
+      purpose: "task_conductor",
+      kind: "conductor",
+      title: conductor.architecture.definition.conductor.title,
+      systemPrompt: conductor.architecture.definition.conductor.systemPrompt,
+      dispatchRegistry: [{
+        agentCardId: conductor.workerCardId,
+        title: conductor.architecture.definition.agentCards[0]!.dispatchProfile!.title,
+      }],
+    });
+    expect(JSON.stringify(conductorBootstrap)).not.toContain(
+      conductor.architecture.definition.agentCards[0]!.systemPrompt,
+    );
+
+    conductor.state.priorAttempts = [Object.freeze({
+      ...conductor.attempt,
+      sessionExecutionAttemptId: "session_execution_attempt_context_conductor_prior",
+      receiptDigest: `sha256:${"b".repeat(64)}`,
+      receiptObservedAt: NOW,
+      state: "settled" as const,
+      revision: 2,
+    })];
+    expect(conductorContext.resolvePromptBootstrap?.({
+      sessionExecutionAttemptId: conductor.attempt.sessionExecutionAttemptId,
+    })).toBeUndefined();
+
+    const worker = createFixture("worker");
+    const workerContext = await worker.resolve();
+    const workerBootstrap = workerContext.resolvePromptBootstrap?.({
+      sessionExecutionAttemptId: worker.attempt.sessionExecutionAttemptId,
+    });
+    expect(workerBootstrap).toMatchObject({
+      purpose: "task_worker",
+      kind: worker.architecture.definition.agentCards[0]!.kind,
+      title: worker.architecture.definition.agentCards[0]!.title,
+      systemPrompt: worker.architecture.definition.agentCards[0]!.systemPrompt,
+    });
+    expect(workerBootstrap).not.toHaveProperty("dispatchRegistry");
+    expect(JSON.stringify(workerBootstrap)).not.toContain(
+      worker.architecture.definition.conductor.systemPrompt,
+    );
+  });
+
   it("fails before application construction on Profile, Workspace and current-Binding drift", async () => {
     const profileDrift = createFixture("worker");
     await expect(profileDrift.resolve({
@@ -509,6 +559,7 @@ function createFixture(role: FixtureRole) {
     currentBinding: binding,
     runtime,
     attempt,
+    priorAttempts: [] as SessionExecutionAttemptRecord[],
     input,
     turn,
   };
@@ -570,6 +621,9 @@ function createFixture(role: FixtureRole) {
       getAttempt: (value) => value === state.attempt.sessionExecutionAttemptId
         ? structuredClone(state.attempt)
         : undefined,
+      listAttempts: (value) => value === state.runtime.sessionExecutionRuntimeId
+        ? structuredClone([...state.priorAttempts, state.attempt])
+        : [],
     },
   };
   const commands = {
@@ -623,6 +677,7 @@ function createFixture(role: FixtureRole) {
     workspaceRoot,
     state,
     profile,
+    architecture,
     binding,
     attempt,
     frozenProfile,

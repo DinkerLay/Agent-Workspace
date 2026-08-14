@@ -128,14 +128,13 @@ export function sha256(value) {
  */
 export function renderProviderSessionBootstrap(bootstrap) {
   assertSessionBootstrap(bootstrap);
-  const role = bootstrap.purpose === "task_conductor"
-    ? "Task Conductor"
-    : bootstrap.purpose === "task_worker"
-      ? "Task Worker"
-      : "Template Design Agent";
   const lines = [
-    `Agent Workspace role: ${role}.`,
-    "Follow the following immutable session instructions:",
+    "Session identity:",
+    `- Agent Card ID: ${bootstrap.agentCardId}`,
+    `- Kind: ${bootstrap.kind}`,
+    `- Name: ${bootstrap.title}`,
+    ...(bootstrap.role ? [`- Responsibility: ${bootstrap.role}`] : []),
+    "Session instructions:",
     bootstrap.systemPrompt,
   ];
   if (bootstrap.dispatchRegistry?.length) {
@@ -144,13 +143,6 @@ export function renderProviderSessionBootstrap(bootstrap) {
       ...bootstrap.dispatchRegistry.map((card) => `- ${card.agentCardId} | ${card.kind} | ${card.title}: ${card.description}`),
     );
   }
-  if (bootstrap.capabilityRefs.length) {
-    lines.push(
-      `Declared card capabilities: ${bootstrap.capabilityRefs.map((capability) => `${capability.kind}:${capability.id}`).join(", ")}.`,
-      "Use only capabilities made available by the selected Provider and its execution policy.",
-    );
-  }
-  lines.push("Task achievement is an explicit user decision. Never claim or infer Achieve.");
   return lines.join("\n\n");
 }
 
@@ -794,6 +786,11 @@ function assertSessionBootstrap(bootstrap) {
     throw new ProviderProtocolError("Provider Session bootstrap purpose is invalid.");
   }
   requiredString(bootstrap.agentCardId, "bootstrap.agentCardId");
+  if (!["conductor", "general", "researcher", "implementer", "reviewer", "publisher", "meta"].includes(requiredString(bootstrap.kind, "bootstrap.kind"))) {
+    throw new ProviderProtocolError("Provider Session bootstrap kind is invalid.");
+  }
+  requiredString(bootstrap.title, "bootstrap.title");
+  if (bootstrap.role !== undefined) requiredString(bootstrap.role, "bootstrap.role");
   requiredString(bootstrap.systemPrompt, "bootstrap.systemPrompt");
   if (!Array.isArray(bootstrap.capabilityRefs)) {
     throw new ProviderProtocolError("Provider Session bootstrap capabilityRefs are invalid.");

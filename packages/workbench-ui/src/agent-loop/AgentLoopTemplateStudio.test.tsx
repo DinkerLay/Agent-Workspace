@@ -187,6 +187,13 @@ describe("AgentLoopTemplateStudio", () => {
 
     fireEvent.click(screen.getByTestId("template-card-agent_card_worker"));
     expect(screen.getByRole("complementary", { name: "Agent Card Inspector" }).textContent).toContain("Worker");
+    expect(screen.getByRole("region", { name: "Session Agent 身份" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Conductor 派发目录" }).textContent).toContain(
+      "只提供给 Conductor",
+    );
+    expect(screen.getByRole("region", { name: "Session Agent 指令" }).textContent).toContain(
+      "只进入这个 Session Agent",
+    );
     expect(targetRegion.textContent).toContain("@Template");
     expect(targetRegion.textContent).not.toContain("@Worker");
 
@@ -197,10 +204,14 @@ describe("AgentLoopTemplateStudio", () => {
     fireEvent.change(screen.getByLabelText("Worker System Prompt"), {
       target: { value: "Complete one scoped claim and report verifiable evidence." },
     });
+    fireEvent.change(screen.getByLabelText("Worker 身份说明"), {
+      target: { value: "Own one bounded research assignment." },
+    });
     const definition = validateTemplateDefinitionV3(JSON.parse(
       (screen.getByTestId("template-definition") as HTMLTextAreaElement).value,
     ));
     expect(definition.agentCards[0]?.systemPrompt).toBe("Complete one scoped claim and report verifiable evidence.");
+    expect(definition.agentCards[0]?.role).toBe("Own one bounded research assignment.");
   });
 
   it("lets each Agent choose a Provider first and then one of that Provider's Host-issued models", async () => {

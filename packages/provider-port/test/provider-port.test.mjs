@@ -285,6 +285,8 @@ describe("ProviderPort primitives", () => {
         bootstrap: {
           purpose: "task_conductor",
           agentCardId: "agent-card-runtime-discovery",
+          kind: "conductor",
+          title: "Runtime discovery Conductor",
           systemPrompt: "Observe the live protocol.",
           capabilityRefs: [],
           dispatchRegistry: [],
@@ -393,6 +395,9 @@ describe("ProviderPort primitives", () => {
     const rendered = renderProviderSessionBootstrap({
       purpose: "task_conductor",
       agentCardId: "agent_card_conductor",
+      kind: "conductor",
+      title: "Research Conductor",
+      role: "Route bounded research assignments.",
       systemPrompt: "Coordinate the Task.",
       capabilityRefs: [{ kind: "mcp", id: "agent_workspace_conductor" }],
       dispatchRegistry: [{
@@ -403,8 +408,10 @@ describe("ProviderPort primitives", () => {
       }],
     });
     assert.match(rendered, /Coordinate the Task/);
+    assert.match(rendered, /Research Conductor/);
+    assert.match(rendered, /Route bounded research assignments/);
     assert.match(rendered, /Evidence research/);
-    assert.match(rendered, /mcp:agent_workspace_conductor/);
+    assert.doesNotMatch(rendered, /mcp:agent_workspace_conductor/);
     assert.doesNotMatch(rendered, /Worker system prompt: never expose this/);
   });
 });

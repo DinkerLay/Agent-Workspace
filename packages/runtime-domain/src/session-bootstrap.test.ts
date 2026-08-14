@@ -22,6 +22,9 @@ describe("compileProviderSessionBootstrap", () => {
     expect(bootstrap).toMatchObject({
       purpose: "task_conductor",
       agentCardId: definition.conductor.agentCardId,
+      kind: "conductor",
+      title: definition.conductor.title,
+      ...(definition.conductor.role ? { role: definition.conductor.role } : {}),
       systemPrompt: definition.conductor.systemPrompt,
       dispatchRegistry: [{
         agentCardId: worker.agentCardId,
@@ -53,6 +56,9 @@ describe("compileProviderSessionBootstrap", () => {
     expect(bootstrap).toEqual({
       purpose: "task_worker",
       agentCardId: worker.agentCardId,
+      kind: worker.kind,
+      title: worker.title,
+      ...(worker.role ? { role: worker.role } : {}),
       systemPrompt: worker.systemPrompt,
       capabilityRefs: [{ kind: "skill", id: "worker-only" }],
     });

@@ -14,10 +14,12 @@ import {
   type AgentCardDefinition,
   type ConductorOrchestrationToolResult,
   type ExecutionProfileDefinitionV3,
+  type ProviderSessionBootstrap,
   type SessionExecutionAttemptRecord,
   type TaskArchitectureSnapshotV3,
   type WorkspaceAuthorizationRecord,
 } from "@agent-workspace/runtime-contracts";
+import { compileProviderSessionBootstrap } from "@agent-workspace/runtime-domain";
 import type {
   ProviderScopedToolCall,
   ProviderScopedToolTurnContext,
@@ -89,7 +91,7 @@ export type SessionIdAcpTaskBindingContextRepositories = Readonly<{
   binding: Pick<AcpV3BindingRepository,
     "getBinding" | "getCurrentBinding">;
   sessionRuntime: Pick<AcpV3SessionRuntimeRepository,
-    "getRuntime" | "getRuntimeForSession" | "getAttempt">;
+    "getRuntime" | "getRuntimeForSession" | "getAttempt" | "listAttempts">;
 }>;
 
 export type SessionIdAcpTaskBindingContextOwnerOptions = Readonly<{
@@ -201,10 +203,35 @@ export function createSessionIdAcpTaskBindingContextOwner(
       workspace.authorizedWorkspaceDirectory,
       options.privateAuthority.taskPrivateRootAuthority,
     );
+    const promptBootstrap = immutablePromptBootstrap(compileProviderSessionBootstrap({
+      architecture: entry.architecture,
+      session: {
+        kind: entry.role === "conductor" ? "conductor" : "card",
+        agentCardId: entry.binding.agentCardId,
+        executionProfileId: entry.binding.executionProfileId,
+      },
+    }));
     const result: SessionIdAcpResolvedTaskBindingContext = {
       profile: entry.profile,
       role: entry.role,
       hostScope,
+      resolvePromptBootstrap(value) {
+        const attemptId = exactAttemptInput(value);
+        const attempt = resolveAttemptFence(entry, workspace, attemptId);
+        const attempts = options.repositories.sessionRuntime.listAttempts(
+          attempt.attempt.sessionExecutionRuntimeId,
+        );
+        if (!attempts.some((candidate) => candidate.sessionExecutionAttemptId === attemptId)
+          || attempts.some((candidate) => candidate.sessionExecutionRuntimeId !== attempt.attempt.sessionExecutionRuntimeId
+            || candidate.taskId !== entry.binding.taskId
+            || candidate.runId !== entry.binding.runId
+            || candidate.logicalSessionId !== entry.binding.logicalSessionId)) {
+          rejectAttemptFence(entry.role, "attempt", "attempt_history_fence_mismatch");
+        }
+        return attempts.some((candidate) => candidate.receiptDigest !== undefined)
+          ? undefined
+          : promptBootstrap;
+      },
       resolveTurnContext(value) {
         const attemptId = exactAttemptInput(value);
         const attempt = resolveAttemptFence(entry, workspace, attemptId);
@@ -784,6 +811,7 @@ function validateOptions(value: SessionIdAcpTaskBindingContextOwnerOptions): voi
     || typeof value.repositories.sessionRuntime?.getRuntime !== "function"
     || typeof value.repositories.sessionRuntime.getRuntimeForSession !== "function"
     || typeof value.repositories.sessionRuntime.getAttempt !== "function"
+    || typeof value.repositories.sessionRuntime.listAttempts !== "function"
     || typeof value.workspaceDirectoryResolver?.canonicalizeDirectory !== "function"
     || typeof value.workspaceDirectoryResolver.digestGrant !== "function"
     || typeof value.acpApplication?.createRunApplication !== "function"
@@ -825,4 +853,8 @@ function deepFreeze<T>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+
+function immutablePromptBootstrap(value: ProviderSessionBootstrap): ProviderSessionBootstrap {
+  return deepFreeze(structuredClone(value));
 }

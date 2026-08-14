@@ -207,6 +207,10 @@ export interface ProviderSessionDispatchCard {
 export interface ProviderSessionBootstrap {
   readonly purpose: ProviderSessionPurpose;
   readonly agentCardId: AgentCardId;
+  /** Stable identity shown to the Agent; execution configuration remains separate. */
+  readonly kind: AgentCardKind | "meta";
+  readonly title: string;
+  readonly role?: string;
   readonly systemPrompt: string;
   readonly capabilityRefs: readonly AgentCapabilityRef[];
   /** Present only for a Conductor; never includes Worker system prompts. */

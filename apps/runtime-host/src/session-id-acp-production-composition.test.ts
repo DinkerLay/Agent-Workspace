@@ -289,6 +289,9 @@ describe("Session-ID ACP production composition", () => {
     expect(openCodeInput?.identityVaultResolver).toBe(fixture.authority.taskIdentityVaults);
     expect(codexInput?.identityVaultResolver).toBe(fixture.authority.taskIdentityVaults);
     expect(openCodeInput?.identityVaultResolver).not.toBe(fixture.authority.metaIdentityVaults);
+    expect(openCodeInput?.resolvePromptBootstrap?.({
+      sessionExecutionAttemptId: "session_execution_attempt_observation_1",
+    })).toBeUndefined();
 
     if (!openedOpenCode.available) throw new Error("expected OpenCode native Binding");
     await openedOpenCode.nativeBinding.submitDelivery({
@@ -1357,6 +1360,7 @@ function compositionFixture(input: Readonly<{
         profile,
         role: frozenProfile.providerFamily === "opencode" ? "worker" : "conductor",
         hostScope: hostScope(profile, currentBinding, authority),
+        resolvePromptBootstrap: () => undefined,
       };
     },
     observeExecution: input.observeExecution ?? (() => undefined),

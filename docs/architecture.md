@@ -203,14 +203,16 @@ bytes永不原地改写：旧Version只读兼容；用户只有在Draft中显式
 
 ```text
 Conductor LogicalSession
-  = own systemPrompt + own capabilityRefs
+  = own identity { agentCardId, kind, title, role? }
+  + own systemPrompt
   + worker dispatchRegistry (title / description only)
   - no Worker systemPrompt
 
 Worker LogicalSession
-  = own systemPrompt + own capabilityRefs
-  + required dispatchProfile { title, description }
-  - no Conductor or sibling prompt/capability
+  = own identity { agentCardId, kind, title, role? }
+  + own systemPrompt
+  + current assignment
+  - no dispatchProfile, Conductor prompt, or sibling prompt
 ```
 
 `dispatchProfile` 是给 Conductor 选择 Card 的目录，不是 Worker 的稳定 prompt。Conductor 首次需要某张
@@ -218,12 +220,15 @@ Card 时只调用 `invoke_agent({ agentCardId })` 建立一代 Runtime 会话并
 instruction、正文、引用、验收标准、产物请求或 priority，也不创建 Message / Inbox / Turn。首条与后续
 任务内容一律通过 `send_to_session({ sessionId, payload })` 发送，payload 只含可选新 `content` 与有序
 `messageRefs`。Agent 若产出文件，只能在 canonical final 中向人类说明；文件或 Files & Changes 观察不能成为 Gateway
-引用。Task Architecture snapshot 是静态 Card/Profile scope 的唯一来源；后续 Template Draft 编辑不会
+的隐式输入。`capabilityRefs`、Provider、Model、Effort 与 tool policy 都是 Host 侧执行配置，不渲染成自然语言
+身份或指令。Runtime 只在一个 LogicalSession 尚无持久 Provider receipt 时，把上述冻结身份/指令前置到首次
+真实 prompt；Host 重启、reconcile 或后续 Turn 不得重复注入。Task Architecture snapshot 是静态
+Card/Profile scope 的唯一来源；后续 Template Draft 编辑不会
 回写已有 Task。
 
-`capabilityRefs` 当前是 Card 作用域声明，并会进入 session bootstrap；真正可执行的 Provider 工具/权限
-仍由 `ExecutionProfile.capabilityPolicy` 决定。Card scope 与 Provider tool policy 的强制交集尚未完成，
-因此不得把声明误写成已完成的权限隔离。
+`capabilityRefs` 是 Host 使用的 Card 作用域声明，可以保留在内部 bootstrap record 中，但不得渲染进模型
+上下文；真正可执行的 Provider 工具/权限仍由 `ExecutionProfile.capabilityPolicy` 与 Host 注入能力决定。
+Card scope 与 Provider tool policy 的强制交集尚未完成，因此不得把声明误写成已完成的权限隔离。
 
 ### Meta Agent 与 Task Setup
 

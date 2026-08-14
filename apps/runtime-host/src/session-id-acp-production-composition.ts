@@ -13,6 +13,7 @@ import {
   type AcpSafeSessionBindingRecordV3,
   type ExecutionProfileDefinitionV3,
   type JsonValue,
+  type ProviderSessionBootstrap,
   type SessionRuntimeBindingReadyEvent,
 } from "@agent-workspace/runtime-contracts";
 import type {
@@ -453,6 +454,9 @@ export type SessionIdAcpProductionTaskNativeFactoryOpenInput = Readonly<{
   readonly resolveTurnContext?: (
     input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
   ) => ProviderScopedToolTurnContext | undefined;
+  readonly resolvePromptBootstrap?: (
+    input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
+  ) => ProviderSessionBootstrap | undefined;
 }>;
 
 export type SessionIdAcpProductionTaskNativeFactoryOpenResult =
@@ -626,6 +630,9 @@ export type SessionIdAcpProductionTaskNativeBindingRegistry = Readonly<{
     readonly resolveTurnContext?: (
       input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
     ) => ProviderScopedToolTurnContext | undefined;
+    readonly resolvePromptBootstrap?: (
+      input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
+    ) => ProviderSessionBootstrap | undefined;
   }>): Promise<SessionIdAcpProductionTaskNativeOpenResult>;
   inspect(
     profile: ExecutionProfileDefinitionV3,
@@ -744,6 +751,9 @@ export type SessionIdAcpProductionCompositionOptions = Readonly<{
     readonly resolveTurnContext?: (
       input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
     ) => ProviderScopedToolTurnContext | undefined;
+    readonly resolvePromptBootstrap: (
+      input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
+    ) => ProviderSessionBootstrap | undefined;
   }> | Promise<Readonly<{
     readonly profile: ExecutionProfileDefinitionV3;
     readonly role: SessionIdAcpTaskRole;
@@ -751,6 +761,9 @@ export type SessionIdAcpProductionCompositionOptions = Readonly<{
     readonly resolveTurnContext?: (
       input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
     ) => ProviderScopedToolTurnContext | undefined;
+    readonly resolvePromptBootstrap: (
+      input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
+    ) => ProviderSessionBootstrap | undefined;
   }>>;
   /** Host owner callback; never a Renderer or provider callback. */
   readonly observeExecution: (
@@ -866,6 +879,7 @@ export function createSessionIdAcpProductionComposition(
           hostScope: resolved.hostScope,
           signal,
           observeDeliveryReceipt,
+          resolvePromptBootstrap: resolved.resolvePromptBootstrap,
           ...(resolved.resolveTurnContext
             ? { resolveTurnContext: resolved.resolveTurnContext }
             : {}),
@@ -1812,6 +1826,9 @@ export function createOpenCodeAcpProductionTaskNativeFactory(
           adapter,
           runtime,
           profile: input.frozenProfile,
+          ...(input.resolvePromptBootstrap
+            ? { resolvePromptBootstrap: input.resolvePromptBootstrap }
+            : {}),
           ...(input.resolveTurnContext
             ? { resolveTurnContext: input.resolveTurnContext }
             : {}),
@@ -2090,6 +2107,9 @@ export function createClaudeCodeAcpProductionTaskNativeFactory(
           adapter,
           runtime,
           profile: input.frozenProfile,
+          ...(input.resolvePromptBootstrap
+            ? { resolvePromptBootstrap: input.resolvePromptBootstrap }
+            : {}),
           ...(input.resolveTurnContext
             ? { resolveTurnContext: input.resolveTurnContext }
             : {}),
@@ -2402,6 +2422,9 @@ export function createCodexAcpProductionTaskNativeFactory(
           adapter,
           runtime,
           profile: input.frozenProfile,
+          ...(input.resolvePromptBootstrap
+            ? { resolvePromptBootstrap: input.resolvePromptBootstrap }
+            : {}),
           ...(input.resolveTurnContext
             ? { resolveTurnContext: input.resolveTurnContext }
             : {}),
@@ -3193,6 +3216,8 @@ function validateFactoryInput(
     || !input.signal || typeof input.signal.aborted !== "boolean"
     || typeof input.onObservation !== "function"
     || (input.onDiagnostic !== undefined && typeof input.onDiagnostic !== "function")
+    || (input.resolvePromptBootstrap !== undefined
+      && typeof input.resolvePromptBootstrap !== "function")
     || (input.resolveTurnContext !== undefined
       && typeof input.resolveTurnContext !== "function")) {
     throw safeError("acp_task_native_factory_input_invalid");
@@ -4051,6 +4076,7 @@ function createTaskNativeBindingRegistry(
             normalized.observeDeliveryReceipt,
             observation,
           ),
+          resolvePromptBootstrap: normalized.resolvePromptBootstrap,
           ...(options.onDiagnostic ? {
             onDiagnostic: (diagnostic: AcpTaskRuntimeDiagnostic) => options.onDiagnostic?.(
               Object.freeze({ ...diagnostic, role: normalized.role }),
@@ -4290,6 +4316,9 @@ function normalizeOpenInput(
   resolveTurnContext?: (
     input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
   ) => ProviderScopedToolTurnContext | undefined;
+  resolvePromptBootstrap: (
+    input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
+  ) => ProviderSessionBootstrap | undefined;
 }> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw safeError("acp_task_native_open_input_invalid");
@@ -4307,6 +4336,10 @@ function normalizeOpenInput(
   if (input.resolveTurnContext !== undefined && typeof input.resolveTurnContext !== "function") {
     throw safeError("acp_task_turn_context_resolver_invalid");
   }
+  if (input.resolvePromptBootstrap !== undefined
+    && typeof input.resolvePromptBootstrap !== "function") {
+    throw safeError("acp_task_prompt_bootstrap_resolver_invalid");
+  }
   return Object.freeze({
     binding,
     frozenProfile,
@@ -4315,6 +4348,7 @@ function normalizeOpenInput(
     hostScope,
     signal: input.signal,
     observeDeliveryReceipt: input.observeDeliveryReceipt,
+    resolvePromptBootstrap: input.resolvePromptBootstrap ?? (() => undefined),
     ...(input.resolveTurnContext ? { resolveTurnContext: input.resolveTurnContext } : {}),
   });
 }
@@ -4328,6 +4362,9 @@ function normalizeResolvedTaskContext(
   resolveTurnContext?: (
     input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
   ) => ProviderScopedToolTurnContext | undefined;
+  resolvePromptBootstrap: (
+    input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
+  ) => ProviderSessionBootstrap | undefined;
 }> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw safeError("acp_task_binding_context_invalid");
@@ -4337,10 +4374,14 @@ function normalizeResolvedTaskContext(
   if (value.resolveTurnContext !== undefined && typeof value.resolveTurnContext !== "function") {
     throw safeError("acp_task_turn_context_resolver_invalid");
   }
+  if (typeof value.resolvePromptBootstrap !== "function") {
+    throw safeError("acp_task_prompt_bootstrap_resolver_invalid");
+  }
   return Object.freeze({
     profile,
     role,
     hostScope,
+    resolvePromptBootstrap: value.resolvePromptBootstrap,
     ...(value.resolveTurnContext ? { resolveTurnContext: value.resolveTurnContext } : {}),
   });
 }

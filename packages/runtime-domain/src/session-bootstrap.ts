@@ -13,7 +13,7 @@ import { invariant } from "./errors.js";
  */
 export function compileProviderSessionBootstrap(input: {
   readonly architecture: Pick<TaskArchitectureSnapshot, "definition">;
-  readonly session: LogicalSessionRecord;
+  readonly session: Pick<LogicalSessionRecord, "kind" | "agentCardId" | "executionProfileId">;
 }): ProviderSessionBootstrap {
   const { definition } = input.architecture;
   const card = cardForSession(definition.conductor, definition.agentCards, input.session);
@@ -23,6 +23,9 @@ export function compileProviderSessionBootstrap(input: {
     return {
       purpose: "task_conductor",
       agentCardId: card.agentCardId,
+      kind: card.kind,
+      title: card.title,
+      ...(card.role ? { role: card.role } : {}),
       systemPrompt: card.systemPrompt,
       capabilityRefs: card.capabilityRefs,
       dispatchRegistry: definition.agentCards.map((worker) => {
@@ -43,6 +46,9 @@ export function compileProviderSessionBootstrap(input: {
   return {
     purpose: "task_worker",
     agentCardId: card.agentCardId,
+    kind: card.kind,
+    title: card.title,
+    ...(card.role ? { role: card.role } : {}),
     systemPrompt: card.systemPrompt,
     capabilityRefs: card.capabilityRefs,
   };
@@ -51,7 +57,7 @@ export function compileProviderSessionBootstrap(input: {
 function cardForSession(
   conductor: AgentCardDefinition,
   workers: readonly AgentCardDefinition[],
-  session: LogicalSessionRecord,
+  session: Pick<LogicalSessionRecord, "kind" | "agentCardId" | "executionProfileId">,
 ): AgentCardDefinition {
   if (session.kind === "conductor") {
     invariant(session.agentCardId === conductor.agentCardId, "conductor_session_card_mismatch");

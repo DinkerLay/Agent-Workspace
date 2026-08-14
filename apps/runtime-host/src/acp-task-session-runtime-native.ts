@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import type { AcpPromptSettlement, AcpSessionObservation } from "@agent-workspace/provider-acp";
-import type { ProviderScopedToolTurnContext } from "@agent-workspace/provider-port";
-import { hashDefinition } from "@agent-workspace/runtime-contracts";
+import {
+  renderProviderSessionBootstrap,
+  type ProviderScopedToolTurnContext,
+} from "@agent-workspace/provider-port";
+import {
+  hashDefinition,
+  type ProviderSessionBootstrap,
+} from "@agent-workspace/runtime-contracts";
 import type { AcpV3FrozenProfileTuple } from "@agent-workspace/runtime-store";
 import type {
   AcpTaskSessionRuntimeNativeBinding,
@@ -102,6 +108,9 @@ export type AcpTaskSessionRuntimeNativeBindingOptions = Readonly<{
   readonly resolveTurnContext?: (
     input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
   ) => ProviderScopedToolTurnContext | undefined;
+  readonly resolvePromptBootstrap?: (
+    input: Readonly<{ readonly sessionExecutionAttemptId: string }>,
+  ) => ProviderSessionBootstrap | undefined;
   readonly onDiagnostic?: (diagnostic: AcpTaskRuntimeDiagnostic) => void;
 }>;
 
@@ -133,6 +142,10 @@ export function createAcpTaskSessionRuntimeNativeBinding(
     && typeof options.resolveTurnContext !== "function") {
     throw safeError(driver, "turn_context_resolver_invalid");
   }
+  if (options.resolvePromptBootstrap !== undefined
+    && typeof options.resolvePromptBootstrap !== "function") {
+    throw safeError(driver, "prompt_bootstrap_resolver_invalid");
+  }
   const bindingHandle = requiredBindingHandle(driver, options.runtime.bindingHandle);
   assertExactProfileFence(driver, options);
 
@@ -150,7 +163,7 @@ export function createAcpTaskSessionRuntimeNativeBinding(
       try {
         assertNativeEffectScope(driver, input, bindingHandle);
         attemptId = requiredAttemptId(driver, input.sessionExecutionAttemptId);
-        content = safeContent(driver, input.content);
+        content = resolvePromptContent(attemptId, safeContent(driver, input.content));
       } catch (error) {
         reportNativeDiagnostic(options.onDiagnostic, "native_scope", error);
         throw error;
@@ -274,6 +287,20 @@ export function createAcpTaskSessionRuntimeNativeBinding(
     const resolved = options.resolveTurnContext?.({ sessionExecutionAttemptId: attemptId });
     if (resolved) turnContexts.set(attemptId, resolved);
     return resolved;
+  }
+
+  function resolvePromptContent(attemptId: string, content: string): string {
+    const bootstrap = options.resolvePromptBootstrap?.({
+      sessionExecutionAttemptId: attemptId,
+    });
+    if (!bootstrap) return content;
+    let rendered: string;
+    try {
+      rendered = renderProviderSessionBootstrap(bootstrap);
+    } catch {
+      throw safeError(driver, "prompt_bootstrap_invalid");
+    }
+    return safeContent(driver, `${rendered}\n\nCurrent assignment:\n${content}`);
   }
 }
 
