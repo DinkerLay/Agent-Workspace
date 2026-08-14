@@ -27,6 +27,7 @@ export type AcpMetaSessionEnsureInput = Readonly<{
   metaSessionId: MetaSessionId;
   metaProfileOptionId: MetaProfileOptionId;
   profile: MetaProfileDefinitionV3;
+  sessionMode: "template_design" | "task_setup";
   /** Recovery must open/load and reconcile without running a fresh behavior probe. */
   mode: "first_submit" | "recovery";
 }>;
@@ -72,10 +73,12 @@ export function createAcpMetaAgentRegistry(
   const readinessByIdentity = new Map<string, Readonly<{
     readiness: AcpProfileReadinessObservation;
     observedAtMs: number;
+    verified: boolean;
   }>>();
   const probeByIdentity = new Map<string, Promise<AcpProfileReadinessObservation>>();
   const sessionBindings = new Map<MetaSessionId, {
     identity: string;
+    sessionMode: "template_design" | "task_setup";
     port: Promise<AcpMetaAgentPort>;
     initializing: boolean;
   }>();
@@ -103,6 +106,7 @@ export function createAcpMetaAgentRegistry(
       readinessByIdentity.set(identity, {
         readiness: option.readiness,
         observedAtMs: now(),
+        verified: false,
       });
     }
   };
@@ -141,7 +145,7 @@ export function createAcpMetaAgentRegistry(
     if (inFlight) return inFlight;
     const cached = readinessByIdentity.get(registration.identity);
     const elapsedMs = cached ? now() - cached.observedAtMs : undefined;
-    if (cached && !probeOptions.force && elapsedMs !== undefined
+    if (cached?.verified && !probeOptions.force && elapsedMs !== undefined
       && elapsedMs >= 0 && elapsedMs < freshnessMs) {
       return Promise.resolve(cached.readiness);
     }
@@ -151,7 +155,11 @@ export function createAcpMetaAgentRegistry(
     ).then((value) => {
       const observed = validateAcpProfileReadinessObservation(value);
       assertAcpReadinessMatchesProfile(observed, registration.option.profile);
-      readinessByIdentity.set(registration.identity, { readiness: observed, observedAtMs: now() });
+      readinessByIdentity.set(registration.identity, {
+        readiness: observed,
+        observedAtMs: now(),
+        verified: true,
+      });
       return observed;
     }).finally(() => {
       probeByIdentity.delete(registration.identity);
@@ -167,37 +175,40 @@ export function createAcpMetaAgentRegistry(
     if (input.mode !== "first_submit" && input.mode !== "recovery") {
       throw new Error("meta_session_ensure_mode_invalid");
     }
+    if (input.sessionMode !== "template_design" && input.sessionMode !== "task_setup") {
+      throw new Error("meta_session_mode_invalid");
+    }
     const registration = requiredRegistration(input.metaProfileOptionId, input.profile);
     const existing = sessionBindings.get(input.metaSessionId);
     if (existing) {
-      if (existing.identity !== registration.identity) {
+      if (existing.identity !== registration.identity || existing.sessionMode !== input.sessionMode) {
         throw new Error("meta_session_profile_binding_conflict");
       }
-      const wasInitializing = existing.initializing;
-      const port = await existing.port;
-      if (input.mode === "first_submit" && !wasInitializing) {
-        assertAcpMetaAvailable(await probe(input.metaProfileOptionId, input.profile, { force: true }));
-      }
-      return port;
+      return await existing.port;
     }
     const pending = (async (): Promise<AcpMetaAgentPort> => {
       if (input.mode === "first_submit") {
-        assertAcpMetaAvailable(await probe(input.metaProfileOptionId, input.profile, { force: true }));
+        assertAcpMetaAvailable(await probe(input.metaProfileOptionId, input.profile));
       }
       const opened = await registration.port.openMetaSession({
         metaSessionId: input.metaSessionId,
         metaProfileOptionId: input.metaProfileOptionId,
+        sessionMode: input.sessionMode,
         disposition: input.mode === "first_submit" ? "create" : "resume",
       });
       const observed = validateAcpProfileReadinessObservation(opened.readiness);
       assertAcpReadinessMatchesProfile(observed, registration.option.profile);
-      readinessByIdentity.set(registration.identity, { readiness: observed, observedAtMs: now() });
+      readinessByIdentity.set(registration.identity, {
+        readiness: observed,
+        observedAtMs: now(),
+        verified: true,
+      });
       if (!opened.available || observed.status !== "available") {
         throw new Error(`meta_agent_profile_unavailable:${safeReadinessReason(observed)}`);
       }
       return registration.port;
     })();
-    const binding = { identity: registration.identity, port: pending, initializing: true };
+    const binding = { identity: registration.identity, sessionMode: input.sessionMode, port: pending, initializing: true };
     sessionBindings.set(input.metaSessionId, binding);
     void pending.then(
       () => { binding.initializing = false; },

@@ -18,6 +18,7 @@ import {
   validateMetaProfileDefinitionV3,
   type ProviderCapability,
 } from "@agent-workspace/runtime-contracts";
+import type { ProviderScopedToolTurnContext } from "./scoped-tools.js";
 
 /** A provider-neutral transcript entry. It carries configuration chat only. */
 export interface MetaAgentTranscriptEntry {
@@ -391,10 +392,14 @@ export interface AcpMetaAgentPort {
   openMetaSession(input: Readonly<{
     metaSessionId: MetaSessionId;
     metaProfileOptionId: MetaProfileOptionId;
+    sessionMode: MetaSessionMode;
     /** Recovery may load/resume the one existing native session, never create another. */
     disposition: "create" | "resume";
   }>): Promise<AcpMetaSessionOpenResult>;
-  startMetaTurn(request: AcpMetaAgentTurnRequest): Promise<MetaAgentTurnAcceptance>;
+  startMetaTurn(
+    request: AcpMetaAgentTurnRequest,
+    scopedToolTurnContext?: ProviderScopedToolTurnContext,
+  ): Promise<MetaAgentTurnAcceptance>;
   reconcileMetaTurn(request: AcpMetaAgentTurnRequest): Promise<MetaAgentTurnReconciliation>;
   closeMetaSession?(input: Readonly<{ metaSessionId: MetaSessionId }>): Promise<void>;
   close?(): Promise<void>;

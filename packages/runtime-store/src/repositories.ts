@@ -105,6 +105,13 @@ export type CompleteMetaTurnStorageInput = Readonly<{
   completedAt: string;
 }>;
 
+export type RecordMetaTurnToolOperationStorageInput = Readonly<{
+  readonly metaTurnId: MetaTurnId;
+  readonly targetRevision: number;
+  readonly providerCallId: string;
+  readonly operation: JsonValue;
+}>;
+
 export type CreateTaskStorageInput = {
   readonly task: TaskRecord;
   readonly snapshot: TaskArchitectureSnapshot;
@@ -180,6 +187,10 @@ export interface ConfigurationStore {
   readonly createMetaMessageAndTurn: (input: CreateMetaTurnStorageInput) => AcpMetaTurnRecordV3;
   readonly getMetaTurn: (metaTurnId: MetaTurnId) => MetaTurnRecord | undefined;
   readonly listMetaTurns: (metaSessionId?: MetaSessionId) => readonly MetaTurnRecord[];
+  readonly recordMetaTurnToolOperation: (
+    input: RecordMetaTurnToolOperationStorageInput,
+  ) => readonly JsonValue[];
+  readonly listMetaTurnToolOperations: (metaTurnId: MetaTurnId) => readonly JsonValue[];
   readonly claimMetaTurn: (now: string, leaseUntil: string) => AcpMetaTurnRecordV3 | undefined;
   readonly releaseMetaTurn: (metaTurnId: MetaTurnId, expectedAttempts: number, now: string) => AcpMetaTurnRecordV3;
   readonly settleMetaTurn: (input: SettleMetaTurnStorageInput) => AcpMetaTurnRecordV3;
@@ -706,6 +717,34 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
         : store.many<Row>("SELECT * FROM meta_turns ORDER BY created_at, meta_turn_id");
       return rows.map(toMetaTurn);
     },
+    recordMetaTurnToolOperation(input) {
+      return store.transaction(() => {
+        const current = requiredAcpMetaTurnRecord(store, input.metaTurnId);
+        if (current.mode !== "template_design") throw new Error("meta_turn_tool_scope_invalid");
+        if (current.targetRevision !== input.targetRevision) throw new Error("meta_turn_tool_revision_mismatch");
+        if (!isMetaTurnToolWritableStatus(current.status)) throw new Error("meta_turn_tool_not_writable");
+        const providerCallId = requiredProviderCallId(input.providerCallId);
+        const operation = cloneStoredJson(input.operation);
+        const entries = readMetaTurnToolOperationEntries(store, input.metaTurnId);
+        const replay = entries.find((entry) => entry.providerCallId === providerCallId);
+        if (replay) {
+          assertSameDurableValue(replay.operation, operation, "meta_turn_tool_call_conflict");
+          return freezeStoredOperations(entries);
+        }
+        if (entries.length >= 64) throw new Error("meta_turn_tool_operation_limit_exceeded");
+        const next = Object.freeze([...entries, Object.freeze({ providerCallId, operation })]);
+        store.run(
+          "UPDATE meta_turns SET tool_operations_json = ? WHERE meta_turn_id = ?",
+          encodeJson(next),
+          input.metaTurnId,
+        );
+        return freezeStoredOperations(next);
+      });
+    },
+    listMetaTurnToolOperations(metaTurnId) {
+      requiredAcpMetaTurnRecord(store, metaTurnId);
+      return freezeStoredOperations(readMetaTurnToolOperationEntries(store, metaTurnId));
+    },
     claimMetaTurn(now, leaseUntil) {
       assertLeaseWindow(now, leaseUntil);
       return store.transaction(() => {
@@ -726,7 +765,9 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
            `,
           now,
         );
-        const current = rows.map(toMetaTurn).find(isAcpMetaTurnV3);
+        const current = rows.map(toMetaTurn)
+          .filter(isAcpMetaTurnV3)
+          .find((turn) => isMetaTurnReadyForClaim(turn, now));
         if (!current) return undefined;
         const leasedFromStatus = current.status === "leased" ? current.leasedFromStatus : current.status;
         if (!isMetaTurnDispatchStatus(leasedFromStatus)) throw new Error("meta_turn_lease_origin_invalid");
@@ -857,6 +898,62 @@ export function createRuntimeRepositories(store: SqliteRuntimeStore): RuntimeRep
 }
 
 type Row = Record<string, unknown>;
+
+type StoredMetaTurnToolOperation = Readonly<{
+  providerCallId: string;
+  operation: JsonValue;
+}>;
+
+function readMetaTurnToolOperationEntries(
+  store: SqliteRuntimeStore,
+  metaTurnId: MetaTurnId,
+): readonly StoredMetaTurnToolOperation[] {
+  const row = store.one<Row>(
+    "SELECT tool_operations_json FROM meta_turns WHERE meta_turn_id = ?",
+    metaTurnId,
+  );
+  if (!row) throw new Error("meta_turn_not_found");
+  const decoded = decodeJson<unknown>(row.tool_operations_json);
+  if (!Array.isArray(decoded) || decoded.length > 64) throw new Error("runtime_store_meta_turn_tool_operations_invalid");
+  const callIds = new Set<string>();
+  return Object.freeze(decoded.map((value): StoredMetaTurnToolOperation => {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).length !== 2
+      || !("providerCallId" in value) || !("operation" in value)) {
+      throw new Error("runtime_store_meta_turn_tool_operations_invalid");
+    }
+    const providerCallId = requiredProviderCallId(value.providerCallId);
+    if (callIds.has(providerCallId)) throw new Error("runtime_store_meta_turn_tool_operations_invalid");
+    callIds.add(providerCallId);
+    return Object.freeze({ providerCallId, operation: cloneStoredJson(value.operation) });
+  }));
+}
+
+function freezeStoredOperations(
+  entries: readonly StoredMetaTurnToolOperation[],
+): readonly JsonValue[] {
+  return Object.freeze(entries.map((entry) => cloneStoredJson(entry.operation)));
+}
+
+function cloneStoredJson(value: unknown): JsonValue {
+  try {
+    const canonical = canonicalJson(value as JsonValue);
+    return JSON.parse(canonical) as JsonValue;
+  } catch {
+    throw new Error("runtime_store_meta_turn_tool_operation_invalid");
+  }
+}
+
+function requiredProviderCallId(value: unknown): string {
+  if (typeof value !== "string" || !/^provider_call_[A-Za-z0-9_-]{1,200}$/u.test(value)) {
+    throw new Error("meta_turn_tool_call_id_invalid");
+  }
+  return value;
+}
+
+function isMetaTurnToolWritableStatus(status: MetaTurnStatus): boolean {
+  return status === "pending" || status === "leased" || status === "provider_accepted" || status === "ambiguous";
+}
 
 function insertMetaTurn(store: SqliteRuntimeStore, turn: MetaTurnRecord): void {
   store.run(
@@ -1073,6 +1170,13 @@ function requiredAcpMetaTurnRecord(
   metaTurnId: string,
 ): AcpMetaTurnRecordV3 {
   return requiredAcpMetaTurn(requiredMetaTurn(store, metaTurnId));
+}
+
+function isMetaTurnReadyForClaim(turn: AcpMetaTurnRecordV3, now: string): boolean {
+  if (turn.status !== "ambiguous") return true;
+  const exponent = Math.min(Math.max(turn.attempts - 1, 0), 8);
+  const delayMs = 1_000 * (2 ** exponent);
+  return Date.parse(now) - Date.parse(turn.updatedAt) >= delayMs;
 }
 
 function updateMetaTurnDispatchState(store: SqliteRuntimeStore, turn: MetaTurnRecord): void {

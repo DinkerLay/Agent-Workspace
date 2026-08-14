@@ -9,7 +9,10 @@ import type {
   InjectedAcpV1Connection,
 } from "@agent-workspace/provider-acp";
 import { createHostPrivateBindingIdentityVault } from "@agent-workspace/provider-acp/host-private";
-import type { AcpMetaAgentTurnRequest } from "@agent-workspace/provider-port";
+import type {
+  AcpMetaAgentTurnRequest,
+  ProviderScopedToolTurnContext,
+} from "@agent-workspace/provider-port";
 import type {
   MetaProfileDefinitionV3,
   MetaSessionId,
@@ -20,6 +23,7 @@ import type {
 } from "./acp-agent-process.js";
 import {
   createAcpMetaProviderComposition,
+  type AcpMetaHumanOnlyActivity,
   type AcpMetaProfileRegistration,
 } from "./acp-meta-provider-composition.js";
 import {
@@ -78,12 +82,13 @@ describe("independent ACP Meta Provider composition", () => {
     await expect(composition.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     })).resolves.toMatchObject({ available: true });
     expect(capabilities).toEqual([]);
 
     const request = metaTurnRequest(metaSessionId, "meta_turn_lifecycle");
-    await expect(composition.startMetaTurn(request)).resolves.toBe("accepted");
+    await expect(startTemplateTurn(composition, request)).resolves.toBe("accepted");
     await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
       state: "returned",
     });
@@ -146,6 +151,7 @@ describe("independent ACP Meta Provider composition", () => {
     await expect(first.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     })).resolves.toMatchObject({ available: true });
     fixture.spawned[1]?.child.crash();
@@ -161,6 +167,7 @@ describe("independent ACP Meta Provider composition", () => {
     await expect(recovered.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "resume",
     })).resolves.toMatchObject({ available: true });
     const coldRequest = metaTurnRequest(metaSessionId, "meta_turn_cold_unknown");
@@ -168,12 +175,12 @@ describe("independent ACP Meta Provider composition", () => {
     expect(fixture.peers[3]?.promptCount).toBe(0);
 
     const finalRequest = metaTurnRequest(metaSessionId, "meta_turn_strict_final");
-    await expect(recovered.startMetaTurn(finalRequest)).resolves.toBe("accepted");
+    await expect(startTemplateTurn(recovered, finalRequest)).resolves.toBe("accepted");
     await expect(recovered.reconcileMetaTurn(finalRequest)).resolves.toMatchObject({
       state: "returned",
     });
     const deniedRequest = metaTurnRequest(metaSessionId, "meta_turn_permission_rejected");
-    await expect(recovered.startMetaTurn(deniedRequest)).resolves.toBe("accepted");
+    await expect(startTemplateTurn(recovered, deniedRequest)).resolves.toBe("accepted");
     await expect(recovered.reconcileMetaTurn(deniedRequest)).resolves.toEqual({ state: "unknown" });
     expect(capabilities).toEqual([]);
 
@@ -183,7 +190,6 @@ describe("independent ACP Meta Provider composition", () => {
       "cold_reconcile",
       "independent_process",
       "no_cwd",
-      "no_tools",
       "no_workspace",
       "permission_rejected",
       "strict_whole_final",
@@ -364,12 +370,18 @@ describe("independent ACP Meta Provider composition", () => {
 
   it("qualifies on a temporary recovered Binding and never prompts the target MetaSession", async () => {
     const fixture = await createFixture("single");
-    const composition = fixture.createComposition();
+    const activities: AcpMetaHumanOnlyActivity[] = [];
+    const composition = fixture.createComposition({
+      onHumanOnlyActivity(activity) {
+        activities.push(activity);
+      },
+    });
     const metaSessionId = "meta_session_controlled" as MetaSessionId;
 
     const opened = await composition.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
     expect(opened).toMatchObject({
@@ -386,7 +398,7 @@ describe("independent ACP Meta Provider composition", () => {
     expect(fixture.peers[1]?.promptCount).toBe(0);
     expect(fixture.peers[1]?.newSessionParams).toHaveLength(1);
 
-    await expect(composition.startMetaTurn(metaTurnRequest(
+    await expect(startTemplateTurn(composition, metaTurnRequest(
       "meta_session_other" as MetaSessionId,
       "meta_turn_wrong-session",
     ))).rejects.toMatchObject({ code: "acp_meta_session_not_open" });
@@ -395,12 +407,13 @@ describe("independent ACP Meta Provider composition", () => {
     await expect(composition.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     })).resolves.toEqual(opened);
     expect(fixture.spawned).toHaveLength(2);
 
     const request = metaTurnRequest(metaSessionId, "meta_turn_controlled");
-    await expect(composition.startMetaTurn(request)).resolves.toBe("accepted");
+    await expect(startTemplateTurn(composition, request)).resolves.toBe("accepted");
     await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
       state: "returned",
       finalText: '{"operation":"answer","message":"controlled"}',
@@ -408,17 +421,52 @@ describe("independent ACP Meta Provider composition", () => {
     expect(fixture.peers[0]?.promptCount).toBe(1);
     expect(fixture.peers[1]?.promptCount).toBe(1);
     expect(fixture.peers[1]?.newSessionParams).toHaveLength(1);
-    expect(fixture.peers[1]?.newSessionParams[0]).toMatchObject({ mcpServers: [] });
+    expect(fixture.peers[1]?.newSessionParams[0]).toMatchObject({
+      mcpServers: [{ type: "http", name: "agent_workspace_template_draft" }],
+    });
     expect(fixture.peers[1]?.handlerKeys).toEqual([
       "requestPermission",
       "sessionUpdate",
     ]);
+    expect(activities).toEqual([{
+      kind: "agent_message_chunk",
+      metaSessionId,
+      metaTurnId: "meta_turn_controlled",
+      text: '{"operation":"answer","message":"controlled"}',
+    }]);
+    expect(JSON.stringify(activities)).not.toContain(rawSessionId);
 
     const directory = String(fixture.spawned[0]?.options.cwd);
     expect(directory).not.toBe(forbiddenTaskWorkspace);
     expect((await stat(directory)).mode & 0o777).toBe(0o700);
     await composition.closeMetaSession({ metaSessionId });
     await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    await composition.close();
+  });
+
+  it("does not let a human-only activity projection failure poison a completed Meta turn", async () => {
+    const fixture = await createFixture("single");
+    const composition = fixture.createComposition({
+      onHumanOnlyActivity() {
+        throw new Error("human_activity_projection_failed");
+      },
+    });
+    const metaSessionId = "meta_session_activity-failure" as MetaSessionId;
+    const request = metaTurnRequest(metaSessionId, "meta_turn_activity-failure");
+
+    await expect(composition.openMetaSession({
+      metaSessionId,
+      metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
+      disposition: "create",
+    })).resolves.toMatchObject({ available: true });
+    await expect(startTemplateTurn(composition, request)).resolves.toBe("accepted");
+    await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
+      state: "returned",
+      finalText: '{"operation":"answer","message":"controlled"}',
+    });
+    expect(fixture.peers[1]?.promptCount).toBe(1);
+
     await composition.close();
   });
 
@@ -441,6 +489,7 @@ describe("independent ACP Meta Provider composition", () => {
     await expect(first.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     })).resolves.toMatchObject({ available: true });
     expect(fixture.peers[1]?.newSessionParams).toHaveLength(1);
@@ -452,6 +501,7 @@ describe("independent ACP Meta Provider composition", () => {
     await expect(recovered.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "resume",
     })).resolves.toMatchObject({ available: true });
 
@@ -477,11 +527,13 @@ describe("independent ACP Meta Provider composition", () => {
     const first = composition.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
     const replay = composition.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
     const [opened, replayed] = await Promise.all([first, replay]);
@@ -494,11 +546,12 @@ describe("independent ACP Meta Provider composition", () => {
     const opening = composition.openMetaSession({
       metaSessionId: fencedSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
     const closing = composition.closeMetaSession({ metaSessionId: fencedSessionId });
     await Promise.allSettled([opening, closing]);
-    await expect(composition.startMetaTurn(metaTurnRequest(
+    await expect(startTemplateTurn(composition, metaTurnRequest(
       fencedSessionId,
       "meta_turn_after-close-fence",
     ))).rejects.toMatchObject({ code: "acp_meta_session_not_open" });
@@ -509,11 +562,12 @@ describe("independent ACP Meta Provider composition", () => {
     const ownerOpening = composition.openMetaSession({
       metaSessionId: ownerFencedSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
     const ownerClosing = composition.close();
     await Promise.allSettled([ownerOpening, ownerClosing]);
-    await expect(composition.startMetaTurn(metaTurnRequest(
+    await expect(startTemplateTurn(composition, metaTurnRequest(
       ownerFencedSessionId,
       "meta_turn_after-owner-close-fence",
     ))).rejects.toMatchObject({ code: "acp_meta_session_not_open" });
@@ -523,15 +577,19 @@ describe("independent ACP Meta Provider composition", () => {
 
   it("bounds prompt admission and closes without waiting for a hung Turn", async () => {
     const fixture = await createFixture("hang");
-    const composition = fixture.createComposition({ operationTimeoutMs: 10 });
+    const composition = fixture.createComposition({
+      operationTimeoutMs: 10,
+      turnAdmissionTimeoutMs: 10,
+    });
     const metaSessionId = "meta_session_hung-turn" as MetaSessionId;
     await composition.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
 
-    const acceptance = composition.startMetaTurn(metaTurnRequest(
+    const acceptance = startTemplateTurn(composition, metaTurnRequest(
       metaSessionId,
       "meta_turn_hung",
     ));
@@ -545,7 +603,30 @@ describe("independent ACP Meta Provider composition", () => {
     await composition.close();
   });
 
-  it("fails multiple final groups and never resends an accepted or cold-reconciled Turn", async () => {
+  it("keeps a tool-rich Meta Turn admission independent from short process timeouts", async () => {
+    const fixture = await createFixture("delayed");
+    const composition = fixture.createComposition({
+      operationTimeoutMs: 5,
+      turnAdmissionTimeoutMs: 100,
+    });
+    const metaSessionId = "meta_session_delayed-turn" as MetaSessionId;
+    await composition.openMetaSession({
+      metaSessionId,
+      metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
+      disposition: "create",
+    });
+
+    const request = metaTurnRequest(metaSessionId, "meta_turn_delayed");
+    await expect(startTemplateTurn(composition, request)).resolves.toBe("accepted");
+    await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
+      state: "returned",
+      finalText: '{"operation":"answer","message":"controlled"}',
+    });
+    await composition.close();
+  });
+
+  it("keeps only the last whole response after progress messages and never resends the Turn", async () => {
     const fixture = await createFixture("multiple");
     const composition = fixture.createComposition();
     const metaSessionId = "meta_session_multiple" as MetaSessionId;
@@ -556,19 +637,20 @@ describe("independent ACP Meta Provider composition", () => {
     const opened = await composition.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
     expect(opened.available).toBe(true);
 
-    await expect(composition.startMetaTurn(request)).resolves.toBe("accepted");
+    await expect(startTemplateTurn(composition, request)).resolves.toBe("accepted");
     await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
-      state: "failed",
-      failureCode: "acp_meta_final_candidate_nonunique",
+      state: "returned",
+      finalText: '{"operation":"answer","message":"latest"}',
     });
-    await expect(composition.startMetaTurn(request)).resolves.toBe("accepted");
+    await expect(startTemplateTurn(composition, request)).resolves.toBe("accepted");
     await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
-      state: "failed",
-      failureCode: "acp_meta_final_candidate_nonunique",
+      state: "returned",
+      finalText: '{"operation":"answer","message":"latest"}',
     });
     expect(fixture.peers[0]?.promptCount).toBe(1);
     expect(fixture.peers[1]?.promptCount).toBe(1);
@@ -578,8 +660,157 @@ describe("independent ACP Meta Provider composition", () => {
     await composition.close();
   });
 
+  it("exposes only the scoped Template Draft MCP during one MetaTurn and revokes it afterwards", async () => {
+    const fixture = await createFixture("scoped_tool");
+    const activities: AcpMetaHumanOnlyActivity[] = [];
+    const composition = fixture.createComposition({
+      onHumanOnlyActivity(activity) {
+        activities.push(activity);
+      },
+    });
+    const metaSessionId = "meta_session_scoped-template" as MetaSessionId;
+    await expect(composition.openMetaSession({
+      metaSessionId,
+      metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
+      disposition: "create",
+    })).resolves.toMatchObject({ available: true });
+
+    const calls: Array<Readonly<{ name: string; arguments: unknown }>> = [];
+    const request = metaTurnRequest(metaSessionId, "meta_turn_scoped-template");
+    await expect(startTemplateTurn(composition, request, templateToolContext((name, argumentsValue) => {
+      calls.push(Object.freeze({ name, arguments: argumentsValue }));
+      return Object.freeze({
+        targetRevision: 3,
+        operation: Object.freeze({ kind: "template_conductor_prompt_edit" }),
+      });
+    }))).resolves.toBe("accepted");
+    await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
+      state: "returned",
+      finalText: '{"operation":"answer","message":"scoped"}',
+    });
+    expect(calls).toEqual([{
+      name: "template_draft_edit_prompt",
+      arguments: {
+        target: { kind: "conductor" },
+        oldText: "old fragment",
+        newText: "new fragment",
+      },
+    }]);
+    expect(activities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "tool_status",
+        metaSessionId,
+        metaTurnId: "meta_turn_scoped-template",
+        title: "定位修改 Prompt",
+        status: "in_progress",
+        inputSummary: expect.stringContaining("old fragment"),
+      }),
+      expect.objectContaining({
+        kind: "tool_status",
+        metaSessionId,
+        metaTurnId: "meta_turn_scoped-template",
+        title: "定位修改 Prompt",
+        status: "completed",
+        outputSummary: expect.stringMatching(/Draft r3.*Prompt 定位修改操作.*尚未应用/u),
+      }),
+    ]));
+
+    const server = record((fixture.peers[1]?.newSessionParams[0]?.mcpServers as unknown[])[0]);
+    await expect(callMcp(String(server.url), 3, "tools/call", {
+      name: "template_draft_read",
+      arguments: { target: { kind: "template" } },
+    })).resolves.toMatchObject({ error: { message: "scoped_turn_inactive" } });
+    await composition.close();
+  });
+
+  it("approves exactly one Host-injected Template MCP call without granting general Meta authority", async () => {
+    const fixture = await createFixture("scoped_tool_permission");
+    const composition = fixture.createComposition();
+    const metaSessionId = "meta_session_scoped-template-permission" as MetaSessionId;
+    await expect(composition.openMetaSession({
+      metaSessionId,
+      metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
+      disposition: "create",
+    })).resolves.toMatchObject({ available: true });
+
+    const calls: Array<Readonly<{ name: string; arguments: unknown }>> = [];
+    const request = metaTurnRequest(metaSessionId, "meta_turn_scoped-template-permission");
+    await expect(startTemplateTurn(composition, request, templateToolContext((name, argumentsValue) => {
+      calls.push(Object.freeze({ name, arguments: argumentsValue }));
+      return Object.freeze({
+        targetRevision: 3,
+        operation: Object.freeze({ kind: "template_conductor_prompt_edit" }),
+      });
+    }))).resolves.toBe("accepted");
+    await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
+      state: "returned",
+      finalText: '{"operation":"answer","message":"scoped"}',
+    });
+    expect(calls).toEqual([expect.objectContaining({ name: "template_draft_edit_prompt" })]);
+
+    await composition.close();
+  });
+
+  it("opens Task Setup Meta without any Template Draft MCP catalog", async () => {
+    const fixture = await createFixture("single");
+    const composition = fixture.createComposition();
+    const metaSessionId = "meta_session_task-setup" as MetaSessionId;
+    await expect(composition.openMetaSession({
+      metaSessionId,
+      metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "task_setup",
+      disposition: "create",
+    })).resolves.toMatchObject({ available: true });
+    expect(fixture.peers[1]?.newSessionParams[0]).toMatchObject({ mcpServers: [] });
+
+    const request = Object.freeze({
+      ...metaTurnRequest(metaSessionId, "meta_turn_task-setup"),
+      mode: "task_setup" as const,
+      context: Object.freeze({ taskSetup: Object.freeze({ title: "Controlled setup" }) }),
+    });
+    await expect(composition.startMetaTurn(request)).resolves.toBe("accepted");
+    await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({ state: "returned" });
+    await composition.close();
+  });
+
+  it("requires negotiated HTTP MCP support only for Template-design Meta sessions", async () => {
+    const fixture = await createFixture("single", true, {
+      load: true,
+      resume: true,
+      close: true,
+      mcpHttp: false,
+    });
+    const composition = fixture.createComposition();
+
+    await expect(composition.openMetaSession({
+      metaSessionId: "meta_session_template-without-mcp" as MetaSessionId,
+      metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
+      disposition: "create",
+    })).resolves.toMatchObject({
+      available: false,
+      readiness: {
+        status: "capability_missing",
+        reasons: expect.arrayContaining(["acp_capability_missing:mcp_http"]),
+        missingCapabilities: ["mcp_http"],
+      },
+    });
+    expect(fixture.peers.every((peer) => peer.targetPromptCount === 0)).toBe(true);
+
+    await expect(composition.openMetaSession({
+      metaSessionId: "meta_session_task-setup-without-http-mcp" as MetaSessionId,
+      metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "task_setup",
+      disposition: "create",
+    })).resolves.toMatchObject({ available: true });
+    expect(fixture.peers.at(-1)?.newSessionParams[0]).toMatchObject({ mcpServers: [] });
+    await composition.close();
+  });
+
   it.each(["tool", "permission", "transport_failure"] as const)(
-    "fails %s activity/outcome closed and does not automatically resubmit",
+    "keeps %s activity/outcome scoped and does not automatically resubmit",
     async (behavior) => {
       const fixture = await createFixture(behavior);
       const composition = fixture.createComposition();
@@ -588,12 +819,20 @@ describe("independent ACP Meta Provider composition", () => {
       await composition.openMetaSession({
         metaSessionId,
         metaProfileOptionId: "meta_profile_option_controlled",
+        sessionMode: "template_design",
         disposition: "create",
       });
 
-      await expect(composition.startMetaTurn(request)).resolves.toBe("accepted");
-      await expect(composition.reconcileMetaTurn(request)).resolves.toEqual({ state: "unknown" });
-      await expect(composition.startMetaTurn(request)).resolves.toBe("accepted");
+      await expect(startTemplateTurn(composition, request)).resolves.toBe("accepted");
+      if (behavior === "tool") {
+        await expect(composition.reconcileMetaTurn(request)).resolves.toMatchObject({
+          state: "failed",
+          failureCode: "acp_meta_final_candidate_missing",
+        });
+      } else {
+        await expect(composition.reconcileMetaTurn(request)).resolves.toEqual({ state: "unknown" });
+      }
+      await expect(startTemplateTurn(composition, request)).resolves.toBe("accepted");
       expect(fixture.peers[0]?.promptCount).toBe(1);
       expect(fixture.peers[1]?.promptCount).toBe(1);
       expect(fixture.peers[1]?.handlerKeys).toEqual([
@@ -647,6 +886,7 @@ describe("independent ACP Meta Provider composition", () => {
     await expect(composition.openMetaSession({
       metaSessionId: "meta_session_token-injection" as MetaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
       qualification: Object.freeze({ taskToken: true }),
     } as never)).rejects.toMatchObject({ code: "acp_meta_open_input_invalid" });
@@ -661,6 +901,7 @@ describe("independent ACP Meta Provider composition", () => {
     const opened = await composition.openMetaSession({
       metaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
     expect(opened.available).toBe(true);
@@ -683,6 +924,7 @@ describe("independent ACP Meta Provider composition", () => {
     const opened = await composition.openMetaSession({
       metaSessionId: "meta_session_cleanup_timeout" as MetaSessionId,
       metaProfileOptionId: "meta_profile_option_controlled",
+      sessionMode: "template_design",
       disposition: "create",
     });
 
@@ -705,7 +947,10 @@ describe("independent ACP Meta Provider composition", () => {
 
 type ControlledBehavior =
   | "single"
+  | "delayed"
   | "multiple"
+  | "scoped_tool"
+  | "scoped_tool_permission"
   | "tool"
   | "permission"
   | "single_then_permission"
@@ -719,7 +964,8 @@ async function createFixture(
     readonly load: boolean;
     readonly resume: boolean;
     readonly close: boolean;
-  }> = { load: true, resume: true, close: true },
+    readonly mcpHttp?: boolean;
+  }> = { load: true, resume: true, close: true, mcpHttp: true },
 ): Promise<Readonly<{
   readonly privateRoot: string;
   readonly registration: AcpMetaProfileRegistration;
@@ -734,11 +980,13 @@ async function createFixture(
   createComposition(
     overrides?: Readonly<{
       operationTimeoutMs?: number;
+      turnAdmissionTimeoutMs?: number;
       identityVaultResolver?: NonNullable<
         NonNullable<Parameters<typeof createAcpMetaProviderComposition>[0]>["processFactoryOptions"]
       >["identityVaultResolver"];
       onTargetLifecycleCapability?: (capability: AcpTargetLifecycleCapability) => void;
       onTargetCheckpointFactCapability?: (capability: AcpTargetCheckpointFactCapability) => void;
+      onHumanOnlyActivity?: (activity: AcpMetaHumanOnlyActivity) => void | Promise<void>;
     }>,
   ): ReturnType<typeof createAcpMetaProviderComposition>;
 }>> {
@@ -820,6 +1068,7 @@ async function createFixture(
           : {}),
       }),
       operationTimeoutMs: overrides.operationTimeoutMs ?? 1_000,
+      turnAdmissionTimeoutMs: overrides.turnAdmissionTimeoutMs ?? 1_000,
       readinessTtlMs: 60_000,
       now: () => Date.parse("2026-08-12T00:00:00.000Z"),
       createBindingHandle: (() => {
@@ -835,6 +1084,9 @@ async function createFixture(
         : {}),
       ...(overrides.onTargetCheckpointFactCapability
         ? { onTargetCheckpointFactCapability: overrides.onTargetCheckpointFactCapability }
+        : {}),
+      ...(overrides.onHumanOnlyActivity
+        ? { onHumanOnlyActivity: overrides.onHumanOnlyActivity }
         : {}),
     }),
   });
@@ -890,6 +1142,7 @@ class ControlledMetaPeer {
     readonly load: boolean;
     readonly resume: boolean;
     readonly close: boolean;
+    readonly mcpHttp?: boolean;
   }>;
 
   constructor(
@@ -900,6 +1153,7 @@ class ControlledMetaPeer {
       readonly load: boolean;
       readonly resume: boolean;
       readonly close: boolean;
+      readonly mcpHttp?: boolean;
     }>,
   ) {
     this.#handlers = handlers;
@@ -920,6 +1174,9 @@ class ControlledMetaPeer {
         },
         agentCapabilities: {
           ...(this.#capabilities.load ? { loadSession: true } : {}),
+          mcpCapabilities: {
+            ...(this.#capabilities.mcpHttp === false ? {} : { http: true }),
+          },
           sessionCapabilities: {
             ...(this.#capabilities.resume ? { resume: {} } : {}),
             ...(this.#capabilities.close ? { close: {} } : {}),
@@ -929,20 +1186,23 @@ class ControlledMetaPeer {
       newSession: async (value) => {
         const request = record(value);
         this.newSessionParams.push(structuredClone(request));
+        await this.discoverTemplateTools(request);
         return {
           sessionId: rawSessionId,
           configOptions: [modelOption(metaProfile.model)],
         };
       },
       ...(this.#capabilities.load ? {
-        loadSession: async () => {
+        loadSession: async (value) => {
           this.loadCalls += 1;
+          await this.discoverTemplateTools(record(value));
           return { configOptions: [modelOption(metaProfile.model)] };
         },
       } : {}),
       ...(this.#capabilities.resume ? {
-        resumeSession: async () => {
+        resumeSession: async (value) => {
           this.resumeCalls += 1;
+          await this.discoverTemplateTools(record(value));
           return { configOptions: [modelOption(metaProfile.model)] };
         },
       } : {}),
@@ -973,6 +1233,62 @@ class ControlledMetaPeer {
     this.targetPromptCount += 1;
     if (this.#behavior === "hang") {
       return new Promise<never>(() => undefined);
+    }
+    if (this.#behavior === "delayed") {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    if (this.#behavior === "scoped_tool" || this.#behavior === "scoped_tool_permission") {
+      const server = record((this.newSessionParams[0]?.mcpServers as unknown[])[0]);
+      if (this.#behavior === "scoped_tool_permission") {
+        await this.agentText(request, rawMessageIds[0], "I will use the scoped Template tool.");
+        const toolCallId = "raw-meta-template-tool";
+        await this.#handlers.sessionUpdate({
+          sessionId: request.sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "mcp.agent_workspace_template_draft.template_draft_edit_prompt",
+            status: "pending",
+          },
+        });
+        const permission = record(await this.#handlers.requestPermission({
+          sessionId: request.sessionId,
+          toolCall: {
+            toolCallId,
+            title: "Use template_draft_edit_prompt?",
+            status: "pending",
+          },
+          options: [{
+            optionId: "raw-meta-template-allow-once",
+            name: "Allow",
+            kind: "allow_once",
+          }, {
+            optionId: "raw-meta-template-deny-once",
+            name: "Decline",
+            kind: "reject_once",
+          }],
+        }));
+        if (record(permission.outcome).outcome !== "selected"
+          || record(permission.outcome).optionId !== "raw-meta-template-allow-once") {
+          throw new Error("controlled_template_tool_permission_not_selected");
+        }
+      }
+      const response = await callMcp(String(server.url), 2, "tools/call", {
+        name: "template_draft_edit_prompt",
+        arguments: {
+          target: { kind: "conductor" },
+          oldText: "old fragment",
+          newText: "new fragment",
+        },
+      });
+      const result = record(response).result;
+      if (!record(result).structuredContent) throw new Error("controlled_template_tool_result_missing");
+      await this.agentText(
+        request,
+        this.#behavior === "scoped_tool_permission" ? rawMessageIds[1] : rawMessageIds[0],
+        '{"operation":"answer","message":"scoped"}',
+      );
+      return { stopReason: "end_turn" };
     }
     if (this.#behavior === "multiple") {
       await this.agentText(request, rawMessageIds[0], '{"operation":"answer","message":"old"}');
@@ -1027,6 +1343,18 @@ class ControlledMetaPeer {
     return { stopReason: "end_turn" };
   }
 
+  async discoverTemplateTools(request: Record<string, unknown>): Promise<void> {
+    const mcpServer = Array.isArray(request.mcpServers) && request.mcpServers.length > 0
+      ? record(request.mcpServers[0])
+      : undefined;
+    if (!mcpServer?.url) return;
+    const response = await callMcp(String(mcpServer.url), 1, "tools/list", {});
+    const tools = record(record(response).result).tools;
+    if (!Array.isArray(tools) || tools.length !== 10) {
+      throw new Error("controlled_template_tools_missing");
+    }
+  }
+
   async agentText(
     request: Record<string, unknown>,
     messageId: string,
@@ -1061,6 +1389,43 @@ function metaTurnRequest(
     transcript: [],
     content: "Revise this configuration draft.",
   } as AcpMetaAgentTurnRequest);
+}
+
+function templateToolContext(
+  onCall: (name: string, argumentsValue: unknown) => unknown = () => Object.freeze({ ok: true }),
+): ProviderScopedToolTurnContext {
+  const lease = Object.freeze(Object.create(null));
+  return Object.freeze({
+    capabilityClass: "template_draft" as const,
+    lease,
+    async handleCall(call) {
+      if (call.lease !== lease) throw new Error("controlled_template_tool_lease_invalid");
+      return Object.freeze({ providerCallId: call.providerCallId, result: onCall(call.name, call.arguments) });
+    },
+  });
+}
+
+function startTemplateTurn(
+  composition: ReturnType<typeof createAcpMetaProviderComposition>,
+  request: AcpMetaAgentTurnRequest,
+  context: ProviderScopedToolTurnContext = templateToolContext(),
+) {
+  return composition.startMetaTurn(request, context);
+}
+
+async function callMcp(
+  url: string,
+  id: number,
+  method: string,
+  params: unknown,
+): Promise<unknown> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+  });
+  if (!response.ok) throw new Error("controlled_template_mcp_http_failed");
+  return response.json();
 }
 
 function modelOption(model: string): Record<string, unknown> {

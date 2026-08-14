@@ -322,12 +322,104 @@ export function applyMetaPatchProposalToTemplateDraft(input: Readonly<{
       case "template_conductor_prompt_set":
         definition = { ...definition, conductor: { ...definition.conductor, systemPrompt: requiredText(operation.value, "meta_patch_prompt_required", 32_000) } };
         break;
+      case "template_conductor_prompt_edit":
+        definition = {
+          ...definition,
+          conductor: {
+            ...definition.conductor,
+            systemPrompt: replaceExactlyOnce(
+              definition.conductor.systemPrompt,
+              operation.oldText,
+              operation.newText,
+            ),
+          },
+        };
+        break;
+      case "template_card_create": {
+        invariant(!definition.agentCards.some((card) => card.agentCardId === operation.agentCardId)
+          && definition.conductor.agentCardId !== operation.agentCardId, "meta_patch_agent_card_id_conflict");
+        invariant(definition.executionProfiles.some((profile) => profile.executionProfileId === operation.executionProfileId), "meta_patch_execution_profile_not_found");
+        definition = {
+          ...definition,
+          agentCards: [...definition.agentCards, {
+            agentCardId: operation.agentCardId,
+            kind: operation.cardKind,
+            title: requiredSingleLineText(operation.title, "meta_patch_agent_card_title_required", 160),
+            ...(operation.role === undefined ? {} : { role: requiredText(operation.role, "meta_patch_agent_card_role_required", 500) }),
+            executionProfileId: operation.executionProfileId,
+            systemPrompt: requiredNormalizedText(operation.systemPrompt, "meta_patch_prompt_required", 50_000),
+            capabilityRefs: [],
+            dispatchProfile: {
+              title: requiredSingleLineText(operation.dispatchProfile.title, "meta_patch_dispatch_title_required", 160),
+              description: requiredText(operation.dispatchProfile.description, "meta_patch_dispatch_description_required", 2_000),
+            },
+          }],
+        };
+        break;
+      }
+      case "template_card_update": {
+        let matched = false;
+        if (operation.executionProfileId !== undefined) {
+          invariant(definition.executionProfiles.some((profile) => profile.executionProfileId === operation.executionProfileId), "meta_patch_execution_profile_not_found");
+        }
+        const agentCards = definition.agentCards.map((card) => {
+          if (card.agentCardId !== operation.agentCardId) return card;
+          matched = true;
+          return {
+            ...card,
+            ...(operation.title === undefined ? {} : { title: requiredSingleLineText(operation.title, "meta_patch_agent_card_title_required", 160) }),
+            ...(operation.role === undefined
+              ? {}
+              : operation.role === null ? { role: undefined } : { role: requiredText(operation.role, "meta_patch_agent_card_role_required", 500) }),
+            ...(operation.executionProfileId === undefined ? {} : { executionProfileId: operation.executionProfileId }),
+            ...(operation.systemPrompt === undefined ? {} : { systemPrompt: requiredNormalizedText(operation.systemPrompt, "meta_patch_prompt_required", 50_000) }),
+            ...(operation.dispatchProfile === undefined ? {} : {
+              dispatchProfile: {
+                title: requiredSingleLineText(operation.dispatchProfile.title, "meta_patch_dispatch_title_required", 160),
+                description: requiredText(operation.dispatchProfile.description, "meta_patch_dispatch_description_required", 2_000),
+              },
+            }),
+          };
+        });
+        invariant(matched, "meta_patch_agent_card_not_found");
+        definition = { ...definition, agentCards };
+        break;
+      }
+      case "template_card_remove": {
+        invariant(!definition.deliverables.some((deliverable) => deliverable.ownerAgentCardId === operation.agentCardId), "meta_patch_agent_card_in_use");
+        const agentCards = definition.agentCards.filter((card) => card.agentCardId !== operation.agentCardId);
+        invariant(agentCards.length !== definition.agentCards.length, "meta_patch_agent_card_not_found");
+        definition = { ...definition, agentCards };
+        break;
+      }
+      case "template_card_reorder": {
+        const byId = new Map(definition.agentCards.map((card) => [card.agentCardId, card]));
+        invariant(operation.agentCardIds.length === definition.agentCards.length
+          && new Set(operation.agentCardIds).size === operation.agentCardIds.length
+          && operation.agentCardIds.every((agentCardId) => byId.has(agentCardId)), "meta_patch_agent_card_reorder_invalid");
+        definition = { ...definition, agentCards: operation.agentCardIds.map((agentCardId) => byId.get(agentCardId)!) };
+        break;
+      }
       case "template_card_prompt_set": {
         let matched = false;
         const agentCards = definition.agentCards.map((card) => {
           if (card.agentCardId !== operation.agentCardId) return card;
           matched = true;
           return { ...card, systemPrompt: requiredText(operation.value, "meta_patch_prompt_required", 32_000) };
+        });
+        invariant(matched, "meta_patch_agent_card_not_found");
+        definition = { ...definition, agentCards };
+        break;
+      }
+      case "template_card_prompt_edit": {
+        let matched = false;
+        const agentCards = definition.agentCards.map((card) => {
+          if (card.agentCardId !== operation.agentCardId) return card;
+          matched = true;
+          return {
+            ...card,
+            systemPrompt: replaceExactlyOnce(card.systemPrompt, operation.oldText, operation.newText),
+          };
         });
         invariant(matched, "meta_patch_agent_card_not_found");
         definition = { ...definition, agentCards };
@@ -351,6 +443,19 @@ export function applyMetaPatchProposalToTemplateDraft(input: Readonly<{
         definition = isTemplateDefinitionV3(definition)
           ? { ...definition, executionProfiles: executionProfiles as typeof definition.executionProfiles }
           : { ...definition, executionProfiles: executionProfiles as typeof definition.executionProfiles };
+        break;
+      }
+      case "template_profile_revision_set": {
+        invariant(isTemplateDefinitionV3(definition), "meta_patch_profile_revision_v3_required");
+        invariant(operation.profile.executionProfileId === operation.executionProfileId, "meta_patch_profile_revision_identity_mismatch");
+        let matched = false;
+        const executionProfiles = definition.executionProfiles.map((profile) => {
+          if (profile.executionProfileId !== operation.executionProfileId) return profile;
+          matched = true;
+          return operation.profile;
+        });
+        invariant(matched, "meta_patch_execution_profile_not_found");
+        definition = { ...definition, executionProfiles };
         break;
       }
       case "template_card_profile_set": {
@@ -382,6 +487,14 @@ export function applyMetaPatchProposalToTemplateDraft(input: Readonly<{
         definition = { ...definition, deliverables };
         break;
       }
+      case "template_deliverable_remove": {
+        const deliverables = definition.deliverables.filter(
+          (deliverable) => deliverable.artifactPath !== operation.artifactPath,
+        );
+        invariant(deliverables.length !== definition.deliverables.length, "meta_patch_deliverable_not_found");
+        definition = { ...definition, deliverables };
+        break;
+      }
       default:
         throw new Error("meta_session_mode_mismatch");
     }
@@ -395,6 +508,18 @@ export function applyMetaPatchProposalToTemplateDraft(input: Readonly<{
     updatedAt: input.now,
   };
   return { draft, proposal: markProposalApplied(input.proposal, draft.revision, input.now) };
+}
+
+function replaceExactlyOnce(source: string, oldText: string, newText: string): string {
+  invariant(oldText.length > 0, "meta_patch_text_match_required");
+  const first = source.indexOf(oldText);
+  invariant(first >= 0, "meta_patch_text_match_not_found");
+  invariant(source.indexOf(oldText, first + oldText.length) < 0, "meta_patch_text_match_ambiguous");
+  return requiredNormalizedText(
+    `${source.slice(0, first)}${newText}${source.slice(first + oldText.length)}`,
+    "meta_patch_prompt_required",
+    50_000,
+  );
 }
 
 export function applyMetaPatchProposalToTaskSetup(input: Readonly<{
@@ -564,7 +689,30 @@ function isMetaSessionV3(session: MetaSessionRecord): session is MetaSessionReco
 }
 
 function cloneOperation(operation: MetaPatchOperation): MetaPatchOperation {
-  return { ...operation };
+  switch (operation.kind) {
+    case "template_card_create":
+      return { ...operation, dispatchProfile: { ...operation.dispatchProfile } };
+    case "template_card_update":
+      return { ...operation, ...(operation.dispatchProfile === undefined ? {} : { dispatchProfile: { ...operation.dispatchProfile } }) };
+    case "template_card_reorder":
+      return { ...operation, agentCardIds: [...operation.agentCardIds] };
+    case "template_profile_revision_set":
+      return {
+        ...operation,
+        profile: {
+          ...operation.profile,
+          configIntent: { ...operation.profile.configIntent },
+          requiredExtensions: [...operation.profile.requiredExtensions],
+          capabilityPolicy: {
+            ...operation.profile.capabilityPolicy,
+            requiredCapabilities: [...operation.profile.capabilityPolicy.requiredCapabilities],
+            allowedTools: [...operation.profile.capabilityPolicy.allowedTools],
+          },
+        },
+      };
+    default:
+      return { ...operation };
+  }
 }
 
 function requiredOpaqueId(value: string, prefix: string, code: string): string {

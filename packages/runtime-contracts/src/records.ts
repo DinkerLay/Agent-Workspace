@@ -25,7 +25,10 @@ import type {
 } from "./ids";
 import { canonicalJson, hashDefinition, type JsonObject, type JsonValue } from "./json";
 import type {
+  AgentCardKind,
+  AgentDispatchProfile,
   ExecutionProfileDefinition,
+  ExecutionProfileDefinitionV3,
   MetaProfileDefinitionV2,
   MetaProfileDefinitionV3,
   MetaProfileSnapshot,
@@ -146,10 +149,39 @@ export type MetaSessionRecord = MetaSessionRecordV2 | MetaSessionRecordV3;
 export type MetaPatchOperation =
   | Readonly<{ kind: "template_metadata_set"; field: "title" | "slug" | "description"; value: string | null }>
   | Readonly<{ kind: "template_conductor_prompt_set"; value: string }>
+  | Readonly<{ kind: "template_conductor_prompt_edit"; oldText: string; newText: string }>
+  | Readonly<{
+      kind: "template_card_create";
+      agentCardId: AgentCardId;
+      cardKind: Exclude<AgentCardKind, "conductor">;
+      title: string;
+      role?: string;
+      executionProfileId: ExecutionProfileId;
+      systemPrompt: string;
+      dispatchProfile: AgentDispatchProfile;
+    }>
+  | Readonly<{
+      kind: "template_card_update";
+      agentCardId: AgentCardId;
+      title?: string;
+      role?: string | null;
+      executionProfileId?: ExecutionProfileId;
+      systemPrompt?: string;
+      dispatchProfile?: AgentDispatchProfile;
+    }>
+  | Readonly<{ kind: "template_card_remove"; agentCardId: AgentCardId }>
+  | Readonly<{ kind: "template_card_reorder"; agentCardIds: readonly AgentCardId[] }>
   | Readonly<{ kind: "template_card_prompt_set"; agentCardId: AgentCardId; value: string }>
+  | Readonly<{ kind: "template_card_prompt_edit"; agentCardId: AgentCardId; oldText: string; newText: string }>
   | Readonly<{ kind: "template_profile_model_set"; executionProfileId: ExecutionProfileId; value: string }>
+  | Readonly<{
+      kind: "template_profile_revision_set";
+      executionProfileId: ExecutionProfileId;
+      profile: ExecutionProfileDefinitionV3;
+    }>
   | Readonly<{ kind: "template_card_profile_set"; agentCardId: AgentCardId; executionProfileId: ExecutionProfileId }>
   | Readonly<{ kind: "template_deliverable_upsert"; artifactPath: string; ownerAgentCardId: AgentCardId; description?: string }>
+  | Readonly<{ kind: "template_deliverable_remove"; artifactPath: string }>
   | Readonly<{ kind: "task_setup_title_set"; value: string }>
   | Readonly<{ kind: "task_setup_goal_set"; value: string }>
   | Readonly<{ kind: "task_setup_input_set"; fieldId: string; value: string }>;

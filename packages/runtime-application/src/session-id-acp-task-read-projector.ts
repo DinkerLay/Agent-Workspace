@@ -14,6 +14,7 @@ import {
   type ConductorPlanningFenceRecord,
   type ExecutionProfileDefinitionV3,
   type ProviderFamily,
+  type ProviderActivityReadModel,
   type SessionControlAuditRecord,
   type SessionExecutionAttemptRecord,
   type SessionExecutionRuntimeRecord,
@@ -125,6 +126,10 @@ export type SessionIdAcpTaskReadProjectorOptions = Readonly<{
     role: AgentCardDefinition["kind"];
     model: string;
   }>): AcpProfileReadinessObservation | undefined;
+  /** Host-memory, human-only cache lookup. It may not launch or mutate Provider state. */
+  readHumanOnlyActivities?: (
+    sessionExecutionAttemptId: string,
+  ) => readonly ProviderActivityReadModel[];
 }>;
 
 /**
@@ -134,7 +139,9 @@ export type SessionIdAcpTaskReadProjectorOptions = Readonly<{
 export function createSessionIdAcpTaskReadProjector(options: SessionIdAcpTaskReadProjectorOptions) {
   invariant(typeof options?.now === "function"
     && typeof options.snapshot?.read === "function"
-    && typeof options.readCachedProfileReadiness === "function",
+    && typeof options.readCachedProfileReadiness === "function"
+    && (options.readHumanOnlyActivities === undefined
+      || typeof options.readHumanOnlyActivities === "function"),
   "acp_task_read_projector_options_invalid");
   return Object.freeze({ read });
 
@@ -309,7 +316,13 @@ export function createSessionIdAcpTaskReadProjector(options: SessionIdAcpTaskRea
         profile: projectProfile(identity, selectedProfile!),
         ...(currentBinding ? { binding: projectBinding(currentBinding) } : {}),
         messages: projectMessages(identity, messages, inbox, inputs, turns, forwards, sessionLabels),
-        executionGroups: projectExecutions(identity, sessionTurns, proof, profiles),
+        executionGroups: projectExecutions(
+          identity,
+          sessionTurns,
+          proof,
+          profiles,
+          options.readHumanOnlyActivities,
+        ),
         interactions,
         controls: Object.freeze(sessionControls.map((control) => Object.freeze({
           sessionControlAuditId: control.sessionControlAuditId,
@@ -719,6 +732,9 @@ function projectExecutions(
   turns: readonly SessionIdSessionTurnRecord[],
   proof: AttemptProof,
   profiles: ReadonlyMap<string, ExecutionProfileDefinitionV3>,
+  readHumanOnlyActivities?: (
+    sessionExecutionAttemptId: string,
+  ) => readonly ProviderActivityReadModel[],
 ): readonly SessionIdAcpTaskExecutionGroupReadModel[] {
   return Object.freeze(turns.map((turn) => {
     const attempts = proof.attempts.filter((attempt) => attempt.orchestrationSessionTurnId === turn.sessionTurnId);
@@ -736,7 +752,9 @@ function projectExecutions(
       status: executionStatus(turn, attempt),
       startedAt: attempt?.createdAt ?? turn.createdAt,
       updatedAt: attempt?.updatedAt ?? turn.updatedAt,
-      activities: Object.freeze([]) as readonly [],
+      activities: Object.freeze(attempt && readHumanOnlyActivities
+        ? [...readHumanOnlyActivities(attempt.sessionExecutionAttemptId)]
+        : []),
     });
   }));
 }

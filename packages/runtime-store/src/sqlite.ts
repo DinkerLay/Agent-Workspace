@@ -392,6 +392,7 @@ export class SqliteRuntimeStore {
     this.#upgradeSessionIdStopControlV18();
     this.#ensureColumn("tasks", "achievement_json", "TEXT");
     this.#ensureColumn("tasks", "trashed_at", "TEXT");
+    this.#ensureColumn("meta_turns", "tool_operations_json", "TEXT NOT NULL DEFAULT '[]'");
     this.#ensureColumn("template_versions", "asset_manifest_hash", `TEXT NOT NULL DEFAULT '${EMPTY_TEMPLATE_ASSET_MANIFEST_HASH}'`);
     this.#ensureColumn("task_architecture_snapshots", "task_input_values_json", "TEXT NOT NULL DEFAULT '[]'");
     this.#ensureColumn("task_architecture_snapshots", "task_goal_content", "TEXT NOT NULL DEFAULT ''");

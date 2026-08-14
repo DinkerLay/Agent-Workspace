@@ -148,6 +148,92 @@ function createHarness(options: Readonly<{
 }
 
 describe("opt-in ACP Provider composition", () => {
+  it("treats reordered ACP model catalogs as the same recovery observation", async () => {
+    const { composition } = createHarness();
+    const catalogs = [
+      [
+        { value: "model-current", name: "Current" },
+        { value: "model-other", name: "Other" },
+      ],
+      [
+        { value: "model-other", name: "Other" },
+        { value: "model-current", name: "Current" },
+      ],
+    ];
+    let generation = 0;
+    const createConnection = () => {
+      const options = catalogs[generation++] ?? catalogs.at(-1)!;
+      const bindingResponse = () => ({
+        sessionId: "raw-session-private",
+        configOptions: [{
+          id: "config-model",
+          category: "model",
+          type: "select",
+          currentValue: "model-current",
+          options,
+        }],
+      });
+      return (_handlers: AcpV1ClientHandlers): InjectedAcpV1Connection => ({
+        initialize: async () => initializeResponse(),
+        newSession: async () => bindingResponse(),
+        loadSession: async () => bindingResponse(),
+        resumeSession: async () => bindingResponse(),
+        prompt: async () => ({ stopReason: "end_turn" }),
+        cancel: async () => undefined,
+        closeSession: async () => ({}),
+      });
+    };
+    const request: AcpProviderQualificationRequest = {
+      profile: profile(),
+      descriptor: {
+        descriptorId: "stable-model-catalog",
+        discoverCurrent: async () => artifact("a"),
+      },
+      role: "worker",
+      requiredAcpCapabilities: ["session_new", "session_load"],
+      requiredAnyAcpCapabilities: ["session_load"],
+      requiredBehaviors: ["initial", "recovery"],
+      createConnection,
+      async runProbe({ client, bindingHandle }) {
+        const binding = await client.ensureBinding({
+          bindingHandle,
+          disposition: "create",
+          workspaceDirectory: "/private/catalog-order",
+          mcpServers: [],
+          configuration: { model: "model-current", options: [] },
+        });
+        return {
+          passedBehaviors: ["initial"],
+          modelCatalog: binding.modelCatalog,
+          bindingEstablished: true,
+        };
+      },
+      async runRecoveryProbe({ client, bindingHandle }) {
+        const binding = await client.ensureBinding({
+          bindingHandle,
+          disposition: "load",
+          workspaceDirectory: "/private/catalog-order",
+          mcpServers: [],
+          configuration: { model: "model-current", options: [] },
+        });
+        return {
+          passedBehaviors: ["recovery"],
+          modelCatalog: binding.modelCatalog,
+          bindingEstablished: true,
+        };
+      },
+    };
+
+    await expect(composition.checkReadiness(request)).resolves.toMatchObject({
+      available: true,
+      modelCatalog: [
+        { modelId: "model-current", label: "Current" },
+        { modelId: "model-other", label: "Other" },
+      ],
+    });
+    await composition.close();
+  });
+
   it("inspects a real ACP session model catalog without issuing a behavior qualification", async () => {
     const { composition, children } = createHarness();
 

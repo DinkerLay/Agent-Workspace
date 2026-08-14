@@ -235,7 +235,6 @@ export function AgentLoopSessionIdTaskSurface({
           /> : selected ? <>
             <header className="awb-session-id-session-header">
               <div><h2>{selected.title}</h2><p>{sessionHeaderStatus(selected)}</p></div>
-              {canInterrupt(selected, runStopping) ? <button className="awb-button awb-button-secondary" data-testid="session-interrupt-only" onClick={() => void requestInterrupt(selected.logicalSessionId)} type="button">仅中断</button> : null}
             </header>
             <FrozenSessionProfile session={selected} />
             <AgentLoopSessionPresentation
@@ -244,6 +243,7 @@ export function AgentLoopSessionIdTaskSurface({
               composer={{
                 message: composerDrafts[selected.logicalSessionId] ?? "",
                 disabled: selected.kind !== "card" || selected.lifecycle !== "current" || runStopping,
+                running: canInterrupt(selected, runStopping),
                 continuity: continuityFor(selected),
                 ...(selected.kind === "card" ? {
                   testId: `card-composer-${journeyRole(selected)}`,
@@ -258,6 +258,7 @@ export function AgentLoopSessionIdTaskSurface({
               messages={selected.messages}
               onComposerChange={(content) => onComposerChange(selected.logicalSessionId, content)}
               onRespondInteraction={onRespondInteraction}
+              onRequestInterrupt={({ logicalSessionId }) => requestInterrupt(logicalSessionId)}
               onSubmitInput={async (input) => {
                 await sendHumanMessage({ targetLogicalSessionId: input.targetLogicalSessionId }, input.content);
               }}

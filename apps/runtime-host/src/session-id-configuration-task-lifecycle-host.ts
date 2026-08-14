@@ -5,15 +5,18 @@ import {
   isTaskArchitectureSnapshotV3,
   validateMetaProfileOptionDefinitionV3,
   validateTaskArchitectureSnapshotV3,
+  type ExecutionProfileDefinitionV3,
   type MetaProfileDefinitionV3,
   type MetaProfileOptionDefinitionV3,
   type SessionRuntimeBindingReadyEvent,
   type TaskRunRecord,
+  type TemplateDraftRecord,
 } from "@agent-workspace/runtime-contracts";
 import {
   createAcpMetaAgentRegistry,
   createSessionIdConfigurationTaskLifecycle,
   createSessionIdMetaAgentOwner,
+  createSessionIdMetaTemplateToolOwner,
   installBuiltInTemplates,
   resolveAuthorizedWorkspaceV3,
   sessionIdInitialConductorTurnId,
@@ -48,6 +51,10 @@ export type SessionIdConfigurationTaskLifecycleHostOptions = Readonly<{
   acpTaskLifecycle: SessionIdAcpTaskLifecyclePort;
   acpTaskOwners: SessionIdAcpTaskLifecycleOwnerCapabilities;
   metaAgentRegistrations: readonly AcpMetaAgentRegistration[];
+  listTemplateProfileRevisions: (input: Readonly<{
+    draft: TemplateDraftRecord;
+    executionProfileId: string;
+  }>) => readonly ExecutionProfileDefinitionV3[];
   now?: () => string;
   createId?: (kind: string) => string;
   /** Bounds the lifecycle-owned Meta readiness cache probe. */
@@ -67,6 +74,7 @@ const HOST_OPTION_KEYS = Object.freeze([
   "acpTaskLifecycle",
   "acpTaskOwners",
   "metaAgentRegistrations",
+  "listTemplateProfileRevisions",
   "now",
   "createId",
   "metaReadinessProbeTimeoutMs",
@@ -141,10 +149,22 @@ export function createSessionIdConfigurationTaskLifecycleHost(
   });
   const metaAgent = createSessionIdMetaAgentOwner({
     now,
+    createId,
     templates: repositories.templateTask,
     configuration: repositories.configuration,
     metaAgents,
     resolveMetaProfileOption: resolveMetaOption,
+    templateDraftTools: createSessionIdMetaTemplateToolOwner({
+      templates: repositories.templateTask,
+      toolOperations: repositories.configuration,
+      listTemplateProfileRevisions: options.listTemplateProfileRevisions,
+    }),
+    resolveTemplateProfileRevision({ draft, executionProfileId, profileRevisionId }) {
+      const profile = options.listTemplateProfileRevisions({ draft, executionProfileId })
+        .find((candidate) => candidate.profileRevisionId === profileRevisionId);
+      if (!profile) throw new Error("meta_patch_profile_revision_not_host_issued");
+      return profile;
+    },
   });
 
   return Object.freeze({
@@ -162,7 +182,7 @@ export function createSessionIdConfigurationTaskLifecycleHost(
         return metaAgents.probe(option.metaProfileOptionId, option.profile);
       },
     }),
-    drainMetaTurns(maxItems?: number, signal?: AbortSignal): Promise<number> {
+    drainMetaTurns(maxItems = 1, signal?: AbortSignal): Promise<number> {
       ensureOpen();
       const combinedSignal = signal
         ? AbortSignal.any([metaDrainAbort.signal, signal])
@@ -405,6 +425,7 @@ function validateOptions(options: SessionIdConfigurationTaskLifecycleHostOptions
     || typeof options.acpTaskOwners?.binding?.getCurrentBinding !== "function"
     || typeof options.acpTaskOwners?.sessionRuntime?.getRuntime !== "function"
     || !Array.isArray(options.metaAgentRegistrations)
+    || typeof options.listTemplateProfileRevisions !== "function"
     || (options.now !== undefined && typeof options.now !== "function")
     || (options.createId !== undefined && typeof options.createId !== "function")) {
     throw new Error("session_id_lifecycle_host_options_invalid");

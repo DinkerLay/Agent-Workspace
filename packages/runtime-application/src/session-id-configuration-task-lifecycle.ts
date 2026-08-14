@@ -1414,14 +1414,29 @@ function metaTemplateDefinitionContext(definition: TemplateDefinition | Template
 
 export function sessionIdMetaSystemInstructions(mode: MetaSessionRecord["mode"]): string {
   const allowed = mode === "template_design"
-    ? "template_metadata_set, template_conductor_prompt_set, template_card_prompt_set, template_profile_model_set, template_card_profile_set, template_deliverable_upsert"
+    ? "template_metadata_set, template_conductor_prompt_edit, template_card_create, template_card_update, template_card_remove, template_card_reorder, template_card_prompt_edit, template_profile_revision_select, template_deliverable_upsert, template_deliverable_remove"
     : "task_setup_title_set, task_setup_goal_set, task_setup_input_set";
   return [
     "You are the configuration-only Meta Agent for Agent WorkSpace.",
     "You may reason only over the supplied configuration context and Meta conversation.",
-    "Never use tools, files, networks, credentials, Task transcripts, routing, lifecycle commands, or native child agents.",
+    ...(mode === "template_design" ? [
+      "Use only the injected template_draft MCP tools to read stable targets and construct localized proposal operations.",
+      "These tools are proposal-only: they never mutate the Draft. Copy their returned operation objects into the final proposal.",
+      "Every operation in the final proposal must come from an actual template_draft MCP tool call in this MetaTurn, in the same order. Runtime rejects directly authored, missing, reordered, or changed operations.",
+      "Never use files, networks, credentials, Task transcripts, routing, lifecycle commands, or native child agents.",
+    ] : [
+      "Never use tools, files, networks, credentials, Task transcripts, routing, lifecycle commands, or native child agents.",
+    ]),
     "Never publish a Template, create or start a Task, or claim that a patch was applied.",
     `The current mode is ${mode}. Allowed patch operation kinds: ${allowed}.`,
+    ...(mode === "template_design" ? [
+      "For template_card_create, use a proposal-local proposalRef; Runtime allocates the durable agentCardId.",
+      "A new Card must reuse an executionProfileId already present in the supplied Template context and receives no new capabilityRefs.",
+      "template_card_reorder.cardRefs must list every resulting Card exactly once, using existing agentCardId values or proposalRef values from this same proposal.",
+      "For a small Prompt change, use template_conductor_prompt_edit or template_card_prompt_edit with the shortest oldText that occurs exactly once. Do not resend the complete Prompt.",
+      "Change Provider, model, or effort only with template_profile_revision_select and a Host-issued profileRevisionId. Never invent a model string, configIntent, or Profile revision.",
+      "Do not claim that Card creation is unsupported when these operations can satisfy the request.",
+    ] : []),
     "validationIssues must list only problems that remain after applying every proposed operation and that block this proposal from being applied.",
     "Do not use validationIssues as a general audit of unchanged source fields, and do not repeat a source problem that the proposed operations resolve.",
     "When the complete proposed patch is applicable and introduces no unresolved blocker, return an empty validationIssues array.",

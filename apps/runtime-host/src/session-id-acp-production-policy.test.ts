@@ -337,6 +337,12 @@ describe("session-id ACP production policy", () => {
       text: "Safe progress",
     })));
     await fixture.policy.observeExecution(fixture.observation(Object.freeze({
+      kind: "agent_thought_chunk",
+      bindingHandle: fixture.binding.bindingHandle,
+      attemptId: fixture.attempt.sessionExecutionAttemptId,
+      text: "Compare the persisted evidence before answering.",
+    })));
+    await fixture.policy.observeExecution(fixture.observation(Object.freeze({
       kind: "tool_status",
       bindingHandle: fixture.binding.bindingHandle,
       attemptId: fixture.attempt.sessionExecutionAttemptId,
@@ -351,14 +357,26 @@ describe("session-id ACP production policy", () => {
         taskId: fixture.binding.taskId,
         runId: fixture.binding.runId,
         logicalSessionId: fixture.binding.logicalSessionId,
+        sessionExecutionAttemptId: fixture.attempt.sessionExecutionAttemptId,
         role: "worker",
         text: "Safe progress",
+      }),
+      Object.freeze({
+        kind: "agent_thought_chunk",
+        taskId: fixture.binding.taskId,
+        runId: fixture.binding.runId,
+        logicalSessionId: fixture.binding.logicalSessionId,
+        sessionExecutionAttemptId: fixture.attempt.sessionExecutionAttemptId,
+        role: "worker",
+        text: "Compare the persisted evidence before answering.",
       }),
       Object.freeze({
         kind: "tool_status",
         taskId: fixture.binding.taskId,
         runId: fixture.binding.runId,
         logicalSessionId: fixture.binding.logicalSessionId,
+        sessionExecutionAttemptId: fixture.attempt.sessionExecutionAttemptId,
+        activityKey: "activity_key_1a015522f2ef0348629c18bbe65cd4440b3145b53650a51b7551078fd1466db5",
         role: "worker",
         title: "Reading repository",
         status: "in_progress",
@@ -366,11 +384,10 @@ describe("session-id ACP production policy", () => {
     ]);
     const projected = JSON.stringify(fixture.onHumanOnlyDiagnostic.mock.calls);
     expect(projected).not.toContain(fixture.binding.bindingHandle);
-    expect(projected).not.toContain(fixture.attempt.sessionExecutionAttemptId);
     expect(projected).not.toContain("tool_handle_host_private_correlation");
     expect(projected).not.toContain("workspacePath");
     expect(fixture.handleInteractionRequested).not.toHaveBeenCalled();
-    expect(fixture.onRuntimeInvalidation).toHaveBeenCalledTimes(2);
+    expect(fixture.onRuntimeInvalidation).toHaveBeenCalledTimes(3);
   });
 
   it("does not double-write receipt, final candidate, or terminal observations", async () => {

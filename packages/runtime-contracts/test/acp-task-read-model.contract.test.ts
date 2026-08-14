@@ -48,7 +48,23 @@ describe("ACP Task read-model contract", () => {
         ...session,
         executionGroups: [{ ...session.executionGroups[0]!, activities: [{ kind: "tool_running" }] }],
       }],
-    })).toThrow("acp_task_read_model_execution_activity_forbidden");
+    })).toThrow("provider_activity_read_model_invalid");
+    expect(() => validateSessionIdAcpTaskReadModel({
+      ...model,
+      sessions: [{
+        ...session,
+        executionGroups: [{
+          ...session.executionGroups[0]!,
+          activities: [{
+            activityId: "raw_acp_tool_id",
+            kind: "tool",
+            title: "Unsafe tool",
+            status: "pending",
+            observedAt: NOW,
+          }],
+        }],
+      }],
+    })).toThrow("provider_activity_read_model_invalid");
   });
 
   it("rejects the superseded workspace observation identity alias", () => {
@@ -128,7 +144,13 @@ function safeModel(): SessionIdAcpTaskReadModel {
         status: "waiting_for_interaction",
         startedAt: NOW,
         updatedAt: NOW,
-        activities: [],
+        activities: [{
+          activityId: "provider_activity_safe_progress",
+          kind: "assistant_progress",
+          contentKind: "response",
+          content: "Inspecting evidence",
+          observedAt: NOW,
+        }],
       }],
       interactions: [{
         interactionId: "interaction_permission",

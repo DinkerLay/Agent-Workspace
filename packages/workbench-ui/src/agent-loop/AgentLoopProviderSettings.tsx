@@ -65,11 +65,11 @@ export function AgentLoopProviderSettings({
   useEffect(() => {
     if (!selectedProvider) return;
     setPaths(pathsFromProvider(selectedProvider));
-    setEnabledModelIds(selectedProvider.enabledChatModelIds ?? []);
-    setSelectedModelId(selectedProvider.defaultModelId
-      ?? selectedProvider.enabledChatModelIds?.[0]
-      ?? selectedProvider.models[0]?.modelId
-      ?? "");
+    const enabled = selectedProvider.enabledChatModelIds ?? [];
+    setEnabledModelIds(enabled);
+    setSelectedModelId(selectedProvider.defaultModelId && enabled.includes(selectedProvider.defaultModelId)
+      ? selectedProvider.defaultModelId
+      : enabled[0] ?? "");
   }, [selectedProvider]);
 
   const run = async (

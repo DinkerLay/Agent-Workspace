@@ -269,7 +269,8 @@ describe("AgentLoopSessionIdTaskSurface", () => {
     expect(screen.getByText("#1 Conductor mirror")).toBeTruthy();
     expect(screen.getByText("#2 Card copy · 已接受，等待中断后投递")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "仅中断" }));
+    fireEvent.change(screen.getByLabelText("human → Card Worker / 全文同步 Conductor"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "停止" }));
     await waitFor(() => expect(onRequestHumanInterrupt).toHaveBeenCalledWith("session_worker_g2"));
     expect(screen.getByRole("status").textContent).toContain("等待 Provider 与 Runtime 的最终确认");
     expect(screen.getByText("意图已接受")).toBeTruthy();

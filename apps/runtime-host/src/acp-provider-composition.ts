@@ -192,7 +192,8 @@ export type AcpTargetCheckpointEvent =
       readonly bindingHandle: string;
       readonly role: "meta";
       readonly privateDirectoryLeaseConfirmed: true;
-      readonly toolSurfaceCount: 0;
+      readonly toolCapabilityClass: "template_draft";
+      readonly toolSurfaceCount: number;
       readonly callerCwdPresent: false;
       readonly taskWorkspacePresent: false;
     }>
@@ -1433,6 +1434,7 @@ function createTargetLifecycleTracker<TProfile extends AcpPortableProfileDefinit
   const strictMetaFinalAttempts = new Set<string>();
   let recoveryOpened: "load" | "resume" | undefined;
   let metaIsolationObserved = false;
+  let metaTemplateDraftToolsAvailable = false;
   let metaPermissionRejected = false;
   let metaColdReconcileObserved = false;
   let targetToolObserved = false;
@@ -1487,16 +1489,20 @@ function createTargetLifecycleTracker<TProfile extends AcpPortableProfileDefinit
         case "meta_isolation_opened":
           requireCheckpointEventKeys(event, [
             "kind", "bindingHandle", "role", "privateDirectoryLeaseConfirmed",
-            "toolSurfaceCount", "callerCwdPresent", "taskWorkspacePresent",
+            "toolCapabilityClass", "toolSurfaceCount", "callerCwdPresent", "taskWorkspacePresent",
           ]);
           if (request.role !== "meta"
             || event.privateDirectoryLeaseConfirmed !== true
-            || event.toolSurfaceCount !== 0
+            || event.toolCapabilityClass !== "template_draft"
+            || !Number.isSafeInteger(event.toolSurfaceCount)
+            || event.toolSurfaceCount < 1
+            || event.toolSurfaceCount > 64
             || event.callerCwdPresent !== false
             || event.taskWorkspacePresent !== false) {
             throw compositionError("acp_target_checkpoint_event_invalid");
           }
           metaIsolationObserved = true;
+          metaTemplateDraftToolsAvailable = true;
           return;
         case "meta_strict_whole_final":
         case "meta_permission_rejected":
@@ -1653,7 +1659,7 @@ function createTargetLifecycleTracker<TProfile extends AcpPortableProfileDefinit
       }>> = [];
       if (request.role === "meta") {
         facts.push({ kind: "independent_process", evidence: Object.freeze({ lifecycleDigest }) });
-        if (metaIsolationObserved && !targetToolObserved) {
+        if (metaIsolationObserved && !metaTemplateDraftToolsAvailable && !targetToolObserved) {
           facts.push({ kind: "no_tools", evidence: Object.freeze({ lifecycleDigest }) });
         }
         if (metaIsolationObserved) {
@@ -2018,7 +2024,8 @@ function normalizeModelCatalog(value: readonly AcpModelCatalogEntry[]): readonly
   if (new Set(result.map(({ modelId }) => modelId)).size !== result.length) {
     throw compositionError("acp_model_catalog_invalid");
   }
-  return Object.freeze(result);
+  return Object.freeze(result.sort((left, right) => left.modelId.localeCompare(right.modelId)
+    || left.label.localeCompare(right.label)));
 }
 
 function reserveQualificationEffect(

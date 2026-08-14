@@ -188,6 +188,7 @@ const PORTABLE_MODEL_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@+\[\]-]*(?:\/[A-Za-
 const OBSERVATION_KINDS = new Set<AcpSessionObservation["kind"]>([
   "delivery_receipt",
   "agent_message_chunk",
+  "agent_thought_chunk",
   "tool_status",
   "interaction_requested",
   "final_candidate",
@@ -651,6 +652,12 @@ export type AcpProductionMetaOwnerOptions = Readonly<{
   readonly hostInputs: AcpProductionHostInputs;
   readonly privateAuthority: AcpRuntimeHostPrivateAuthority;
   readonly beforeQualificationEffect?: AcpQualificationEffectBudget;
+  readonly onHumanOnlyActivity?: Parameters<
+    typeof createAcpMetaProviderComposition
+  >[0]["onHumanOnlyActivity"];
+  readonly onDiagnostic?: Parameters<
+    typeof createAcpMetaProviderComposition
+  >[0]["onDiagnostic"];
   /** Constructor-only no-live seam; production always uses the concrete owner. */
   readonly controlledCreateComposition?: typeof createAcpMetaProviderComposition;
 }>;
@@ -1329,6 +1336,12 @@ export function createAcpProductionMetaOwner(
       ...(options && Object.hasOwn(options, "beforeQualificationEffect")
         ? ["beforeQualificationEffect"]
         : []),
+      ...(options && Object.hasOwn(options, "onHumanOnlyActivity")
+        ? ["onHumanOnlyActivity"]
+        : []),
+      ...(options && Object.hasOwn(options, "onDiagnostic")
+        ? ["onDiagnostic"]
+        : []),
       ...(options && Object.hasOwn(options, "controlledCreateComposition")
         ? ["controlledCreateComposition"]
         : []),
@@ -1344,6 +1357,10 @@ export function createAcpProductionMetaOwner(
       && typeof options.controlledCreateComposition !== "function")
     || (options.beforeQualificationEffect !== undefined
       && typeof options.beforeQualificationEffect !== "function")
+    || (options.onHumanOnlyActivity !== undefined
+      && typeof options.onHumanOnlyActivity !== "function")
+    || (options.onDiagnostic !== undefined
+      && typeof options.onDiagnostic !== "function")
     || (options.beforeQualificationEffect && options.controlledCreateComposition)) {
     throw safeError("acp_production_meta_owner_options_invalid");
   }
@@ -1473,6 +1490,10 @@ export function createAcpProductionMetaOwner(
     ...(options.beforeQualificationEffect
       ? { beforeQualificationEffect: options.beforeQualificationEffect }
       : {}),
+    ...(options.onHumanOnlyActivity
+      ? { onHumanOnlyActivity: options.onHumanOnlyActivity }
+      : {}),
+    ...(options.onDiagnostic ? { onDiagnostic: options.onDiagnostic } : {}),
     ...(releaseIssuer.eligible ? {
       onTargetLifecycleCapability(capability: AcpTargetLifecycleCapability) {
         const observation = claimAcpTargetLifecycleObservation(capability);

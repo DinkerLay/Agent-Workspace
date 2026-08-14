@@ -122,6 +122,7 @@ describe("AgentLoopTemplateStudio", () => {
           content: "同一 active Template Meta Session。",
           createdAt: "2026-08-09T00:00:00.000Z",
         }],
+        activities: [],
       },
       proposals: [],
     });
@@ -226,14 +227,14 @@ describe("AgentLoopTemplateStudio", () => {
 
     const modelSelector = screen.getByLabelText("Conductor Model");
     expect(within(modelSelector).getByRole("option", { name: "选择 OpenCode 模型" })).toBeTruthy();
-    expect(within(modelSelector).getByRole("option", { name: "opencode-go/gpt-5.6-luna · 已验证" })).toBeTruthy();
+    expect(within(modelSelector).getByRole("option", { name: "opencode-go/gpt-5.6-luna" })).toBeTruthy();
     expect(modelSelector.textContent).not.toContain("profile_revision_");
     expect(JSON.parse((screen.getByTestId("template-definition") as HTMLTextAreaElement).value).executionProfiles[0]).toMatchObject({
       providerFamily: "codex",
       model: "gpt-5.6-luna",
     });
 
-    fireEvent.change(modelSelector, { target: { value: openCode.profileRevisionId } });
+    fireEvent.change(modelSelector, { target: { value: openCode.model } });
     const definition = validateTemplateDefinitionV3(JSON.parse(
       (screen.getByTestId("template-definition") as HTMLTextAreaElement).value,
     ));
@@ -242,6 +243,44 @@ describe("AgentLoopTemplateStudio", () => {
       profileRevisionId: openCode.profileRevisionId,
       providerFamily: "opencode",
       model: "opencode-go/gpt-5.6-luna",
+    });
+  });
+
+  it("edits Effort independently through an exact Host-issued profile revision", async () => {
+    const controller = fakeController();
+    const model = view();
+    const base = profileOption("codex", "available");
+    const xhigh: AgentLoopTemplateProfileRevisionOption = {
+      ...base,
+      title: "Codex ACP · gpt-5.6-luna · xhigh",
+      profileRevisionId: "profile_revision_codex-starter-xhigh-v1",
+      configIntent: { reasoningEffort: "xhigh" },
+      readiness: {
+        ...base.readiness,
+        profileRevisionId: "profile_revision_codex-starter-xhigh-v1",
+        status: "checking",
+        reasons: ["model_qualification_required"],
+      },
+    };
+    vi.mocked(controller.load).mockResolvedValue({
+      ...model,
+      profileOptions: [base, xhigh, workerProfileOption("codex", "available")],
+    });
+    render(createElement(AgentLoopTemplateStudio, { controller, metaController: fakeMetaController() }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Research team draft.*r2/u }));
+    const effort = screen.getByLabelText("Conductor Effort");
+    expect(within(effort).getByRole("option", { name: "Default · 已验证" })).toBeTruthy();
+    expect(within(effort).getByRole("option", { name: "xhigh · 待验证" })).toBeTruthy();
+    fireEvent.change(effort, { target: { value: xhigh.profileRevisionId } });
+
+    const definition = validateTemplateDefinitionV3(JSON.parse(
+      (screen.getByTestId("template-definition") as HTMLTextAreaElement).value,
+    ));
+    expect(definition.executionProfiles[0]).toMatchObject({
+      profileRevisionId: xhigh.profileRevisionId,
+      model: "gpt-5.6-luna",
+      configIntent: { reasoningEffort: "xhigh" },
     });
   });
 

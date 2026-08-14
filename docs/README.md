@@ -9,6 +9,13 @@
 2. [`implementation-plan.md`](implementation-plan.md)：唯一可执行的 ACP-first 直接切换计划；其中逐Phase代码迁移账本列出
    current anchors、新目标、首个RED、删除阶段与退出条件。
 
+## 实施指导（非权威）
+
+- [`chat-ui-interaction-guidelines.md`](chat-ui-interaction-guidelines.md)：以 Claudian 的 provider-neutral execution/chat
+  分层为对照，约束 Meta、Conductor 与 Card Session 共用 Chat shell 时的流式、Thinking、Tool card、Final、停止、
+  排队、Provider/Model/Effort 与恢复行为。它只解释如何实现 `architecture.md` 已冻结的统一 Chat，不改变领域 owner、
+  Runtime 命令或安全边界。
+
 ## 当前方向
 
 Agent Workspace 保留现有的多 Agent 工作台、Conductor 四工具、Task/Run、Slot/generation、Message/Inbox/Input/Turn、

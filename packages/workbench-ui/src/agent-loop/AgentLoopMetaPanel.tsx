@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AcpProfileReadinessObservation } from "@agent-workspace/runtime-contracts";
-import { PanelLeftClose } from "lucide-react";
+import type { AcpProfileReadinessObservation, ProviderActivityReadModel } from "@agent-workspace/runtime-contracts";
+import { ChevronDown, PanelLeftClose, Plus, SlidersHorizontal } from "lucide-react";
 import {
   AgentLoopChatComposer,
   AgentLoopChatMessage,
+  AgentLoopProviderActivityList,
   AgentLoopChatTranscript,
 } from "./AgentLoopChatUI";
 
@@ -32,6 +33,8 @@ export type AgentLoopMetaMessage = Readonly<{
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  activities?: readonly ProviderActivityReadModel[];
+  turnStatus?: "creating" | "active" | "idle" | "ambiguous" | "failed";
 }>;
 
 export type AgentLoopMetaPatchFieldDiff = Readonly<{
@@ -43,6 +46,7 @@ export type AgentLoopMetaPatchFieldDiff = Readonly<{
 
 export type AgentLoopMetaPatchProposal = Readonly<{
   proposalId: string;
+  assistantMessageId: string;
   baseDraftRevision: number;
   status: "pending" | "applied" | "rejected" | "stale";
   summary: string;
@@ -65,6 +69,7 @@ export type AgentLoopMetaPanelViewModel = Readonly<{
     revision: number;
     status: "creating" | "active" | "idle" | "ambiguous" | "failed";
     messages: readonly AgentLoopMetaMessage[];
+    activities: readonly ProviderActivityReadModel[];
   }>;
   proposals: readonly AgentLoopMetaPatchProposal[];
 }>;
@@ -129,7 +134,19 @@ export function AgentLoopMetaPanel({
   const [message, setMessage] = useState("");
   const [action, setAction] = useState<string>();
   const [error, setError] = useState<string>();
+  const [pendingSubmission, setPendingSubmission] = useState<Readonly<{
+    content: string;
+    stage: "validating" | "submitting";
+  }>>();
+  const [queuedDraft, setQueuedDraft] = useState<Readonly<{
+    content: string;
+    draftId: string;
+    draftRevision: number;
+    metaProfileOptionId: string;
+    metaSessionId?: string;
+  }>>();
   const loadEpoch = useRef(0);
+  const previousTurnActive = useRef(false);
 
   const refresh = useCallback(async () => {
     const epoch = ++loadEpoch.current;
@@ -179,21 +196,23 @@ export function AgentLoopMetaPanel({
     };
   }, [controller, refresh]);
 
-  const runAction = useCallback(async (key: string, operation: () => Promise<void>) => {
+  const runAction = useCallback(async (key: string, operation: () => Promise<void>): Promise<boolean> => {
     setAction(key);
     setError(undefined);
     try {
       await operation();
       await refresh();
+      return true;
     } catch (reason) {
       setError(messageFor(reason));
+      return false;
     } finally {
       setAction(undefined);
     }
   }, [refresh]);
 
-  const submitMessage = useCallback(() => {
-    const content = message.trim();
+  const dispatchMessage = useCallback((rawContent: string) => {
+    const content = rawContent.trim();
     const selectedProfile = view?.profileOptions.find((option) =>
       option.metaProfileOptionId === selectedMetaProfileOptionId);
     const existingSession = view?.session;
@@ -201,30 +220,43 @@ export function AgentLoopMetaPanel({
       || existingSession?.status === "creating"
       || existingSession?.status === "ambiguous"
       || !selectedProfile
-      || !canOpenMetaProfile(selectedProfile)) return;
-    void runAction("send-message", async () => {
-      let session = existingSession;
-      if (!session) {
-        await controller.createSession({
-          scope,
-          metaProfileOptionId: selectedProfile.metaProfileOptionId,
-        });
-        const created = await controller.load(scope);
-        session = created.session;
-        if (!session || session.metaProfileOptionId !== selectedProfile.metaProfileOptionId) {
-          throw new Error("agent_loop_meta_session_create_result_missing");
-        }
-        setView(created);
-      }
-      await controller.sendMessage({
-        scope,
-        metaSessionId: session.metaSessionId,
-        expectedSessionRevision: session.revision,
-        content: metaInstruction(content, targets),
-      });
-      setMessage("");
+      || (!existingSession && !canOpenMetaProfile(selectedProfile))) return;
+    setMessage("");
+    setPendingSubmission({
+      content,
+      stage: existingSession ? "submitting" : "validating",
     });
-  }, [controller, message, runAction, scope, selectedMetaProfileOptionId, targets, view]);
+    void (async () => {
+      const succeeded = await runAction("send-message", async () => {
+        let session = existingSession;
+        if (!session) {
+          await controller.createSession({
+            scope,
+            metaProfileOptionId: selectedProfile.metaProfileOptionId,
+          });
+          setPendingSubmission({ content, stage: "submitting" });
+          const created = await controller.load(scope);
+          session = created.session;
+          if (!session || session.metaProfileOptionId !== selectedProfile.metaProfileOptionId) {
+            throw new Error("agent_loop_meta_session_create_result_missing");
+          }
+          setView(created);
+        }
+        await controller.sendMessage({
+          scope,
+          metaSessionId: session.metaSessionId,
+          expectedSessionRevision: session.revision,
+          content: metaInstruction(content, targets),
+        });
+      });
+      setPendingSubmission(undefined);
+      if (!succeeded) {
+        setMessage(content);
+      }
+    })();
+  }, [controller, runAction, scope, selectedMetaProfileOptionId, targets, view]);
+
+  const submitMessage = useCallback(() => dispatchMessage(message), [dispatchMessage, message]);
 
   const applyPatch = useCallback((proposal: AgentLoopMetaPatchProposal) => {
     if (draftDirty
@@ -257,25 +289,84 @@ export function AgentLoopMetaPanel({
       option.readiness.status === "available" || option.readiness.status === "checking")
       ?? view?.profileOptions[0]);
   const pendingProposals = view?.proposals.filter((proposal) => proposal.status === "pending" || proposal.status === "stale") ?? [];
+  const proposalByAssistantMessageId = new Map(pendingProposals.map((proposal) => [proposal.assistantMessageId, proposal] as const));
+  const linkedProposalIds = new Set(session?.messages.map((message) => message.messageId) ?? []);
+  const orphanProposals = pendingProposals.filter((proposal) => !linkedProposalIds.has(proposal.assistantMessageId));
   const acpProfileOptions = view?.profileOptions ?? [];
   const providerFamilies = uniqueStrings(acpProfileOptions.map((option) => option.providerFamily));
   const selectedProviderFamily = profile?.providerFamily ?? providerFamilies[0] ?? "";
   const providerProfileOptions = acpProfileOptions.filter((option) => option.providerFamily === selectedProviderFamily);
   const models = metaModelChoices(providerProfileOptions);
-  const hasObservedMetaModels = models.some((model) => model.observed);
+  const hasObservedMetaModels = models.length > 0;
   const selectedModel = profile?.model ?? models[0]?.modelId ?? "";
   const modelProfileOptions = providerProfileOptions.filter((option) => option.model === selectedModel);
   const effortOptions = uniqueStrings(modelProfileOptions.map(metaProfileEffort));
   const selectedEffort = profile ? metaProfileEffort(profile) : effortOptions[0] ?? "";
   const isBusy = Boolean(action);
-  const turnInFlight = session?.status === "creating" || session?.status === "ambiguous";
+  const turnInFlight = session?.status === "creating";
+  const turnUnsettled = session?.status === "ambiguous";
+  const turnGenerating = turnInFlight || Boolean(pendingSubmission) || action === "send-message";
+  const turnBlocksNextMessage = turnGenerating || turnUnsettled;
   const hasConfiguredMetaProfile = Boolean(view?.profileOptions.length);
   const profileOpenable = Boolean(profile && canOpenMetaProfile(profile));
+  const canSubmitToSession = Boolean(profile && (session || profileOpenable));
+  const runtimeStatusTone = session
+    ? metaSessionRuntimeStatusTone(session.status)
+    : profile
+      ? metaProfileStatus(profile)
+      : "unavailable";
+  const runtimeStatusLabel = session
+    ? metaSessionRuntimeStatusLabel(session.status)
+    : profile
+      ? metaProfileStatusLabel(metaProfileStatus(profile))
+      : "未配置";
+  const profileBlockingMessage = !session && profile && !profileOpenable
+    ? metaProfileBlockingMessage(profile)
+    : undefined;
   const metaAgentTitle = scope.kind === "template_design" ? "Template Meta Agent" : "Task Setup Meta Agent";
-  const hasConversationEntries = Boolean(session?.messages.length || pendingProposals.length);
+  const hasConversationEntries = Boolean(
+    session?.messages.length || pendingProposals.length || turnInFlight || turnUnsettled || pendingSubmission,
+  );
   const sessionStarterDescription = hasConfiguredMetaProfile
     ? "选择下方运行配置并直接发送；首次发送会自动建立这个 Draft 专属的 Meta Session。"
     : "当前 Host 没有配置可用的 Meta ACP Profile；配置后即可直接发送。";
+  const liveTraceActivities = session?.activities.filter((activity) => activity.kind === "tool"
+    || activity.contentKind === "reasoning") ?? [];
+  const candidateStatus = turnUnsettled
+    ? metaCandidateStatus(session?.status)
+    : undefined;
+
+  const startNewSession = useCallback(() => {
+    if (!session || action) return;
+    void (async () => {
+      const succeeded = await runAction("new-session", () => controller.abandonSession({
+        scope,
+        metaSessionId: session.metaSessionId,
+        expectedSessionRevision: session.revision,
+      }));
+      if (!succeeded) return;
+      setMessage("");
+      setPendingSubmission(undefined);
+      setQueuedDraft(undefined);
+    })();
+  }, [action, controller, runAction, scope, session]);
+
+  useEffect(() => {
+    const wasActive = previousTurnActive.current;
+    previousTurnActive.current = turnBlocksNextMessage;
+    if (!wasActive || turnBlocksNextMessage || !queuedDraft) return;
+    const targetIsCurrent = queuedDraft.draftId === scope.draftId
+      && queuedDraft.draftRevision === scope.draftRevision
+      && queuedDraft.metaProfileOptionId === (session?.metaProfileOptionId ?? selectedMetaProfileOptionId)
+      && (!queuedDraft.metaSessionId || queuedDraft.metaSessionId === session?.metaSessionId);
+    setQueuedDraft(undefined);
+    if (!targetIsCurrent) {
+      setMessage(queuedDraft.content);
+      setError("排队消息的 Draft 或 Meta Session 已变化；内容已退回输入框，没有改投。");
+      return;
+    }
+    dispatchMessage(queuedDraft.content);
+  }, [dispatchMessage, queuedDraft, scope.draftId, scope.draftRevision, selectedMetaProfileOptionId, session?.metaProfileOptionId, session?.metaSessionId, turnBlocksNextMessage]);
 
   return (
     <aside aria-label="Meta Agent panel" className={`awb-agent-loop-meta-panel is-${placement}`}>
@@ -317,12 +408,12 @@ export function AgentLoopMetaPanel({
           <strong>开始一次真实的 Draft 修订对话</strong>
           <p>{sessionStarterDescription}</p>
         </div>}
-        status={`${metaConversationStatus(session?.status)}${pendingProposals.length ? ` · ${pendingProposals.length} 个候选 Patch` : ""}`}
+        status={`${pendingSubmission ? pendingSubmissionStatus(pendingSubmission.stage) : metaConversationStatus(session?.status)}${pendingProposals.length ? ` · ${pendingProposals.length} 个候选 Patch` : ""}`}
         testId={session ? "meta-active-session" : "meta-conversation"}
         title="对话"
       >
         {hasConversationEntries ? <>
-          {!session ? <AgentLoopChatMessage
+          {!session && !pendingSubmission ? <AgentLoopChatMessage
             content="开始一次真实的 Draft 修订对话"
             speaker={metaAgentTitle}
             tone="notice"
@@ -331,59 +422,95 @@ export function AgentLoopMetaPanel({
               <p>{sessionStarterDescription}</p>
             </div>
           </AgentLoopChatMessage> : null}
-          {session?.messages.map((item) => <AgentLoopChatMessage
-            content={item.content}
-            detail={<time dateTime={item.createdAt}>{shortTimestamp(item.createdAt)}</time>}
-            direction={item.role === "assistant" ? "收到" : "发送"}
-            key={item.messageId}
-            speaker={item.role === "assistant" ? metaAgentTitle : "你"}
-            tone={item.role}
-          />)}
-          {pendingProposals.map((proposal) => <AgentLoopChatMessage
+          {session?.messages.map((item) => {
+            const proposal = proposalByAssistantMessageId.get(item.messageId);
+            const traceActivities = item.activities?.filter((activity) => activity.kind === "tool"
+              || activity.contentKind === "reasoning") ?? [];
+            return <AgentLoopChatMessage
+              content={item.content}
+              detail={<time dateTime={item.createdAt}>{shortTimestamp(item.createdAt)}</time>}
+              direction={item.role === "assistant" ? "最终回复" : "发送"}
+              key={item.messageId}
+              leading={item.role === "assistant" && traceActivities.length ? <div className="awb-agent-loop-meta-tool-trace">
+                <AgentLoopProviderActivityList
+                  activities={traceActivities}
+                  turnState={metaActivityTurnState(item.turnStatus)}
+                />
+              </div> : undefined}
+              speaker={item.role === "assistant" ? metaAgentTitle : "你"}
+              tone={item.role}
+            >{proposal ? <MetaPatchProposalCard
+              action={action}
+              draftDirty={draftDirty}
+              onApply={() => applyPatch(proposal)}
+              onReject={() => rejectPatch(proposal)}
+              proposal={proposal}
+              targetRevision={scope.draftRevision}
+            /> : null}</AgentLoopChatMessage>;
+          })}
+          {pendingSubmission ? <AgentLoopChatMessage
+            className="awb-agent-loop-meta-pending-message"
+            content={pendingSubmission.content}
+            direction="发送中"
+            speaker="你"
+            tone="user"
+          >
+            <p aria-live="polite" className="awb-agent-loop-meta-pending-stage">
+              {pendingSubmissionStatus(pendingSubmission.stage)}
+            </p>
+          </AgentLoopChatMessage> : null}
+          {turnInFlight || turnUnsettled ? <AgentLoopChatMessage
+            className="awb-agent-loop-meta-stream-message"
+            content=""
+            speaker={metaAgentTitle}
+            tone="assistant"
+          >
+            <div aria-live="polite" className="awb-execution-activity-list">
+              {liveTraceActivities.length || !candidateStatus ? <AgentLoopProviderActivityList
+                activities={liveTraceActivities}
+                turnState={session?.status === "ambiguous" ? "unsettled" : "running"}
+              /> : null}
+              {candidateStatus ? <p className="awb-agent-loop-meta-candidate-status">{candidateStatus}</p> : null}
+            </div>
+          </AgentLoopChatMessage> : null}
+          {orphanProposals.map((proposal) => <AgentLoopChatMessage
             className={`awb-agent-loop-meta-proposal-message is-${proposal.status}`}
-            content={`候选 Patch · ${proposal.summary}`}
+            content={proposal.summary}
             key={`proposal:${proposal.proposalId}`}
             speaker={metaAgentTitle}
             tone="assistant"
           >
-            <section aria-label="Meta patch proposal" className={`awb-agent-loop-meta-proposal is-${proposal.status}`}>
-              <header><div>{proposal.rationale ? <p>{proposal.rationale}</p> : null}</div><span>Draft r{proposal.baseDraftRevision}</span></header>
-              <ol className="awb-agent-loop-meta-diff">
-                {proposal.fieldDiffs.map((diff, index) => <li key={`${diff.path}:${index}`}>
-                  <div><code data-testid="meta-diff-path">{diff.path}</code><span>{diff.operation}</span></div>
-                  {diff.before !== undefined ? <pre><del>{diff.before}</del></pre> : null}
-                  {diff.after !== undefined ? <pre><ins>{diff.after}</ins></pre> : null}
-                </li>)}
-              </ol>
-              {proposal.validationIssues.length ? <div className="awb-agent-loop-meta-issues"><strong>校验</strong><ul>{proposal.validationIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul></div> : null}
-              {proposal.unresolvedItems.length ? <div className="awb-agent-loop-meta-unresolved"><strong>未解决</strong><ul>{proposal.unresolvedItems.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
-              {draftDirty ? <p className="awb-agent-loop-meta-dirty">先保存或撤销本地手工修改，再应用 Meta patch。</p> : null}
-              {proposal.baseDraftRevision !== scope.draftRevision ? <p className="awb-agent-loop-meta-dirty">Draft revision 已变化；此 patch 已 stale，不能覆盖当前 Draft。</p> : null}
-              <footer>
-                <button className="awb-button awb-button-secondary" disabled={isBusy || proposal.status !== "pending"} onClick={() => rejectPatch(proposal)} type="button">拒绝 patch</button>
-                <button
-                  className="awb-button awb-button-primary"
-                  data-testid="meta-apply-proposal"
-                  disabled={isBusy
-                    || draftDirty
-                    || proposal.validationIssues.length > 0
-                    || proposal.status !== "pending"
-                    || proposal.baseDraftRevision !== scope.draftRevision}
-                  onClick={() => applyPatch(proposal)}
-                  type="button"
-                >应用 patch</button>
-              </footer>
-            </section>
+            <MetaPatchProposalCard
+              action={action}
+              draftDirty={draftDirty}
+              onApply={() => applyPatch(proposal)}
+              onReject={() => rejectPatch(proposal)}
+              proposal={proposal}
+              targetRevision={scope.draftRevision}
+            />
           </AgentLoopChatMessage>)}
         </> : undefined}
       </AgentLoopChatTranscript>
       <AgentLoopChatComposer
-        busy={action === "send-message"}
         className="awb-agent-loop-meta-composer"
-        controls={<div className="awb-agent-loop-meta-runtime-controls">
+        controls={<>
+        <div className="awb-agent-loop-meta-runtime-bar">
+          {session ? <div className="awb-agent-loop-meta-runtime-summary is-locked">
+            <SlidersHorizontal aria-hidden="true" size={13} />
+            <strong>{providerFamilyLabel(selectedProviderFamily)} · {selectedModel} · {effortLabel(selectedEffort)}</strong>
+            <span>本 Session 已锁定</span>
+          </div> : <details className="awb-agent-loop-meta-runtime-picker">
+            <summary>
+              <SlidersHorizontal aria-hidden="true" size={13} />
+              <strong>{profile
+                ? `${providerFamilyLabel(selectedProviderFamily)} · ${selectedModel} · ${effortLabel(selectedEffort)}`
+                : "选择运行配置"}</strong>
+              <ChevronDown aria-hidden="true" size={13} />
+            </summary>
+            <div className="awb-agent-loop-meta-runtime-controls">
           <label>Provider<select
             aria-label="Meta Provider"
-            disabled={Boolean(session) || isBusy || providerFamilies.length === 0}
+            disabled={isBusy || providerFamilies.length === 0}
             onChange={(event) => {
               const next = preferredMetaProfile(acpProfileOptions.filter((option) => option.providerFamily === event.target.value));
               setSelectedMetaProfileOptionId(next?.metaProfileOptionId ?? "");
@@ -392,38 +519,75 @@ export function AgentLoopMetaPanel({
           >{providerFamilies.length ? providerFamilies.map((providerFamily) => <option key={providerFamily} value={providerFamily}>{providerFamilyLabel(providerFamily)}</option>) : <option value="">未配置</option>}</select></label>
           <label>Model<select
             aria-label="Meta Model"
-            disabled={Boolean(session) || isBusy || !hasObservedMetaModels}
+            disabled={isBusy || !hasObservedMetaModels}
             onChange={(event) => {
               const next = preferredMetaProfile(providerProfileOptions.filter((option) => option.model === event.target.value));
               setSelectedMetaProfileOptionId(next?.metaProfileOptionId ?? "");
             }}
             value={selectedModel}
           >{models.length ? models.map((model) => <option
-            disabled={!model.configured || !model.observed}
             key={model.modelId}
             value={model.modelId}
-          >{model.label}{!model.observed
-              ? " · 当前配置，ACP 未确认"
-              : model.configured
-                ? ""
-                : " · ACP 可选，需建立 Meta Profile"}</option>) : <option value="">ACP 尚未返回模型目录</option>}</select></label>
+          >{model.label}</option>) : <option value="">设置页尚未启用模型</option>}</select></label>
           <label>Effort<select
             aria-label="Meta Effort"
-            disabled={Boolean(session) || isBusy || effortOptions.length === 0}
+            disabled={isBusy || effortOptions.length === 0}
             onChange={(event) => {
               const next = preferredMetaProfile(modelProfileOptions.filter((option) => metaProfileEffort(option) === event.target.value));
               setSelectedMetaProfileOptionId(next?.metaProfileOptionId ?? "");
             }}
             value={selectedEffort}
-          >{effortOptions.length ? effortOptions.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>) : <option value="">未配置</option>}</select></label>
-          <span className={`is-${profile ? metaProfileStatus(profile) : "unavailable"}`}>{profile ? metaProfileStatusLabel(metaProfileStatus(profile)) : "未配置"}</span>
-        </div>}
-        disabled={isBusy || turnInFlight || !profileOpenable}
+          >{effortOptions.length ? effortOptions.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>) : <option value="">Default</option>}</select></label>
+            </div>
+          </details>}
+          <span className={`awb-agent-loop-meta-runtime-status is-${runtimeStatusTone}`}>{runtimeStatusLabel}</span>
+        </div>
+        {profileBlockingMessage ? <p className="awb-agent-loop-meta-runtime-diagnostic" role="status">{profileBlockingMessage}</p> : null}
+        </>}
+        disabled={!canSubmitToSession || turnUnsettled}
         label="发送给 Meta Agent"
         onChange={setMessage}
+        onCancelQueued={() => setQueuedDraft(undefined)}
+        onEditQueued={() => {
+          if (!queuedDraft) return;
+          setMessage(queuedDraft.content);
+          setQueuedDraft(undefined);
+        }}
+        onQueue={() => {
+          const content = message.trim();
+          if (!content || !profile) return;
+          setQueuedDraft(Object.freeze({
+            content,
+            draftId: scope.draftId,
+            draftRevision: scope.draftRevision,
+            metaProfileOptionId: profile.metaProfileOptionId,
+            ...(session ? { metaSessionId: session.metaSessionId } : {}),
+          }));
+          setMessage("");
+        }}
         onSubmit={submitMessage}
-        placeholder={profileOpenable ? "例如：@Researcher 强化来源交叉验证，并给出可审阅 Patch。" : "先配置可用的 Meta ACP Profile。"}
+        placeholder={canSubmitToSession
+          ? turnUnsettled
+            ? "本轮未完整结束；点击 New 开始新的 Meta Session。"
+            : session?.status === "failed"
+            ? "上次连接失败；发送新消息会重新连接当前 Meta Session。"
+            : "例如：@Researcher 强化来源交叉验证，并给出可审阅 Patch。"
+          : profile
+            ? "当前配置未通过 ACP 验证；请选择其他配置或到设置中重新检测。"
+            : "先配置可用的 Meta ACP Profile。"}
         rows={4}
+        running={turnGenerating}
+        runningLabel="生成中…"
+        queuedDraft={queuedDraft ? { content: queuedDraft.content, targetLabel: metaAgentTitle } : undefined}
+        secondaryActions={session ? <button
+          aria-label="新建 Meta Session"
+          className="awb-button awb-button-secondary awb-agent-loop-meta-new-session"
+          data-testid="meta-new-session"
+          disabled={isBusy}
+          onClick={startNewSession}
+          title="结束当前 Meta Session，并返回运行配置选择"
+          type="button"
+        ><Plus aria-hidden="true" size={13} />New</button> : undefined}
         sendTestId="meta-send"
         testId="meta-composer"
         value={message}
@@ -436,6 +600,94 @@ export function AgentLoopMetaPanel({
         : "正在读取 Meta profile…"}</p> : null}
     </aside>
   );
+}
+
+function MetaPatchProposalCard({
+  action,
+  draftDirty,
+  onApply,
+  onReject,
+  proposal,
+  targetRevision,
+}: Readonly<{
+  action: string | undefined;
+  draftDirty: boolean;
+  onApply: () => void;
+  onReject: () => void;
+  proposal: AgentLoopMetaPatchProposal;
+  targetRevision: number;
+}>) {
+  const blocked = Boolean(action);
+  return <section aria-label="Meta patch proposal" className={`awb-agent-loop-meta-proposal is-${proposal.status}`}>
+    <header>
+      <div><strong>Template Patch</strong>{proposal.rationale ? <p>{proposal.rationale}</p> : null}</div>
+      <span>Draft r{proposal.baseDraftRevision}</span>
+    </header>
+    <p className="awb-agent-loop-meta-proposal-summary">{proposal.summary}</p>
+    <ol className="awb-agent-loop-meta-diff">
+      {proposal.fieldDiffs.map((diff, index) => <li key={`${diff.path}:${index}`}>
+        <div><code data-testid="meta-diff-path">{diff.path}</code><span>{diff.operation}</span></div>
+        {diff.before !== undefined ? <MetaPatchDiffValue path={diff.path} tone="before" value={diff.before} /> : null}
+        {diff.after !== undefined ? <MetaPatchDiffValue path={diff.path} tone="after" value={diff.after} /> : null}
+      </li>)}
+    </ol>
+    {proposal.validationIssues.length ? <div className="awb-agent-loop-meta-issues"><strong>校验</strong><ul>{proposal.validationIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul></div> : null}
+    {proposal.unresolvedItems.length ? <div className="awb-agent-loop-meta-unresolved"><strong>未解决</strong><ul>{proposal.unresolvedItems.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
+    {draftDirty ? <p className="awb-agent-loop-meta-dirty">先保存或撤销本地手工修改，再应用 Meta patch。</p> : null}
+    {proposal.baseDraftRevision !== targetRevision ? <p className="awb-agent-loop-meta-dirty">Draft revision 已变化；此 patch 已 stale，不能覆盖当前 Draft。</p> : null}
+    <footer>
+      <button className="awb-button awb-button-secondary" disabled={blocked || proposal.status !== "pending"} onClick={onReject} type="button">拒绝 patch</button>
+      <button
+        className="awb-button awb-button-primary"
+        data-testid="meta-apply-proposal"
+        disabled={blocked
+          || draftDirty
+          || proposal.validationIssues.length > 0
+          || proposal.status !== "pending"
+          || proposal.baseDraftRevision !== targetRevision}
+        onClick={onApply}
+        type="button"
+      >应用 patch</button>
+    </footer>
+  </section>;
+}
+
+function MetaPatchDiffValue({
+  path,
+  tone,
+  value,
+}: Readonly<{ path: string; tone: "before" | "after"; value: string }>) {
+  const card = path.startsWith("definition.agentCards[") ? parseCardDiffValue(value) : undefined;
+  const content = card ? <span className="awb-agent-loop-meta-card-diff">
+    <strong>{card.title}</strong>
+    <span>{card.kind} · {card.executionProfileId}</span>
+    {card.description ? <small>{card.description}</small> : null}
+  </span> : value;
+  return <pre className={card ? "is-card-summary" : undefined}>
+    {tone === "before" ? <del>{content}</del> : <ins>{content}</ins>}
+  </pre>;
+}
+
+function parseCardDiffValue(value: string): Readonly<{
+  title: string;
+  kind: string;
+  executionProfileId: string;
+  description?: string;
+}> | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const card = parsed as Record<string, unknown>;
+    if (typeof card.title !== "string" || typeof card.kind !== "string" || typeof card.executionProfileId !== "string") return undefined;
+    const dispatch = card.dispatchProfile;
+    const description = dispatch && typeof dispatch === "object" && !Array.isArray(dispatch)
+      && typeof (dispatch as Record<string, unknown>).description === "string"
+      ? (dispatch as Record<string, unknown>).description as string
+      : undefined;
+    return { title: card.title, kind: card.kind, executionProfileId: card.executionProfileId, ...(description ? { description } : {}) };
+  } catch {
+    return undefined;
+  }
 }
 
 function messageFor(reason: unknown): string {
@@ -453,12 +705,67 @@ function metaProfileStatusLabel(status: ReturnType<typeof metaProfileStatus>): s
   return "不可用";
 }
 
+function metaSessionRuntimeStatusTone(
+  status: "creating" | "active" | "idle" | "ambiguous" | "failed",
+): "available" | "checking" {
+  return status === "active" || status === "idle" ? "available" : "checking";
+}
+
+function metaSessionRuntimeStatusLabel(
+  status: "creating" | "active" | "idle" | "ambiguous" | "failed",
+): string {
+  if (status === "active" || status === "idle") return "已连接";
+  if (status === "ambiguous") return "需要重试";
+  if (status === "failed") return "可重试";
+  return "生成中";
+}
+
+function metaProfileBlockingMessage(option: AgentLoopMetaProfileOptionV3): string {
+  if (option.readiness.status === "capability_missing" || option.readiness.missingCapabilities.length) {
+    return "当前 ACP Agent 缺少此 Profile 所需能力。请选择其他配置，或到设置中重新检测。";
+  }
+  const reason = option.readiness.reasons[0];
+  if (reason === "acp_profile_probe_failed") {
+    return "最近一次 ACP 资格探测失败。请选择其他 Provider / Model / Effort，或到设置刷新模型目录。";
+  }
+  if (reason === "provider_not_configured" || reason === "acp_task_provider_not_configured") {
+    return "此 Provider 尚未完成设备配置。请先到设置确认 CLI 与登录源。";
+  }
+  if (reason === "model_not_available" || reason === "profile_model_not_observed") {
+    return "当前 ACP 模型目录中没有这个模型。请在设置中刷新目录并重新选择。";
+  }
+  return reason
+    ? `当前配置未通过 ACP readiness（${reason}）。请选择其他配置，或到设置中重新检测。`
+    : "当前配置未通过 ACP readiness。请选择其他配置，或到设置中重新检测。";
+}
+
 function metaConversationStatus(status: "creating" | "active" | "idle" | "ambiguous" | "failed" | undefined): string {
   if (status === "active" || status === "idle") return "已连接";
   if (status === "creating") return "正在生成完整响应";
-  if (status === "ambiguous") return "正在确认状态";
+  if (status === "ambiguous") return "本轮未完成";
   if (status === "failed") return "连接失败";
   return "尚未连接";
+}
+
+function metaActivityTurnState(
+  status: AgentLoopMetaMessage["turnStatus"],
+): "running" | "settled" | "unsettled" {
+  if (status === "creating" || status === "active") return "running";
+  if (status === "ambiguous") return "unsettled";
+  return "settled";
+}
+
+function pendingSubmissionStatus(stage: "validating" | "submitting"): string {
+  return stage === "validating" ? "正在验证 ACP 环境…" : "正在提交消息…";
+}
+
+function metaCandidateStatus(
+  status: "creating" | "active" | "idle" | "ambiguous" | "failed" | undefined,
+): string | undefined {
+  if (status === "ambiguous") {
+    return "这次生成未完整结束，因此没有创建可应用 Patch。点击 New 后重试；Draft 未被修改。";
+  }
+  return undefined;
 }
 
 function shortTimestamp(value: string): string {
@@ -503,20 +810,13 @@ function metaModelChoices(
 ): readonly Readonly<{ modelId: string; label: string; configured: boolean; observed: boolean }>[] {
   const choices = new Map<string, { modelId: string; label: string; configured: boolean; observed: boolean }>();
   for (const option of options) {
-    for (const entry of option.modelCatalog ?? []) {
-      const configured = options.some((candidate) => candidate.model === entry.modelId);
-      choices.set(entry.modelId, { modelId: entry.modelId, label: entry.label, configured, observed: true });
-    }
-  }
-  for (const option of options) {
-    if (!choices.has(option.model)) {
-      choices.set(option.model, {
-        modelId: option.model,
-        label: option.model,
-        configured: true,
-        observed: false,
-      });
-    }
+    const catalogEntry = option.modelCatalog?.find((entry) => entry.modelId === option.model);
+    choices.set(option.model, {
+      modelId: option.model,
+      label: catalogEntry?.label ?? option.model,
+      configured: true,
+      observed: Boolean(catalogEntry),
+    });
   }
   return Object.freeze([...choices.values()].map((entry) => Object.freeze(entry)));
 }

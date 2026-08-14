@@ -9,6 +9,7 @@ import {
   stat,
 } from "node:fs/promises";
 import path from "node:path";
+import type { McpServer } from "@agentclientprotocol/sdk";
 import type {
   AcpPromptSettlement,
   AcpSessionConfigurationIntent,
@@ -16,21 +17,25 @@ import type {
   AcpV1Capability,
 } from "@agent-workspace/provider-acp";
 import {
+  normalizeProviderScopedToolRegistration,
   validateAcpMetaAgentTurnRequest,
   type AcpMetaAgentTurnRequest,
   type MetaAgentTurnAcceptance,
   type MetaAgentTurnReconciliation,
+  type ProviderScopedToolTurnContext,
 } from "@agent-workspace/provider-port";
 import {
   isRuntimeId,
   validateAcpProfileReadinessObservation,
   validateMetaProfileDefinitionV3,
   validateMetaProfileOptionDefinitionV3,
+  TEMPLATE_DRAFT_MCP_TOOL_DEFINITIONS,
   type AcpProfileReadinessObservation,
   type MetaProfileDefinitionV3,
   type MetaProfileOptionDefinitionV3,
   type MetaProfileOptionId,
   type MetaSessionId,
+  type MetaSessionMode,
 } from "@agent-workspace/runtime-contracts";
 import {
   createAcpAgentProcessFactory,
@@ -58,12 +63,20 @@ import {
 } from "./acp-provider-composition.js";
 import { createAcpQualificationAuthority } from "./acp-qualification.js";
 import { createAcpReverseRpcBroker } from "./acp-reverse-rpc-broker.js";
+import {
+  createProviderScopedMcpBridge,
+  type ProviderScopedMcpRoute,
+} from "./provider-scoped-mcp-bridge.js";
 
 const META_REQUIRED_ACP_CAPABILITIES = Object.freeze([
   "session_new",
   "session_prompt",
   "session_cancel",
   "session_update",
+] as const satisfies readonly AcpV1Capability[]);
+const META_TEMPLATE_REQUIRED_ACP_CAPABILITIES = Object.freeze([
+  ...META_REQUIRED_ACP_CAPABILITIES,
+  "mcp_http",
 ] as const satisfies readonly AcpV1Capability[]);
 const META_RECOVERY_CAPABILITIES = Object.freeze([
   "session_resume",
@@ -88,10 +101,13 @@ const OPTIONS_KEYS = Object.freeze([
   "processFactoryOptions",
   "readinessTtlMs",
   "operationTimeoutMs",
+  "turnAdmissionTimeoutMs",
   "now",
   "createBindingHandle",
   "createReadinessBindingHandle",
   "beforeQualificationEffect",
+  "onHumanOnlyActivity",
+  "onDiagnostic",
   "onTargetLifecycleCapability",
   "onTargetCheckpointFactCapability",
 ]);
@@ -108,7 +124,7 @@ const REGISTRATION_OPTIONAL_KEYS = new Set([
   "beginCredentialAcquisition",
   "sessionConfiguration",
 ]);
-const OPEN_KEYS = Object.freeze(["disposition", "metaSessionId", "metaProfileOptionId"]);
+const OPEN_KEYS = Object.freeze(["disposition", "metaSessionId", "metaProfileOptionId", "sessionMode"]);
 const CLOSE_KEYS = Object.freeze(["metaSessionId"]);
 const SAFE_CODE = /^[a-z][a-z0-9:_-]{0,191}$/u;
 const PRIVATE_DIRECTORY_PREFIX = "agent-workspace-acp-meta-";
@@ -148,6 +164,30 @@ export type AcpMetaSessionSafeObservation = Readonly<{
   readonly status: "ready";
 }>;
 
+export type AcpMetaHumanOnlyActivity =
+  | Readonly<{
+      readonly kind: "agent_message_chunk";
+      readonly metaSessionId: MetaSessionId;
+      readonly metaTurnId: string;
+      readonly text: string;
+    }>
+  | Readonly<{
+      readonly kind: "agent_thought_chunk";
+      readonly metaSessionId: MetaSessionId;
+      readonly metaTurnId: string;
+      readonly text: string;
+    }>
+  | Readonly<{
+      readonly kind: "tool_status";
+      readonly metaSessionId: MetaSessionId;
+      readonly metaTurnId: string;
+      readonly activityKey: string;
+      readonly title: string;
+      readonly status: "in_progress" | "completed" | "failed";
+      readonly inputSummary?: string;
+      readonly outputSummary?: string;
+    }>;
+
 export type AcpMetaSessionOpenResult =
   | Readonly<{
       readonly available: true;
@@ -178,9 +218,13 @@ export type AcpMetaProviderComposition = Readonly<{
   openMetaSession(input: Readonly<{
     readonly metaSessionId: MetaSessionId;
     readonly metaProfileOptionId: MetaProfileOptionId;
+    readonly sessionMode: MetaSessionMode;
     readonly disposition: "create" | "resume";
   }>): Promise<AcpMetaSessionOpenResult>;
-  startMetaTurn(request: AcpMetaAgentTurnRequest): Promise<MetaAgentTurnAcceptance>;
+  startMetaTurn(
+    request: AcpMetaAgentTurnRequest,
+    scopedToolTurnContext?: ProviderScopedToolTurnContext,
+  ): Promise<MetaAgentTurnAcceptance>;
   reconcileMetaTurn(
     request: AcpMetaAgentTurnRequest,
   ): Promise<MetaAgentTurnReconciliation>;
@@ -210,6 +254,7 @@ type PrivateDirectoryLease = Readonly<{
 type MetaSessionState = {
   readonly metaSessionId: MetaSessionId;
   readonly registration: NormalizedRegistration;
+  readonly sessionMode: MetaSessionMode;
   readonly disposition: "create" | "resume";
   readonly bindingHandle: string;
   readonly privateDirectory: PrivateDirectoryLease;
@@ -217,6 +262,7 @@ type MetaSessionState = {
   readonly safe: AcpMetaSessionSafeObservation;
   readonly shutdown: AbortController;
   readonly checkpointObserver?: AcpTargetCheckpointObserver;
+  readonly templateDraftRoute?: ProviderScopedMcpRoute;
   promptEffectCount: number;
   closing?: Promise<void>;
 };
@@ -229,12 +275,14 @@ type MetaTurnState = {
   acceptance: MetaAgentTurnAcceptance;
   reconciliation: MetaAgentTurnReconciliation;
   readonly admission: Promise<MetaAgentTurnAcceptance>;
+  readonly templateToolCallHandles: Set<string>;
   resolveAdmission(value: MetaAgentTurnAcceptance): void;
   execution: Promise<void>;
 };
 
 type OpeningMetaSession = Readonly<{
   readonly metaProfileOptionId: MetaProfileOptionId;
+  readonly sessionMode: MetaSessionMode;
   readonly disposition: "create" | "resume";
   readonly result: Promise<AcpMetaSessionOpenResult>;
 }>;
@@ -252,7 +300,8 @@ export class AcpMetaProviderCompositionError extends Error {
 /**
  * Configuration-only ACP owner. It constructs fresh generic Host owners and
  * deliberately has no seam for importing a Task composition, qualification
- * token, reverse-RPC broker, raw identity vault, Workspace path or tool catalog.
+ * token, reverse-RPC broker, raw identity vault, Workspace path or caller tool
+ * catalog. Its fixed Template Draft catalog is proposal-only and Turn-scoped.
  * Its only identity seam is the Host Meta namespace resolver.
  */
 export function createAcpMetaProviderComposition(
@@ -262,10 +311,20 @@ export function createAcpMetaProviderComposition(
     readonly processFactoryOptions: AcpMetaProcessFactoryOptions;
     readonly readinessTtlMs?: number;
     readonly operationTimeoutMs?: number;
+    readonly turnAdmissionTimeoutMs?: number;
     readonly now?: () => number;
     readonly createBindingHandle?: (metaSessionId: MetaSessionId) => string;
     readonly createReadinessBindingHandle?: () => string;
     readonly beforeQualificationEffect?: AcpQualificationEffectBudget;
+    /** Best-effort Host-only projection; never becomes a MetaMessage, Proposal, or settlement gate. */
+    readonly onHumanOnlyActivity?: (
+      activity: AcpMetaHumanOnlyActivity,
+    ) => void | Promise<void>;
+    /** Host-process-only safe stage diagnostic; never persisted or bridged. */
+    readonly onDiagnostic?: (diagnostic: Readonly<{
+      readonly code: string;
+      readonly stage: "turn";
+    }>) => void;
     /** Host-only: forwarded only after the exact Meta target cwd and process are gone. */
     readonly onTargetLifecycleCapability?: (capability: AcpTargetLifecycleCapability) => void;
     /** Host-only: forwarded only after target process and private-directory cleanup. */
@@ -280,10 +339,13 @@ export function createAcpMetaProviderComposition(
     new Set([
       "readinessTtlMs",
       "operationTimeoutMs",
+      "turnAdmissionTimeoutMs",
       "now",
       "createBindingHandle",
       "createReadinessBindingHandle",
       "beforeQualificationEffect",
+      "onHumanOnlyActivity",
+      "onDiagnostic",
       "onTargetLifecycleCapability",
       "onTargetCheckpointFactCapability",
     ]),
@@ -316,6 +378,15 @@ export function createAcpMetaProviderComposition(
     5 * 60_000,
     "acp_meta_operation_timeout_invalid",
   );
+  const turnAdmissionTimeoutMs = boundedInteger(
+    // Template editing commonly needs several bounded MCP calls. Keep the
+    // acceptance window separate from short process/readiness operations so a
+    // healthy whole-final is not orphaned while its tools are still running.
+    options.turnAdmissionTimeoutMs ?? 10 * 60_000,
+    1,
+    30 * 60_000,
+    "acp_meta_turn_admission_timeout_invalid",
+  );
   const now = optionalFunction(options.now, Date.now, "acp_meta_now_invalid");
   const createBindingHandle = optionalFunction(
     options.createBindingHandle,
@@ -334,6 +405,27 @@ export function createAcpMetaProviderComposition(
   if (beforeQualificationEffect !== undefined
     && typeof beforeQualificationEffect !== "function") {
     throw safeError("acp_meta_qualification_effect_budget_invalid");
+  }
+  const onHumanOnlyActivity = options.onHumanOnlyActivity as
+    ((activity: AcpMetaHumanOnlyActivity) => void | Promise<void>) | undefined;
+  if (onHumanOnlyActivity !== undefined && typeof onHumanOnlyActivity !== "function") {
+    throw safeError("acp_meta_human_activity_observer_invalid");
+  }
+  const onDiagnostic = options.onDiagnostic as
+    ((diagnostic: Readonly<{ readonly code: string; readonly stage: "turn" }>) => void)
+    | undefined;
+  if (onDiagnostic !== undefined && typeof onDiagnostic !== "function") {
+    throw safeError("acp_meta_diagnostic_observer_invalid");
+  }
+
+  async function projectHumanOnlyActivity(activity: AcpMetaHumanOnlyActivity): Promise<void> {
+    if (!onHumanOnlyActivity) return;
+    try {
+      await onHumanOnlyActivity(activity);
+    } catch {
+      // This projection is an in-memory, rebuildable Chat UI cache. It must not
+      // turn an otherwise completed ACP prompt into an ambiguous Meta turn.
+    }
   }
   const onTargetLifecycleCapability = options.onTargetLifecycleCapability;
   if (onTargetLifecycleCapability !== undefined
@@ -363,6 +455,13 @@ export function createAcpMetaProviderComposition(
   );
   const qualifications = createAcpQualificationAuthority();
   const reverseRpcBroker = createAcpReverseRpcBroker();
+  const activeTemplateTurns = new Map<string, MetaTurnState>();
+  const templateDraftBridge = createProviderScopedMcpBridge();
+  const templateDraftMcpServerName = "agent_workspace_template_draft";
+  const templateDraftRegistration = normalizeProviderScopedToolRegistration({
+    capabilityClass: "template_draft",
+    tools: TEMPLATE_DRAFT_MCP_TOOL_DEFINITIONS,
+  });
   const provider: AcpProviderComposition = createAcpProviderComposition({
     resolutions,
     processes,
@@ -533,6 +632,7 @@ export function createAcpMetaProviderComposition(
       );
       const metaSessionId = requiredMetaSessionId(request.metaSessionId);
       const disposition = requiredOpenDisposition(request.disposition);
+      const sessionMode = requiredMetaSessionMode(request.sessionMode);
       const registration = requiredRegistration(
         byOptionId,
         request.metaProfileOptionId,
@@ -552,7 +652,7 @@ export function createAcpMetaProviderComposition(
         if (existing.registration.metaProfileOptionId !== registration.metaProfileOptionId) {
           throw safeError("acp_meta_session_profile_conflict");
         }
-        if (existing.disposition !== disposition) {
+        if (existing.disposition !== disposition || existing.sessionMode !== sessionMode) {
           throw safeError("acp_meta_session_disposition_conflict");
         }
         if (existing.closing) throw safeError("acp_meta_session_closing");
@@ -568,7 +668,7 @@ export function createAcpMetaProviderComposition(
         if (opening.metaProfileOptionId !== registration.metaProfileOptionId) {
           throw safeError("acp_meta_session_profile_conflict");
         }
-        if (opening.disposition !== disposition) {
+        if (opening.disposition !== disposition || opening.sessionMode !== sessionMode) {
           throw safeError("acp_meta_session_disposition_conflict");
         }
         return opening.result;
@@ -578,6 +678,7 @@ export function createAcpMetaProviderComposition(
         const bindingHandle = requiredBindingHandle(createBindingHandle(metaSessionId));
         const directory = await createPrivateDirectory();
         let checkpointObserver: AcpTargetCheckpointObserver | undefined;
+        let templateDraftRoute: ProviderScopedMcpRoute | undefined;
         let opened;
         try {
           opened = await provider.openBinding({
@@ -585,11 +686,14 @@ export function createAcpMetaProviderComposition(
               registration,
               directory.directory,
               disposition,
+              sessionMode,
               (observer) => { checkpointObserver = observer; },
+              (route) => { templateDraftRoute = route; },
             ),
             bindingHandle,
           });
         } catch (error) {
+          templateDraftRoute?.close();
           await cleanupDirectoryOrPoison(directory);
           throw error;
         }
@@ -600,6 +704,7 @@ export function createAcpMetaProviderComposition(
           now() + readinessTtlMs,
         );
         if (!opened.available) {
+          templateDraftRoute?.close();
           if (hasUnconfirmedCleanup(opened.report.unavailableReasons)) {
             orphanedDirectories.add(directory);
             poisonedCode = "acp_meta_cleanup_unconfirmed";
@@ -624,6 +729,7 @@ export function createAcpMetaProviderComposition(
           return Object.freeze({ available: false, readiness });
         }
         if (readiness.status !== "available") {
+          templateDraftRoute?.close();
           const cleanup = await Promise.allSettled([
             opened.runtime.releaseBinding(),
             opened.runtime.close(),
@@ -636,10 +742,16 @@ export function createAcpMetaProviderComposition(
           await cleanupDirectoryOrPoison(directory);
           return Object.freeze({ available: false, readiness });
         }
+        if (sessionMode === "template_design" && !templateDraftRoute) {
+          await Promise.allSettled([opened.runtime.releaseBinding(), opened.runtime.close()]);
+          await cleanupDirectoryOrPoison(directory);
+          throw safeError("acp_meta_template_draft_route_missing");
+        }
         const safe = safeSession(metaSessionId, registration);
         const state: MetaSessionState = {
           metaSessionId,
           registration,
+          sessionMode,
           disposition,
           bindingHandle,
           privateDirectory: directory,
@@ -647,6 +759,7 @@ export function createAcpMetaProviderComposition(
           safe,
           shutdown: new AbortController(),
           ...(checkpointObserver ? { checkpointObserver } : {}),
+          ...(templateDraftRoute ? { templateDraftRoute } : {}),
           promptEffectCount: 0,
         };
         sessions.set(metaSessionId, state);
@@ -654,6 +767,7 @@ export function createAcpMetaProviderComposition(
       })();
       openingSessions.set(metaSessionId, Object.freeze({
         metaProfileOptionId: registration.metaProfileOptionId,
+        sessionMode,
         disposition,
         result,
       }));
@@ -666,9 +780,21 @@ export function createAcpMetaProviderComposition(
       }
     },
 
-    async startMetaTurn(value) {
+    async startMetaTurn(value, scopedToolTurnContext) {
       const request = normalizeTurnRequest(value);
       const session = requireTurnSession(request, sessions);
+      if (request.mode !== session.sessionMode) {
+        throw safeError("acp_meta_session_mode_conflict");
+      }
+      if (request.mode === "template_design") {
+        if (!scopedToolTurnContext
+          || scopedToolTurnContext.capabilityClass !== "template_draft"
+          || typeof scopedToolTurnContext.handleCall !== "function") {
+          throw safeError("acp_meta_template_draft_turn_context_required");
+        }
+      } else if (scopedToolTurnContext !== undefined) {
+        throw safeError("acp_meta_template_draft_turn_context_forbidden");
+      }
       const requestDigest = digest(request);
       const existing = turnsById.get(request.metaTurnId);
       if (existing) {
@@ -689,15 +815,32 @@ export function createAcpMetaProviderComposition(
         requestDigest,
         acceptance: "unknown",
         reconciliation: Object.freeze({ state: "running" }),
+        templateToolCallHandles: new Set<string>(),
         ...createTurnAdmission(),
         execution: Promise.resolve(),
       };
       turnsById.set(request.metaTurnId, turn);
       turnsByAttempt.set(attemptId, turn);
+      if (scopedToolTurnContext) {
+        session.templateDraftRoute!.activate(scopedToolTurnContext);
+        activeTemplateTurns.set(session.bindingHandle, turn);
+      }
       turn.execution = executeMetaTurn(session, turn, request).finally(() => {
+        if (scopedToolTurnContext) {
+          if (activeTemplateTurns.get(session.bindingHandle) === turn) {
+            activeTemplateTurns.delete(session.bindingHandle);
+          }
+          try {
+            session.templateDraftRoute!.deactivate();
+          } catch (error) {
+            if (!(error instanceof Error && error.message === "provider_scoped_mcp_route_closed")) {
+              throw error;
+            }
+          }
+        }
         turnsByAttempt.delete(attemptId);
       });
-      return waitForTurnAdmission(turn, operationTimeoutMs);
+      return waitForTurnAdmission(turn, turnAdmissionTimeoutMs);
     },
 
     async reconcileMetaTurn(value) {
@@ -748,7 +891,7 @@ export function createAcpMetaProviderComposition(
         const sessionResults = await Promise.allSettled(
           [...sessions.keys()].map((metaSessionId) => closeSession(metaSessionId)),
         );
-        const ownerResult = await Promise.allSettled([provider.close()]);
+        const ownerResult = await Promise.allSettled([provider.close(), templateDraftBridge.close()]);
         let orphanResults: PromiseSettledResult<void>[] = [];
         if (ownerResult[0]?.status === "fulfilled") {
           orphanResults = await Promise.allSettled(
@@ -775,13 +918,17 @@ export function createAcpMetaProviderComposition(
     registration: NormalizedRegistration,
     privateDirectory: string,
     targetDisposition: "create" | "resume" = "create",
+    targetSessionMode?: MetaSessionMode,
     captureCheckpointObserver?: (observer: AcpTargetCheckpointObserver) => void,
+    captureTemplateDraftRoute?: (route: ProviderScopedMcpRoute) => void,
   ): AcpProviderQualificationRequest<MetaProfileDefinitionV3> {
     return Object.freeze({
       profile: registration.profile,
       descriptor: registration.descriptor,
       role: "meta",
-      requiredAcpCapabilities: META_REQUIRED_ACP_CAPABILITIES,
+      requiredAcpCapabilities: targetSessionMode === "template_design"
+        ? META_TEMPLATE_REQUIRED_ACP_CAPABILITIES
+        : META_REQUIRED_ACP_CAPABILITIES,
       requiredAnyAcpCapabilities: META_RECOVERY_CAPABILITIES,
       requiredBehaviors: META_REQUIRED_BEHAVIORS,
       workspaceDirectory: privateDirectory,
@@ -862,26 +1009,46 @@ export function createAcpMetaProviderComposition(
         if (context.profile !== registration.profile || context.reverseRpcLease) {
           throw safeError("acp_meta_target_binding_invalid");
         }
-        const binding = await context.client.ensureBinding({
-          bindingHandle: context.bindingHandle,
-          disposition: targetDisposition,
-          workspaceDirectory: privateDirectory,
-          mcpServers: Object.freeze([]),
-          configuration: registration.sessionConfiguration,
-        });
+        const route = targetSessionMode === "template_design"
+          ? await createTemplateDraftRoute(context.bindingHandle)
+          : undefined;
+        if (route) captureTemplateDraftRoute?.(route);
+        const mcpServers = route
+          ? Object.freeze([Object.freeze({
+              type: "http" as const,
+              name: templateDraftMcpServerName,
+              url: route.url,
+              headers: Object.freeze([]),
+            }) as unknown as McpServer])
+          : Object.freeze([]);
+        let binding;
+        try {
+          binding = await context.client.ensureBinding({
+            bindingHandle: context.bindingHandle,
+            disposition: targetDisposition,
+            workspaceDirectory: privateDirectory,
+            mcpServers,
+            configuration: registration.sessionConfiguration,
+          });
+          if (route) await route.waitForToolDiscovery();
+        } catch (error) {
+          route?.close();
+          throw error;
+        }
         if (binding.bindingHandle !== context.bindingHandle
           || binding.disposition !== targetDisposition
           || binding.model !== registration.profile.model) {
           throw safeError("acp_meta_target_binding_invalid");
         }
-        if (context.checkpointObserver) {
+        if (context.checkpointObserver && route) {
           captureCheckpointObserver?.(context.checkpointObserver);
           context.checkpointObserver.observe({
             kind: "meta_isolation_opened",
             bindingHandle: context.bindingHandle,
             role: "meta",
             privateDirectoryLeaseConfirmed: true,
-            toolSurfaceCount: 0,
+            toolCapabilityClass: "template_draft",
+            toolSurfaceCount: templateDraftRegistration.tools.length,
             callerCwdPresent: false,
             taskWorkspacePresent: false,
           });
@@ -891,25 +1058,90 @@ export function createAcpMetaProviderComposition(
     });
   }
 
+  function isTemplateDraftMcpToolTitle(title: string | undefined): boolean {
+    if (!title) return false;
+    return templateDraftRegistration.tools.some((tool) => (
+      title === `mcp.${templateDraftMcpServerName}.${tool.name}`
+    ));
+  }
+
   async function observe(observation: AcpSessionObservation): Promise<void> {
-    if (observation.kind === "tool_status"
-      || observation.kind === "interaction_requested") {
-      if (observation.kind === "interaction_requested") {
-        const turn = turnsByAttempt.get(observation.attemptId);
-        const session = turn ? sessions.get(turn.metaSessionId) : undefined;
-        session?.checkpointObserver?.observe({
-          kind: "meta_permission_rejected",
-          bindingHandle: session.bindingHandle,
-          attemptId: observation.attemptId,
-          role: "meta",
-        });
+    const turn = turnsByAttempt.get(observation.attemptId);
+    if (observation.kind === "agent_message_chunk" || observation.kind === "agent_thought_chunk") {
+      if (turn) {
+        await projectHumanOnlyActivity(Object.freeze({
+          kind: observation.kind,
+          metaSessionId: turn.metaSessionId,
+          metaTurnId: turn.metaTurnId,
+          text: observation.text,
+        }));
       }
+      return;
+    }
+    if (observation.kind === "tool_status") {
+      if (!turn) throw safeError("acp_meta_authority_observed");
+      const session = sessions.get(turn.metaSessionId);
+      if (session?.sessionMode === "template_design"
+        && observation.bindingHandle === session.bindingHandle
+        && isTemplateDraftMcpToolTitle(observation.title)) {
+        if (observation.status === "completed" || observation.status === "failed") {
+          turn.templateToolCallHandles.delete(observation.toolCallHandle);
+        } else {
+          turn.templateToolCallHandles.add(observation.toolCallHandle);
+        }
+      }
+      return;
+    }
+    if (observation.kind === "interaction_requested") {
+      const session = turn ? sessions.get(turn.metaSessionId) : undefined;
+      const allowOnce = observation.choices.filter((choice) => choice.kind === "allow_once");
+      if (turn
+        && session?.sessionMode === "template_design"
+        && observation.bindingHandle === session.bindingHandle
+        && turn.templateToolCallHandles.delete(observation.toolCallHandle)
+        && allowOnce.length === 1) {
+        await session.runtime.client.respondToInteraction({
+          bindingHandle: observation.bindingHandle,
+          attemptId: observation.attemptId,
+          interactionId: observation.interactionId,
+          choiceId: allowOnce[0]!.choiceId,
+        });
+        return;
+      }
+      session?.checkpointObserver?.observe({
+        kind: "meta_permission_rejected",
+        bindingHandle: session.bindingHandle,
+        attemptId: observation.attemptId,
+        role: "meta",
+      });
       throw safeError("acp_meta_authority_observed");
     }
-    const turn = turnsByAttempt.get(observation.attemptId);
     if (turn && observation.kind === "delivery_receipt") {
       turn.acceptance = "accepted";
     }
+  }
+
+  async function createTemplateDraftRoute(bindingId: string): Promise<ProviderScopedMcpRoute> {
+    await templateDraftBridge.listen();
+    return templateDraftBridge.registerRoute({
+      bindingId,
+      registration: templateDraftRegistration,
+      projectToolActivity: projectTemplateDraftToolActivity,
+      async onToolActivity(activity) {
+        const turn = activeTemplateTurns.get(bindingId);
+        if (!turn) return;
+        await projectHumanOnlyActivity(Object.freeze({
+          kind: "tool_status" as const,
+          metaSessionId: turn.metaSessionId,
+          metaTurnId: turn.metaTurnId,
+          activityKey: activity.activityKey,
+          title: templateDraftToolTitle(activity.name),
+          status: activity.status,
+          ...(activity.inputSummary ? { inputSummary: activity.inputSummary } : {}),
+          ...(activity.outputSummary ? { outputSummary: activity.outputSummary } : {}),
+        }));
+      },
+    });
   }
 
   async function executeMetaTurn(
@@ -952,9 +1184,17 @@ export function createAcpMetaProviderComposition(
           observedAt: observedAt(now()),
         });
       }
-    } catch {
+    } catch (error) {
       // An accepted-but-unsettled or transport-ambiguous Turn remains unknown.
       // Neither start nor reconcile ever invokes submitPrompt again for it.
+      try {
+        onDiagnostic?.(Object.freeze({
+          code: safeCode(error, "acp_meta_turn_unknown"),
+          stage: "turn",
+        }));
+      } catch {
+        // Host-only observability must never become a lifecycle decision.
+      }
       turn.reconciliation = Object.freeze({ state: "unknown" });
     } finally {
       turn.resolveAdmission(turn.acceptance);
@@ -969,6 +1209,7 @@ export function createAcpMetaProviderComposition(
     if (!session) return;
     if (session.closing) return session.closing;
     const closing = (async () => {
+      session.templateDraftRoute?.close();
       const activeTurns = [...turnsById.values()].filter((turn) => (
         turn.metaSessionId === metaSessionId
         && turn.reconciliation.state === "running"
@@ -1371,10 +1612,10 @@ function assertStrictSettlement(
   if (settlement.stopReason !== "end_turn") {
     throw safeError("acp_meta_terminal_incomplete");
   }
-  if (settlement.finalCandidateGroupCount !== 1) {
+  if (probe && settlement.finalCandidateGroupCount !== 1) {
     throw safeError("acp_meta_final_candidate_nonunique");
   }
-  if (!settlement.finalCandidate) {
+  if (settlement.finalCandidateGroupCount < 1 || !settlement.finalCandidate) {
     throw safeError("acp_meta_final_candidate_missing");
   }
   let parsed: unknown;
@@ -1408,6 +1649,128 @@ function attemptIdFor(metaTurnId: string): string {
     throw safeError("acp_meta_turn_id_invalid");
   }
   return `session_execution_attempt_meta_${suffix}`;
+}
+
+function templateDraftToolTitle(name: string): string {
+  switch (name) {
+    case "template_draft_read": return "读取 Template Draft";
+    case "template_draft_update_metadata": return "修改 Template 信息";
+    case "template_draft_create_card": return "新增 Agent Card";
+    case "template_draft_update_card": return "修改 Agent Card";
+    case "template_draft_edit_prompt": return "定位修改 Prompt";
+    case "template_draft_delete_card": return "删除 Agent Card";
+    case "template_draft_reorder_cards": return "调整 Agent Card 顺序";
+    case "template_draft_select_profile": return "选择执行 Profile";
+    case "template_draft_upsert_deliverable": return "更新 Deliverable";
+    case "template_draft_delete_deliverable": return "删除 Deliverable";
+    default: return "Template Draft 工具";
+  }
+}
+
+function projectTemplateDraftToolActivity(input: Readonly<{
+  name: string;
+  status: "in_progress" | "completed" | "failed";
+  arguments: unknown;
+  result?: unknown;
+}>): Readonly<{ inputSummary?: string; outputSummary?: string }> {
+  if (input.status === "failed") {
+    return Object.freeze({ outputSummary: "工具调用未完成；没有形成可应用的 Draft 操作。" });
+  }
+  if (input.status === "completed") {
+    const result = presentationRecord(input.result);
+    const revision = Number.isSafeInteger(result.targetRevision)
+      ? `Draft r${String(result.targetRevision)}`
+      : "当前 Draft";
+    if (input.name === "template_draft_read") {
+      const cardCount = Array.isArray(result.agentCards) ? result.agentCards.length : undefined;
+      const profileCount = Array.isArray(result.executionProfiles) ? result.executionProfiles.length : undefined;
+      const inventory = [
+        cardCount === undefined ? undefined : `${cardCount} 张 Agent Card`,
+        profileCount === undefined ? undefined : `${profileCount} 个 Execution Profile`,
+      ].filter((entry): entry is string => Boolean(entry));
+      return Object.freeze({
+        outputSummary: `已读取 ${revision} 的稳定快照${inventory.length ? `：${inventory.join("，")}` : ""}。`,
+      });
+    }
+    const operation = presentationRecord(result.operation);
+    return Object.freeze({
+      outputSummary: `${revision}：已生成${templateDraftOperationLabel(operation.kind)}，尚未应用。`,
+    });
+  }
+  const argumentsValue = presentationRecord(input.arguments);
+  switch (input.name) {
+    case "template_draft_read":
+      return Object.freeze({ inputSummary: `目标：${templateDraftTargetLabel(argumentsValue.target)}` });
+    case "template_draft_edit_prompt": {
+      const target = presentationRecord(argumentsValue.target);
+      return Object.freeze({ inputSummary: [
+        `目标：${templateDraftTargetLabel(target)} Prompt`,
+        `原文：${presentationText(argumentsValue.oldText, 7_500)}`,
+        `新文：${presentationText(argumentsValue.newText, 7_500)}`,
+      ].join("\n") });
+    }
+    case "template_draft_update_metadata":
+      return Object.freeze({ inputSummary: `字段：${presentationText(argumentsValue.field, 80)}\n新值：${presentationText(argumentsValue.value, 2_000)}` });
+    case "template_draft_create_card":
+      return Object.freeze({ inputSummary: `新增 Agent Card：${presentationText(argumentsValue.title, 200)}\n类型：${presentationText(argumentsValue.cardKind, 80)}` });
+    case "template_draft_update_card": {
+      const changes = presentationRecord(argumentsValue.changes);
+      return Object.freeze({ inputSummary: `修改 Agent Card 字段：${Object.keys(changes).sort().join("、") || "未提供"}` });
+    }
+    case "template_draft_delete_card":
+      return Object.freeze({ inputSummary: "删除一个现有 Agent Card。" });
+    case "template_draft_reorder_cards":
+      return Object.freeze({ inputSummary: `调整 Agent Card 顺序：${Array.isArray(argumentsValue.cardRefs) ? argumentsValue.cardRefs.length : 0} 张。` });
+    case "template_draft_select_profile":
+      return Object.freeze({ inputSummary: "选择一个由 Host 验证的执行 Profile revision。" });
+    case "template_draft_upsert_deliverable":
+      return Object.freeze({ inputSummary: `交付物：${presentationText(argumentsValue.artifactPath, 600)}` });
+    case "template_draft_delete_deliverable":
+      return Object.freeze({ inputSummary: `删除交付物：${presentationText(argumentsValue.artifactPath, 600)}` });
+    default:
+      return Object.freeze({});
+  }
+}
+
+function templateDraftTargetLabel(value: unknown): string {
+  const target = presentationRecord(value);
+  switch (target.kind) {
+    case "template": return "整个 Template Draft";
+    case "conductor": return "Conductor";
+    case "card": return "Session Agent Card";
+    case "profile": return "Execution Profile";
+    default: return "当前 Draft 对象";
+  }
+}
+
+function templateDraftOperationLabel(value: unknown): string {
+  switch (value) {
+    case "template_metadata_set": return " Template 信息修改操作";
+    case "template_card_create": return " Agent Card 新增操作";
+    case "template_card_update": return " Agent Card 修改操作";
+    case "template_conductor_prompt_edit":
+    case "template_card_prompt_edit": return " Prompt 定位修改操作";
+    case "template_card_delete": return " Agent Card 删除操作";
+    case "template_cards_reorder": return " Agent Card 排序操作";
+    case "template_profile_revision_select": return "执行 Profile 选择操作";
+    case "template_deliverable_upsert": return " Deliverable 更新操作";
+    case "template_deliverable_delete": return " Deliverable 删除操作";
+    default: return "一项 Proposal 操作";
+  }
+}
+
+function presentationRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : Object.create(null) as Record<string, unknown>;
+}
+
+function presentationText(value: unknown, maximum: number): string {
+  if (value === null) return "（清空）";
+  if (typeof value !== "string") return "（未提供）";
+  const normalized = value.replaceAll("\0", "").trim();
+  if (!normalized) return "（空）";
+  return normalized.length > maximum ? `${normalized.slice(0, maximum)}…` : normalized;
 }
 
 async function canonicalRoot(value: string): Promise<string> {
@@ -1449,6 +1812,13 @@ function requiredMetaSessionId(value: unknown): MetaSessionId {
 function requiredOpenDisposition(value: unknown): "create" | "resume" {
   if (value !== "create" && value !== "resume") {
     throw safeError("acp_meta_open_disposition_invalid");
+  }
+  return value;
+}
+
+function requiredMetaSessionMode(value: unknown): MetaSessionMode {
+  if (value !== "template_design" && value !== "task_setup") {
+    throw safeError("acp_meta_session_mode_invalid");
   }
   return value;
 }

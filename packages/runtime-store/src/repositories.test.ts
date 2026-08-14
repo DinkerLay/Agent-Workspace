@@ -387,6 +387,27 @@ describe("ConfigurationStore", () => {
     )!;
     expect(reconciliationLease).toMatchObject({ status: "leased", attempts: 4, leasedFromStatus: "provider_accepted" });
 
+    expect(repositories.configuration.settleMetaTurn({
+      metaTurnId: turn.metaTurnId,
+      expectedAttempts: reconciliationLease.attempts,
+      status: "ambiguous",
+      failureCode: "meta_provider_reconciliation_unknown",
+      now: "2026-08-09T00:04:21.000Z",
+    })).toMatchObject({ status: "ambiguous", attempts: 4 });
+    expect(repositories.configuration.claimMetaTurn(
+      "2026-08-09T00:04:22.000Z",
+      "2026-08-09T00:05:22.000Z",
+    )).toBeUndefined();
+    const boundedReconciliationLease = repositories.configuration.claimMetaTurn(
+      "2026-08-09T00:04:29.000Z",
+      "2026-08-09T00:05:29.000Z",
+    )!;
+    expect(boundedReconciliationLease).toMatchObject({
+      status: "leased",
+      attempts: 5,
+      leasedFromStatus: "ambiguous",
+    });
+
     const completedAt = "2026-08-09T00:04:30.000Z";
     const assistantMessage: MetaMessageRecord = {
       metaMessageId: turn.assistantMetaMessageId,
@@ -418,15 +439,15 @@ describe("ConfigurationStore", () => {
     };
     const completion = {
       metaTurnId: turn.metaTurnId,
-      expectedAttempts: reconciliationLease.attempts,
+      expectedAttempts: boundedReconciliationLease.attempts,
       session: { ...appendedSession, revision: 3, updatedAt: completedAt },
       expectedSessionRevision: appendedSession.revision,
       assistantMessage,
       proposal,
       completedAt,
     };
-    expect(repositories.configuration.completeMetaTurn(completion)).toMatchObject({ status: "returned", attempts: 4 });
-    expect(repositories.configuration.completeMetaTurn(completion)).toMatchObject({ status: "returned", attempts: 4 });
+    expect(repositories.configuration.completeMetaTurn(completion)).toMatchObject({ status: "returned", attempts: 5 });
+    expect(repositories.configuration.completeMetaTurn(completion)).toMatchObject({ status: "returned", attempts: 5 });
     expect(repositories.configuration.getMetaMessage(assistantMessage.metaMessageId)).toEqual(assistantMessage);
     expect(repositories.configuration.getMetaPatchProposal(proposal.metaPatchProposalId)).toEqual(proposal);
 

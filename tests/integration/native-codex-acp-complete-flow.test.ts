@@ -68,7 +68,7 @@ liveIt("runs Template Meta -> Publish -> Task Setup -> Create -> Start through r
 
   let runtime: Awaited<ReturnType<typeof startSessionIdProductionRuntimeHost>> | undefined;
   const humanOnlyDiagnostics: Array<Readonly<{
-    kind: "agent_message_chunk" | "tool_status";
+    kind: "agent_message_chunk" | "agent_thought_chunk" | "tool_status";
     status?: "pending" | "in_progress" | "completed" | "failed";
   }>> = [];
   const hostDiagnostics: Array<Readonly<{
@@ -127,7 +127,7 @@ liveIt("runs Template Meta -> Publish -> Task Setup -> Create -> Start through r
         scope: templateScope,
         metaSessionId: templateMeta.session.metaSessionId,
         expectedSessionRevision: templateMeta.session.revision,
-        content: "Return exactly one template_conductor_prompt_set operation. Set its value exactly to: Return one concise final acknowledgement that this durable ACP Task is live. Do not delegate and do not modify files. Leave every other field unchanged.",
+        content: "Use the Template Draft MCP to read the current Conductor prompt, then make one localized edit only: append the sentence 'Return one concise final acknowledgement that this durable ACP Task is live. Do not delegate and do not modify files.' Do not replace or resend the complete prompt, and leave every other field unchanged.",
       });
       const templateProposal = await eventually(async () => {
         const model = await configuration.meta.load(templateScope);

@@ -14,6 +14,7 @@ import type {
   SessionIdHumanMessageCommand,
   SessionIdRespondInteractionCommand,
   ProviderFamily,
+  JsonObject,
   RuntimeCommand,
   TaskSetupDraftRecord,
   TemplateDefinitionV3,
@@ -50,6 +51,10 @@ import {
   type SessionIdAcpRunApplication,
 } from "./session-id-acp-application-assembly.js";
 import { createSessionIdAcpTaskLifecycleHost } from "./session-id-acp-task-lifecycle-host.js";
+import {
+  createSessionIdAcpHumanActivityOwner,
+  type SessionIdAcpHumanActivityInput,
+} from "./session-id-acp-human-activity-owner.js";
 import type { SessionIdAcpTaskBindingContextRepositories } from "./session-id-acp-task-binding-context.js";
 import type { SessionIdAcpProviderSetupSnapshot } from "./session-id-acp-provider-settings-host.js";
 import { createNodeSessionIdAcpWorkspacePreviewOwner } from "./session-id-acp-workspace-preview-port.js";
@@ -265,6 +270,7 @@ export type SessionIdUnifiedAcpProviderFactoryInput = SessionIdAcpApplicationPro
   runtimeInstanceId: string;
   now: () => string;
   createId(kind: "workspace_effect" | "workspace_file_observation"): string;
+  onHumanOnlyActivity(input: SessionIdAcpHumanActivityInput): void;
   taskBindingContext: Readonly<{
     repositories: SessionIdAcpTaskBindingContextRepositories;
     workspaceDirectoryResolver: ReturnType<typeof createNodeWorkspaceDirectoryResolver>;
@@ -408,6 +414,10 @@ export async function createSessionIdUnifiedRuntimeHost(
     AcpProfileReadinessObservation["modelCatalog"]
   >>();
   const providerProbeReadiness = new Map<ProviderFamily, AcpProfileReadinessObservation>();
+  const humanActivities = createSessionIdAcpHumanActivityOwner({
+    now,
+    createId: () => createId("provider_activity"),
+  });
 
   const assembly = createSessionIdAcpApplicationAssembly({
     store: sqlite,
@@ -421,6 +431,9 @@ export async function createSessionIdUnifiedRuntimeHost(
         runtimeInstanceId: ledger.runtimeInstanceId,
         now,
         createId,
+        onHumanOnlyActivity(input) {
+          humanActivities.record(input);
+        },
         taskBindingContext: Object.freeze({
           repositories: taskBindingContextRepositories,
           workspaceDirectoryResolver,
@@ -444,6 +457,7 @@ export async function createSessionIdUnifiedRuntimeHost(
         sessionRuntime: acpRepositories.sessionRuntime,
       },
       metaAgentRegistrations: owner.metaAgentRegistrations,
+      listTemplateProfileRevisions,
       now,
       createId,
       ...(options.metaReadinessProbeTimeoutMs === undefined
@@ -547,6 +561,9 @@ export async function createSessionIdUnifiedRuntimeHost(
       if (!profile) return undefined;
       return cachedReadiness(profile, scope.role);
     },
+    readHumanOnlyActivities: (sessionExecutionAttemptId) => (
+      humanActivities.listForAttempt(sessionExecutionAttemptId)
+    ),
   });
 
   for (const task of repositories.templateTask.listTasks()) {
@@ -961,32 +978,7 @@ export async function createSessionIdUnifiedRuntimeHost(
     }
     if (request.kind === "template_studio") {
       const selected = request.templateId ? repositories.templateTask.getTemplate(request.templateId) : undefined;
-      const libraryProfileSources = read.templateLibrary
-        .filter(({ template }) => !template.archivedAt)
-        .flatMap(({ template, activeVersion }) => {
-          if (!activeVersion || activeVersion.definition.schemaVersion !== 3) return [];
-          const definition = activeVersion.definition;
-          return definition.executionProfiles.map((profile) => Object.freeze({
-            title: `${template.title} · ${profileRole(definition, profile.executionProfileId)}`,
-            sourceTemplateId: template.templateId,
-            sourceTemplateVersionId: activeVersion.templateVersionId,
-            role: profileRole(definition, profile.executionProfileId),
-            profile,
-          }));
-        });
-      const profileSources = [...libraryProfileSources, ...BUILT_IN_TEMPLATE_PROFILE_OPTIONS];
-      const uniqueProfileSources = new Map<string, (typeof profileSources)[number]>();
-      for (const source of profileSources) {
-        const key = `${source.role}:${source.profile.profileRevisionId}`;
-        if (!uniqueProfileSources.has(key)) uniqueProfileSources.set(key, source);
-      }
-      const profileOptions = [...expandTemplateStudioProfileOptions(
-        [...uniqueProfileSources.values()].map((source) => templateStudioProfileOption(source)),
-      )]
-        .sort((left, right) => templateProfileOptionOrder(left) - templateProfileOptionOrder(right)
-          || left.sourceTemplateId.localeCompare(right.sourceTemplateId)
-          || roleOrder(left.role) - roleOrder(right.role)
-          || left.executionProfileId.localeCompare(right.executionProfileId));
+      const profileOptions = templateStudioProfileOptions(read.templateLibrary);
       return Object.freeze({
         kind: "template_studio",
         model: Object.freeze({
@@ -1091,6 +1083,8 @@ export async function createSessionIdUnifiedRuntimeHost(
       && sameMetaTarget(candidate.target, target));
     const turns = session ? repositories.configuration.listMetaTurns(session.metaSessionId) : [];
     const latestTurn = turns.at(-1);
+    const turnByAssistantMessageId = new Map(turns.map((turn) => [turn.assistantMetaMessageId, turn] as const));
+    const turnByProposalId = new Map(turns.map((turn) => [turn.metaPatchProposalId, turn] as const));
     const targetTemplateDraft = target.kind === "template_draft"
       ? read.configuration.templateDrafts.find((draft) => draft.templateDraftId === target.templateDraftId)
       : undefined;
@@ -1100,12 +1094,20 @@ export async function createSessionIdUnifiedRuntimeHost(
     return Object.freeze({
       kind: "meta",
       model: Object.freeze({
-        profileOptions: Object.freeze(providerOwner!.readActiveMetaAgentRegistrations().map(({ option }) => {
+        profileOptions: Object.freeze(providerOwner!.readActiveMetaAgentRegistrations().filter(({ option }) => {
+          const setup = providerOwner!.readProviderSetup(option.profile.providerFamily);
+          return setup.configurationSource === "environment"
+            || setup.enabledChatModelIds.includes(option.profile.model)
+            || session?.metaProfileOptionId === option.metaProfileOptionId;
+        }).map(({ option }) => {
           const readiness = lifecycle.metaReadiness.readOption(option.metaProfileOptionId);
           const setup = providerOwner!.readProviderSetup(option.profile.providerFamily);
           const enabled = new Set(setup.enabledChatModelIds);
-          const modelCatalog = readiness.modelCatalog
-            ?? Object.freeze(setup.modelCatalog.filter((entry) => enabled.has(entry.modelId)));
+          const modelCatalog = Object.freeze([
+            ...(readiness.modelCatalog ?? setup.modelCatalog),
+          ].filter((entry) => setup.configurationSource === "environment"
+            ? entry.modelId === option.profile.model
+            : enabled.has(entry.modelId)));
           return Object.freeze({
             schemaVersion: 3 as const,
             metaProfileOptionId: option.metaProfileOptionId,
@@ -1122,15 +1124,28 @@ export async function createSessionIdUnifiedRuntimeHost(
           metaProfileOptionId: session.metaProfileOptionId,
           revision: session.revision,
           status: metaTurnStatus(latestTurn?.status),
+          activities: Object.freeze(latestTurn
+            ? humanActivities.listForMetaTurn(session.metaSessionId, latestTurn.metaTurnId)
+            : []),
           messages: Object.freeze(read.configuration.metaMessages
             .filter((message) => message.ownerId === authenticatedUserId
               && message.metaSessionId === session.metaSessionId)
-            .map((message) => Object.freeze({
-              messageId: message.metaMessageId,
-              role: message.role,
-              content: message.content,
-              createdAt: message.createdAt,
-            }))),
+            .map((message) => {
+              const messageTurn = turnByAssistantMessageId.get(message.metaMessageId);
+              return Object.freeze({
+                messageId: message.metaMessageId,
+                role: message.role,
+                content: message.content,
+                createdAt: message.createdAt,
+                ...(messageTurn ? {
+                  turnStatus: metaTurnStatus(messageTurn.status),
+                  activities: Object.freeze(humanActivities.listForMetaTurn(
+                    session.metaSessionId,
+                    messageTurn.metaTurnId,
+                  )),
+                } : {}),
+              });
+            })),
         }) } : {}),
         proposals: Object.freeze(session ? read.configuration.metaPatchProposals
           .filter((proposal) => proposal.ownerId === authenticatedUserId
@@ -1138,6 +1153,10 @@ export async function createSessionIdUnifiedRuntimeHost(
             && sameMetaTarget(proposal.target, target))
           .map((proposal) => Object.freeze({
             proposalId: proposal.metaPatchProposalId,
+            assistantMessageId: required(
+              turnByProposalId.get(proposal.metaPatchProposalId),
+              "session_id_meta_proposal_turn_missing",
+            ).assistantMetaMessageId,
             baseDraftRevision: proposal.targetRevision,
             status: proposal.state === "pending" && proposal.targetRevision !== request.scope.draftRevision
               ? "stale" : proposal.state,
@@ -1185,61 +1204,155 @@ export async function createSessionIdUnifiedRuntimeHost(
   ): readonly ReturnType<typeof templateStudioProfileOption>[] {
     const optionsByScope = new Map<string, ReturnType<typeof templateStudioProfileOption>>();
     for (const option of base) {
-      const key = `${option.role}:${option.providerFamily}:${option.model}`;
+      const key = templateProfileScopeKey(option);
       const existing = optionsByScope.get(key);
       if (!existing || (option.readiness.status === "available" && existing.readiness.status !== "available")) {
         optionsByScope.set(key, option);
       }
     }
     for (const providerFamily of ["opencode", "codex", "claude-code"] as const) {
-      const catalog = taskModelCatalogs.get(providerFamily);
-      if (!catalog) continue;
+      const setup = providerOwner?.readProviderSetup(providerFamily);
+      const discoveredCatalog = taskModelCatalogs.get(providerFamily) ?? setup?.modelCatalog;
+      const enabledModels = new Set(setup?.enabledChatModelIds ?? []);
+      const catalog = Object.freeze([...(discoveredCatalog ?? [])].filter((entry) => (
+        setup?.configurationSource === "environment" || enabledModels.has(entry.modelId)
+      )));
+      if (catalog.length === 0) continue;
       for (const role of ["conductor", "general", "researcher", "implementer", "reviewer", "publisher"] as const) {
         const roleOptions = base.filter((option) => option.providerFamily === providerFamily && option.role === role);
         const source = roleOptions.find((option) => option.readiness.status === "available") ?? roleOptions[0];
         if (!source) continue;
         for (const entry of catalog) {
-          const key = `${role}:${providerFamily}:${entry.modelId}`;
-          const existing = optionsByScope.get(key);
-          if (existing) {
-            optionsByScope.set(key, Object.freeze({ ...existing, catalogObserved: true }));
-            continue;
-          }
-          const profileRevisionId = `profile_revision_catalog-${createHash("sha256")
-            .update(JSON.stringify({
-              executionProfileId: source.executionProfileId,
-              providerFamily,
-              role,
-              model: entry.modelId,
-              configIntent: source.configIntent,
-              capabilityPolicy: source.capabilityPolicy,
-              requiredExtensions: source.requiredExtensions,
-            }))
-            .digest("hex")
-            .slice(0, 32)}`;
-          optionsByScope.set(key, Object.freeze({
-            ...source,
-            title: `${providerFamily} · ${entry.label} · ${role}`,
-            profileRevisionId,
-            model: entry.modelId,
-            catalogObserved: true,
-            readiness: validateAcpProfileReadinessObservation({
+          for (const configIntent of taskConfigIntentOptions(providerFamily, source.configIntent)) {
+            const key = templateProfileScopeKey({ ...source, model: entry.modelId, configIntent });
+            const existing = optionsByScope.get(key);
+            if (existing) {
+              optionsByScope.set(key, Object.freeze({ ...existing, catalogObserved: true }));
+              continue;
+            }
+            const profileRevisionId = `profile_revision_catalog-${createHash("sha256")
+              .update(JSON.stringify({
+                executionProfileId: source.executionProfileId,
+                providerFamily,
+                role,
+                model: entry.modelId,
+                configIntent,
+                capabilityPolicy: source.capabilityPolicy,
+                requiredExtensions: source.requiredExtensions,
+              }))
+              .digest("hex")
+              .slice(0, 32)}`;
+            optionsByScope.set(key, Object.freeze({
+              ...source,
+              title: `${providerFamily} · ${entry.label} · ${taskConfigIntentLabel(configIntent)} · ${role}`,
               profileRevisionId,
-              providerFamily,
-              acpAgentKind: source.acpAgentKind,
-              role,
-              status: "checking",
-              reasons: ["model_qualification_required"],
-              missingCapabilities: [],
-              missingExtensions: [],
               model: entry.modelId,
-              modelCatalog: catalog,
-            }),
-          }));
+              configIntent: Object.freeze({ ...configIntent }),
+              catalogObserved: true,
+              readiness: validateAcpProfileReadinessObservation({
+                profileRevisionId,
+                providerFamily,
+                acpAgentKind: source.acpAgentKind,
+                role,
+                status: "checking",
+                reasons: ["model_qualification_required"],
+                missingCapabilities: [],
+                missingExtensions: [],
+                model: entry.modelId,
+                modelCatalog: catalog,
+              }),
+            }));
+          }
         }
       }
     }
     return Object.freeze([...optionsByScope.values()]);
+  }
+
+  function templateStudioProfileOptions(
+    templateLibrary: SessionIdConfigurationTaskLifecycleReadModel["templateLibrary"],
+  ): readonly ReturnType<typeof templateStudioProfileOption>[] {
+    const libraryProfileSources = templateLibrary
+      .filter(({ template }) => !template.archivedAt)
+      .flatMap(({ template, activeVersion }) => {
+        if (!activeVersion || activeVersion.definition.schemaVersion !== 3) return [];
+        const definition = activeVersion.definition;
+        return definition.executionProfiles.map((profile) => Object.freeze({
+          title: `${template.title} · ${profileRole(definition, profile.executionProfileId)}`,
+          sourceTemplateId: template.templateId,
+          sourceTemplateVersionId: activeVersion.templateVersionId,
+          role: profileRole(definition, profile.executionProfileId),
+          profile,
+        }));
+      });
+    const profileSources = [...libraryProfileSources, ...BUILT_IN_TEMPLATE_PROFILE_OPTIONS];
+    const uniqueProfileSources = new Map<string, (typeof profileSources)[number]>();
+    for (const source of profileSources) {
+      const key = `${source.role}:${source.profile.profileRevisionId}`;
+      if (!uniqueProfileSources.has(key)) uniqueProfileSources.set(key, source);
+    }
+    return Object.freeze([...expandTemplateStudioProfileOptions(
+      [...uniqueProfileSources.values()].map((source) => templateStudioProfileOption(source)),
+    )].sort((left, right) => templateProfileOptionOrder(left) - templateProfileOptionOrder(right)
+      || left.sourceTemplateId.localeCompare(right.sourceTemplateId)
+      || roleOrder(left.role) - roleOrder(right.role)
+      || left.executionProfileId.localeCompare(right.executionProfileId)));
+  }
+
+  function listTemplateProfileRevisions(input: Readonly<{
+    draft: TemplateDraftRecord;
+    executionProfileId: string;
+  }>): readonly ExecutionProfileDefinitionV3[] {
+    if (input.draft.definition.schemaVersion !== 3) {
+      throw new Error("meta_patch_profile_revision_requires_v3");
+    }
+    const role = profileRole(input.draft.definition, input.executionProfileId);
+    const options = templateStudioProfileOptions(lifecycleHost!.lifecycle.read().templateLibrary)
+      .filter((option) => option.role === role);
+    return Object.freeze(options.map((option) => Object.freeze({
+      executionProfileId: input.executionProfileId,
+      profileRevisionId: option.profileRevisionId,
+      providerFamily: option.providerFamily,
+      acpAgentKind: option.acpAgentKind,
+      protocolMajor: option.protocolMajor,
+      model: option.model,
+      configIntent: Object.freeze({ ...option.configIntent }),
+      requiredExtensions: Object.freeze([...option.requiredExtensions]),
+      capabilityPolicy: Object.freeze({
+        ...option.capabilityPolicy,
+        requiredCapabilities: Object.freeze([...option.capabilityPolicy.requiredCapabilities]),
+        allowedTools: Object.freeze([...option.capabilityPolicy.allowedTools]),
+      }),
+    })));
+  }
+
+  function templateProfileScopeKey(input: Readonly<{
+    role: AgentCardDefinition["kind"];
+    providerFamily: ProviderFamily;
+    model: string;
+    configIntent: JsonObject;
+  }>): string {
+    return `${input.role}:${input.providerFamily}:${input.model}:${createHash("sha256")
+      .update(JSON.stringify(input.configIntent))
+      .digest("hex")}`;
+  }
+
+  function taskConfigIntentOptions(
+    providerFamily: ProviderFamily,
+    source: JsonObject,
+  ): readonly JsonObject[] {
+    if (providerFamily !== "codex") return Object.freeze([Object.freeze({ ...source })]);
+    return Object.freeze([
+      Object.freeze({}),
+      Object.freeze({ reasoningEffort: "low" }),
+      Object.freeze({ reasoningEffort: "medium" }),
+      Object.freeze({ reasoningEffort: "high" }),
+      Object.freeze({ reasoningEffort: "xhigh" }),
+    ] satisfies readonly JsonObject[]);
+  }
+
+  function taskConfigIntentLabel(configIntent: JsonObject): string {
+    return typeof configIntent.reasoningEffort === "string" ? configIntent.reasoningEffort : "default";
   }
 
   async function probeProviderModels(
@@ -1505,6 +1618,7 @@ export async function createSessionIdUnifiedRuntimeHost(
         cleanupFailure ??= error;
       }
       if (cleanupFailure) throw cleanupFailure;
+      humanActivities.clear();
       sqlite.close();
     })();
     return closePromise;
@@ -1639,10 +1753,18 @@ function metaOperationPath(operation: MetaPatchOperation): string {
   switch (operation.kind) {
     case "template_metadata_set": return `metadata.${operation.field}`;
     case "template_conductor_prompt_set": return "definition.conductor.systemPrompt";
+    case "template_conductor_prompt_edit": return "definition.conductor.systemPrompt";
+    case "template_card_create": return `definition.agentCards[${operation.agentCardId}]`;
+    case "template_card_update": return `definition.agentCards[${operation.agentCardId}]`;
+    case "template_card_remove": return `definition.agentCards[${operation.agentCardId}]`;
+    case "template_card_reorder": return "definition.agentCards.order";
     case "template_card_prompt_set": return `definition.agentCards[${operation.agentCardId}].systemPrompt`;
+    case "template_card_prompt_edit": return `definition.agentCards[${operation.agentCardId}].systemPrompt`;
     case "template_profile_model_set": return `definition.executionProfiles[${operation.executionProfileId}].model`;
+    case "template_profile_revision_set": return `definition.executionProfiles[${operation.executionProfileId}]`;
     case "template_card_profile_set": return `definition.agentCards[${operation.agentCardId}].executionProfileId`;
     case "template_deliverable_upsert": return `definition.deliverables[${operation.artifactPath}]`;
+    case "template_deliverable_remove": return `definition.deliverables[${operation.artifactPath}]`;
     case "task_setup_title_set": return "title";
     case "task_setup_goal_set": return "goal";
     case "task_setup_input_set": return `taskInputValues[${operation.fieldId}]`;
@@ -1669,13 +1791,81 @@ function metaOperationDiff(
     }
     case "template_conductor_prompt_set":
       return { path, operation: "replace", ...(templateDraft ? { before: templateDraft.definition.conductor.systemPrompt } : {}), after: operation.value };
+    case "template_conductor_prompt_edit": {
+      return {
+        path,
+        operation: "replace",
+        before: operation.oldText,
+        after: operation.newText,
+      };
+    }
+    case "template_card_create": {
+      const card = {
+        agentCardId: operation.agentCardId,
+        kind: operation.cardKind,
+        title: operation.title,
+        ...(operation.role === undefined ? {} : { role: operation.role }),
+        executionProfileId: operation.executionProfileId,
+        systemPrompt: operation.systemPrompt,
+        capabilityRefs: [],
+        dispatchProfile: operation.dispatchProfile,
+      };
+      return { path: `definition.agentCards[${operation.title}]`, operation: "add", after: JSON.stringify(card, null, 2) };
+    }
+    case "template_card_update": {
+      const current = templateDraft?.definition.agentCards.find((card) => card.agentCardId === operation.agentCardId);
+      const next = current ? {
+        ...current,
+        ...(operation.title === undefined ? {} : { title: operation.title }),
+        ...(operation.role === undefined ? {} : operation.role === null ? { role: undefined } : { role: operation.role }),
+        ...(operation.executionProfileId === undefined ? {} : { executionProfileId: operation.executionProfileId }),
+        ...(operation.systemPrompt === undefined ? {} : { systemPrompt: operation.systemPrompt }),
+        ...(operation.dispatchProfile === undefined ? {} : { dispatchProfile: operation.dispatchProfile }),
+      } : operation;
+      return {
+        path: `definition.agentCards[${current?.title ?? operation.agentCardId}]`,
+        operation: "replace",
+        ...(current ? { before: JSON.stringify(current, null, 2) } : {}),
+        after: JSON.stringify(next, null, 2),
+      };
+    }
+    case "template_card_remove": {
+      const current = templateDraft?.definition.agentCards.find((card) => card.agentCardId === operation.agentCardId);
+      return { path: `definition.agentCards[${current?.title ?? operation.agentCardId}]`, operation: "remove", ...(current ? { before: JSON.stringify(current, null, 2) } : {}) };
+    }
+    case "template_card_reorder": {
+      const before = templateDraft?.definition.agentCards.length;
+      return {
+        path,
+        operation: "replace",
+        ...(before === undefined ? {} : { before: `${before} 张 Agent Card` }),
+        after: `${operation.agentCardIds.length} 张 Agent Card · 新顺序`,
+      };
+    }
     case "template_card_prompt_set": {
       const before = templateDraft?.definition.agentCards.find((card) => card.agentCardId === operation.agentCardId)?.systemPrompt;
       return { path, operation: before === undefined ? "add" : "replace", ...(before === undefined ? {} : { before }), after: operation.value };
     }
+    case "template_card_prompt_edit": {
+      return {
+        path,
+        operation: "replace",
+        before: operation.oldText,
+        after: operation.newText,
+      };
+    }
     case "template_profile_model_set": {
       const before = templateDraft?.definition.executionProfiles.find((profile) => profile.executionProfileId === operation.executionProfileId)?.model;
       return { path, operation: before === undefined ? "add" : "replace", ...(before === undefined ? {} : { before }), after: operation.value };
+    }
+    case "template_profile_revision_set": {
+      const before = templateDraft?.definition.executionProfiles.find((profile) => profile.executionProfileId === operation.executionProfileId);
+      return {
+        path,
+        operation: before === undefined ? "add" : "replace",
+        ...(before === undefined ? {} : { before: JSON.stringify(before, null, 2) }),
+        after: JSON.stringify(operation.profile, null, 2),
+      };
     }
     case "template_card_profile_set": {
       const before = templateDraft?.definition.conductor.agentCardId === operation.agentCardId
@@ -1695,6 +1885,16 @@ function metaOperationDiff(
         operation: current ? "replace" : "add",
         ...(current ? { before: JSON.stringify(current, null, 2) } : {}),
         after: JSON.stringify(next, null, 2),
+      };
+    }
+    case "template_deliverable_remove": {
+      const current = templateDraft?.definition.deliverables.find(
+        (deliverable) => deliverable.artifactPath === operation.artifactPath,
+      );
+      return {
+        path,
+        operation: "remove",
+        ...(current ? { before: JSON.stringify(current, null, 2) } : {}),
       };
     }
     case "task_setup_title_set":

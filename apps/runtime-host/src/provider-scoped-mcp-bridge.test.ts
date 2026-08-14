@@ -22,13 +22,25 @@ const registration: ProviderScopedToolRegistration = Object.freeze({
 
 describe("Provider-scoped MCP bridge", () => {
   it("exposes only one opaque route's registered tools and dispatches through its active Turn lease", async () => {
+    const activities: unknown[] = [];
     const handleCall = vi.fn(async (call: ProviderScopedToolCall) => Object.freeze({
       providerCallId: call.providerCallId,
       result: Object.freeze({ status: "accepted", sessionId: "logical_session_probe" }),
     }));
     const bridge = createProviderScopedMcpBridge({ createToken: () => "a".repeat(48) });
     const address = await bridge.listen();
-    const route = bridge.registerRoute({ bindingId: "binding_probe", registration });
+    const route = bridge.registerRoute({
+      bindingId: "binding_probe",
+      registration,
+      onToolActivity(activity) {
+        activities.push(activity);
+      },
+      projectToolActivity(activity) {
+        return activity.status === "in_progress"
+          ? { inputSummary: "目标：Researcher" }
+          : { outputSummary: "已创建 Session。" };
+      },
+    });
     try {
       const toolDiscovery = route.waitForToolDiscovery();
       const initialized = await rpc(route.url, {
@@ -72,6 +84,23 @@ describe("Provider-scoped MCP bridge", () => {
       });
       expect(replay).toEqual(first);
       expect(handleCall).toHaveBeenCalledTimes(1);
+      expect(activities).toEqual([
+        expect.objectContaining({
+          activityKey: expect.stringMatching(/^activity_key_[a-f0-9]{64}$/u),
+          name: "invoke_agent",
+          status: "in_progress",
+          inputSummary: "目标：Researcher",
+        }),
+        expect.objectContaining({
+          activityKey: expect.stringMatching(/^activity_key_[a-f0-9]{64}$/u),
+          name: "invoke_agent",
+          status: "completed",
+          outputSummary: "已创建 Session。",
+        }),
+      ]);
+      expect((activities[0] as { activityKey: string }).activityKey)
+        .toBe((activities[1] as { activityKey: string }).activityKey);
+      expect(JSON.stringify(activities)).not.toContain("agent_card_probe");
       expect(handleCall.mock.calls[0]?.[0]).toMatchObject({
         name: "invoke_agent",
         arguments: { agentCardId: "agent_card_probe" },

@@ -11,6 +11,10 @@ import type {
   MetaProfileDefinitionV3,
   MetaProfileOptionDefinitionV3,
 } from "@agent-workspace/runtime-contracts";
+import type {
+  AcpMetaAgentTurnRequest,
+  ProviderScopedToolTurnContext,
+} from "@agent-workspace/provider-port";
 import { SqliteRuntimeStore } from "@agent-workspace/runtime-store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -485,7 +489,55 @@ describe("Session-ID unified ACP Runtime Host", () => {
           async openMetaSession() {
             return { available: true as const, readiness: CONTROLLED_META_READINESS };
           },
-          async startMetaTurn() {
+          async startMetaTurn(
+            _request: AcpMetaAgentTurnRequest,
+            tools?: ProviderScopedToolTurnContext,
+          ) {
+            if (!tools) throw new Error("test_template_tools_missing");
+            const calls = [
+              {
+                name: "template_draft_update_metadata",
+                arguments: { field: "title", value: "Meta reviewed Luna flow" },
+              },
+              {
+                name: "template_draft_create_card",
+                arguments: {
+                  proposalRef: "search_2",
+                  cardKind: "researcher",
+                  title: "Search Agent 2",
+                  executionProfileId: "profile_deepsearch-researcher",
+                  systemPrompt: "Research one independent evidence branch.",
+                  dispatchProfile: { title: "Independent search 2", description: "Use for a second parallel search branch." },
+                },
+              },
+              {
+                name: "template_draft_reorder_cards",
+                arguments: {
+                  cardRefs: [
+                    "agent_card_deepsearch-researcher",
+                    "search_2",
+                    "agent_card_deepsearch-reviewer",
+                    "agent_card_deepsearch-publisher",
+                  ],
+                },
+              },
+              {
+                name: "template_draft_edit_prompt",
+                arguments: {
+                  target: { kind: "card", agentCardId: "agent_card_deepsearch-reviewer" },
+                  oldText: "Return a clear pass, revise, or insufficient-evidence decision with exact reasons.",
+                  newText: "Return a clear pass, revise, or insufficient-evidence decision with exact reasons and cite every unresolved gap.",
+                },
+              },
+            ];
+            for (const [index, call] of calls.entries()) {
+              await tools.handleCall({
+                providerCallId: `provider_call_meta-pump-${index}`,
+                name: call.name,
+                arguments: call.arguments,
+                lease: tools.lease,
+              });
+            }
             return "accepted" as const;
           },
           async reconcileMetaTurn() {
@@ -494,11 +546,37 @@ describe("Session-ID unified ACP Runtime Host", () => {
               state: "returned" as const,
               observedAt: NOW,
               finalText: JSON.stringify({
-                assistantMessage: "Prepared one explicit title change.",
+                assistantMessage: "Prepared one title change and one independently reviewable search card.",
                 proposal: {
-                  summary: "Rename the template",
-                  rationale: "The requested title is more specific.",
-                  operations: [{ kind: "template_metadata_set", field: "title", value: "Meta reviewed Luna flow" }],
+                  summary: "Rename the template and add a search card",
+                  rationale: "The requested title is more specific and the new branch remains independently reviewable.",
+                  operations: [
+                    { kind: "template_metadata_set", field: "title", value: "Meta reviewed Luna flow" },
+                    {
+                      kind: "template_card_create",
+                      proposalRef: "search_2",
+                      cardKind: "researcher",
+                      title: "Search Agent 2",
+                      executionProfileId: "profile_deepsearch-researcher",
+                      systemPrompt: "Research one independent evidence branch.",
+                      dispatchProfile: { title: "Independent search 2", description: "Use for a second parallel search branch." },
+                    },
+                    {
+                      kind: "template_card_reorder",
+                      cardRefs: [
+                        "agent_card_deepsearch-researcher",
+                        "search_2",
+                        "agent_card_deepsearch-reviewer",
+                        "agent_card_deepsearch-publisher",
+                      ],
+                    },
+                    {
+                      kind: "template_card_prompt_edit",
+                      agentCardId: "agent_card_deepsearch-reviewer",
+                      oldText: "Return a clear pass, revise, or insufficient-evidence decision with exact reasons.",
+                      newText: "Return a clear pass, revise, or insufficient-evidence decision with exact reasons and cite every unresolved gap.",
+                    },
+                  ],
                   validationIssues: [],
                 },
               }),
@@ -576,12 +654,58 @@ describe("Session-ID unified ACP Runtime Host", () => {
       model: "controlled-meta",
       configIntent: { reasoningEffort: "high" },
     })]);
-    expect((metaRead.model.proposals[0] as { fieldDiffs?: unknown } | undefined)?.fieldDiffs).toEqual([{
+    const proposal = metaRead.model.proposals[0] as {
+      proposalId: string;
+      fieldDiffs: readonly Readonly<{ path: string; operation: string; before?: string; after?: string }>[];
+    };
+    expect(proposal.fieldDiffs).toHaveLength(4);
+    expect(proposal.fieldDiffs[0]).toEqual({
       path: "metadata.title",
       operation: "replace",
       before: "Before Meta",
       after: "Meta reviewed Luna flow",
-    }]);
+    });
+    expect(proposal.fieldDiffs[1]).toMatchObject({
+      path: "definition.agentCards[Search Agent 2]",
+      operation: "add",
+    });
+    expect(proposal.fieldDiffs[1]?.after).toContain('"title": "Search Agent 2"');
+    expect(proposal.fieldDiffs[2]).toMatchObject({
+      path: "definition.agentCards.order",
+      operation: "replace",
+    });
+    expect(proposal.fieldDiffs[3]).toEqual({
+      path: "definition.agentCards[agent_card_deepsearch-reviewer].systemPrompt",
+      operation: "replace",
+      before: "Return a clear pass, revise, or insufficient-evidence decision with exact reasons.",
+      after: "Return a clear pass, revise, or insufficient-evidence decision with exact reasons and cite every unresolved gap.",
+    });
+
+    await host.command({
+      type: "meta.apply_patch",
+      commandId: "command_meta-pump-apply",
+      uiIntentId: "ui_meta-pump-apply",
+      issuedAt: NOW,
+      ownerId: "user_meta_pump",
+      metaSessionId: sessionResult.metaSession.metaSessionId,
+      metaPatchProposalId: proposal.proposalId,
+      expectedTargetRevision: draft.revision,
+    }, authentication);
+    const studio = await host.readConfiguration({ kind: "template_studio" });
+    if (studio.kind !== "template_studio") throw new Error("test_template_studio_read_missing");
+    const appliedDraft = (studio.model.drafts as readonly Readonly<{
+      templateDraftId: string;
+      revision: number;
+      definitionText: string;
+    }>[]).find((candidate) => candidate.templateDraftId === draft.templateDraftId);
+    expect(appliedDraft?.revision).toBe(draft.revision + 1);
+    const appliedDefinition = JSON.parse(appliedDraft!.definitionText) as { agentCards: readonly Readonly<{ agentCardId: string; title: string; capabilityRefs: readonly unknown[] }>[] };
+    expect(appliedDefinition.agentCards.map(({ agentCardId, title, capabilityRefs }) => ({ agentCardId, title, capabilityRefs }))).toEqual([
+      { agentCardId: "agent_card_deepsearch-researcher", title: "Researcher", capabilityRefs: [] },
+      { agentCardId: "agent_card_test-1", title: "Search Agent 2", capabilityRefs: [] },
+      { agentCardId: "agent_card_deepsearch-reviewer", title: "Reviewer", capabilityRefs: [] },
+      { agentCardId: "agent_card_deepsearch-publisher", title: "Publisher", capabilityRefs: [] },
+    ]);
     expect(reconcileCalls).toBe(1);
     await host.close();
   });
@@ -728,6 +852,61 @@ describe("Session-ID unified ACP Runtime Host", () => {
       { sourceTemplateId: BUILT_IN_DEEPSEARCH_TEMPLATE_ID, role: "researcher", providerFamily: "opencode", model: "opencode-go/gpt-5.6-luna", readiness: { status: "available" } },
     ]);
     expect(provider.readiness).toHaveBeenCalledTimes(12);
+    expect(provider.executeProviderEffect).not.toHaveBeenCalled();
+    await host.close();
+  });
+
+  it("expands only settings-enabled Codex models into distinct Host-issued Effort profiles", async () => {
+    const root = temporaryRoot("session-id-unified-template-effort-options-");
+    const provider = controlledProviderOwner({
+      providerSetup(providerFamily) {
+        return Object.freeze({
+          configurationSource: "local" as const,
+          installation: Object.freeze({ status: "ready" as const, components: Object.freeze([]) }),
+          modelCatalog: providerFamily === "codex"
+            ? Object.freeze([
+                Object.freeze({ modelId: "gpt-5.6-luna", label: "GPT-5.6 Luna" }),
+                Object.freeze({ modelId: "gpt-5.7-hidden", label: "GPT-5.7 Hidden" }),
+              ])
+            : Object.freeze([]),
+          enabledChatModelIds: providerFamily === "codex"
+            ? Object.freeze(["gpt-5.6-luna"])
+            : Object.freeze([]),
+          ...(providerFamily === "codex" ? { defaultModelId: "gpt-5.6-luna" } : {}),
+        });
+      },
+    });
+    const host = await createSessionIdUnifiedRuntimeHost({
+      databasePath: path.join(root, "runtime.sqlite"),
+      authenticatedUserId: "user_template_effort_options",
+      authorizeRetiringBindingRecovery: () => false,
+      createProviderOwner: () => provider.owner,
+      createId: stableIds(),
+      now: () => NOW,
+    });
+
+    const read = await host.readConfiguration({
+      kind: "template_studio",
+      templateId: BUILT_IN_DEEPSEARCH_TEMPLATE_ID,
+    });
+    if (read.kind !== "template_studio") throw new Error("test_template_studio_read_missing");
+    const codexConductor = (read.model.profileOptions as readonly Readonly<{
+      role: string;
+      providerFamily: string;
+      model: string;
+      profileRevisionId: string;
+      configIntent: Readonly<Record<string, unknown>>;
+    }>[]).filter((option) => option.role === "conductor" && option.providerFamily === "codex");
+    expect(codexConductor).toHaveLength(5);
+    expect(codexConductor.map(({ configIntent }) => JSON.stringify(configIntent)).sort()).toEqual([
+      JSON.stringify({}),
+      JSON.stringify({ reasoningEffort: "low" }),
+      JSON.stringify({ reasoningEffort: "medium" }),
+      JSON.stringify({ reasoningEffort: "high" }),
+      JSON.stringify({ reasoningEffort: "xhigh" }),
+    ].sort());
+    expect(new Set(codexConductor.map(({ profileRevisionId }) => profileRevisionId)).size).toBe(5);
+    expect(JSON.stringify(read.model.profileOptions)).not.toContain("gpt-5.7-hidden");
     expect(provider.executeProviderEffect).not.toHaveBeenCalled();
     await host.close();
   });

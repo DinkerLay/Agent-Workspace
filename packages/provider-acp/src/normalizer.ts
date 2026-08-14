@@ -51,7 +51,8 @@ export function rawMessageIdFromSessionNotification(
 ): string | undefined {
   const notification = asRecord(notificationValue, "acp_session_update_invalid");
   const update = asRecord(notification.update, "acp_session_update_payload_invalid");
-  if (update.sessionUpdate !== "agent_message_chunk") {
+  if (update.sessionUpdate !== "agent_message_chunk"
+    && update.sessionUpdate !== "agent_thought_chunk") {
     failAcp("acp_agent_message_update_invalid");
   }
   if (update.messageId === undefined || update.messageId === null) return undefined;
@@ -74,7 +75,7 @@ export function normalizeSessionNotification(input: {
   if (expectedBinding !== input.bindingHandle) failAcp("acp_session_update_fence_mismatch");
   const update = asRecord(notification.update, "acp_session_update_payload_invalid");
   const kind = update.sessionUpdate;
-  if (kind === "agent_message_chunk") {
+  if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
     const content = asRecord(update.content, "acp_agent_message_content_invalid");
     input.identities.rememberPrivateValue(
       rawMessageIdFromSessionNotification(input.notification),
@@ -89,7 +90,7 @@ export function normalizeSessionNotification(input: {
       allowEmpty: true,
     });
     return {
-      kind: "agent_message_chunk",
+      kind,
       bindingHandle: input.bindingHandle,
       attemptId: input.attemptId,
       text,

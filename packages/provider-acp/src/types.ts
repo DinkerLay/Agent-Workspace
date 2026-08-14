@@ -171,6 +171,10 @@ export type AcpSessionObservation =
       readonly text: string;
     })
   | (AcpAttemptObservation & {
+      readonly kind: "agent_thought_chunk";
+      readonly text: string;
+    })
+  | (AcpAttemptObservation & {
       readonly kind: "tool_status";
       readonly toolCallHandle: string;
       readonly title?: string;

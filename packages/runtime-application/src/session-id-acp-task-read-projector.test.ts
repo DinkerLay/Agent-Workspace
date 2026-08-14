@@ -70,7 +70,11 @@ describe("Session-ID ACP Task read projector", () => {
       executionGroupId: "execution_group_session_turn_worker",
       logicalSessionId: CARD_ID,
       status: "waiting_for_interaction",
-      activities: [],
+      activities: [expect.objectContaining({
+        activityId: "provider_activity_worker_progress",
+        kind: "assistant_progress",
+        content: "Checking the evidence chain",
+      })],
     })]);
     expect(worker?.messages).toEqual([expect.objectContaining({
       messageId: "message_worker_input",
@@ -88,6 +92,7 @@ describe("Session-ID ACP Task read projector", () => {
       "sessionExecutionAttemptId", "promptDigest", "receiptDigest", "cwd", "absolutePath",
     ]));
     expect(fixture.readCachedProfileReadiness).toHaveBeenCalledTimes(2);
+    expect(fixture.readHumanOnlyActivities).toHaveBeenCalledWith("session_execution_attempt_acp_read");
     expect(model).not.toBeInstanceOf(Promise);
   });
 
@@ -167,6 +172,15 @@ function createFixture() {
   }>) => cachedReadinessEnabled
     ? cachedReadiness ?? readiness(scope.profileRevisionId, scope.role)
     : undefined);
+  const readHumanOnlyActivities = vi.fn((attemptId: string) => attemptId === attempt.sessionExecutionAttemptId
+    ? [{
+        activityId: "provider_activity_worker_progress",
+        kind: "assistant_progress" as const,
+        contentKind: "response" as const,
+        content: "Checking the evidence chain",
+        observedAt: NOW,
+      }]
+    : []);
   const capabilities: SessionIdAcpTaskReadCapabilities = {
     templateTask: {
       getTask: (taskId) => taskId === TASK_ID ? task : undefined,
@@ -212,10 +226,12 @@ function createFixture() {
     now: () => NOW,
     snapshot: { read: <T>(work: (owners: SessionIdAcpTaskReadCapabilities) => T) => work(capabilities) },
     readCachedProfileReadiness,
+    readHumanOnlyActivities,
   });
   return {
     projector,
     readCachedProfileReadiness,
+    readHumanOnlyActivities,
     get task() { return task; },
     set task(value: TaskRecord) { task = value; },
     get run() { return run; },

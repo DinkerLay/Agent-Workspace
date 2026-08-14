@@ -70,14 +70,19 @@ tool/stream/change/diagnostic/Attention 只是经验证、只给人看的活动�
 第一版 Provider 活动统一为可去重的 `activity_observed` 事实，并投影为独立的
 `ProviderActivityReadModel`。ACP normalizer 只允许输出稳定的脱敏 activity id、`assistant_progress | tool | change |
 web` 类别、`started | progress | completed | failed` 阶段、有界 title/detail/content、`append | replace`
-更新方式和单调 sequence；raw arguments/result、native id、cwd、credential 与 reasoning 不得进入该事实的
-展示 payload。live chunk 使用 append，原生 completed/history snapshot 使用 replace，从而让重连恢复覆盖
-残缺流而不重复正文。
+更新方式和单调 sequence。Provider 通过正式 ACP thinking/reasoning channel 发出的文本以
+`assistant_progress(contentKind="reasoning")` 有序投影，并在统一 Chat 的 Thinking block 中流式展示；Host 只对已知
+credential、raw ACP/native id、absolute cwd 与 wire envelope 做精确移除或替换，不得摘要、改写或伪造 reasoning
+正文。raw arguments/result、stdin、native metadata 与私有 transcript 仍不得进入展示 payload。live chunk 使用 append，
+原生 completed/history snapshot 使用 replace，从而让重连恢复覆盖残缺流而不重复正文。
 
 统一 Chat 的执行过程采用紧凑的可展开活动树：`running` / `awaiting_final` 始终展开；只有同一
 `SessionTurn` 已有规范 `finalMessageId` 且 Turn 为 `returned` / `completed` 时才默认自动收起。收起后只让
 final Message 保持正文主视觉，用户仍可手动展开审计；failed、interrupted、cancelled、ambiguous、terminal
 先到或缺 final 的 Turn 必须保持展开。展开状态只属于 Renderer view state，不能回写 Runtime。
+Thinking block 有独立的折叠规则：`running` / `awaiting_final` 时默认展开并流式显示 reasoning；任一 settled terminal
+在 flush 最后 delta 后自动收起，用户可手动重开。即使 failed/cancelled Turn 的外层活动树必须保持展开，其内部
+Thinking block 也仍按该规则自动收起；ambiguous 或尚未 settlement 时不得提前收起。
 
 ## 2. 不可混淆的领域对象
 
@@ -303,19 +308,23 @@ model 与 effort 控件只是这些 option 的安全分组视图，不是自由�
 冻结进 `MetaSession`。Renderer 不能提交任意 Provider/model、launcher、版本或 resolution 字符串；resume 重新解析
 当前安装，并要求同一 Profile/model 的 ACP negotiation 与 live behavior 仍合格，失配时明确 unavailable，绝不
 fallback。
-v1 Meta Profile 没有工具、cwd、Workspace filesystem 或 Task transcript capability；Draft/schema
-由 Meta service 以对象受限上下文提供，不是 Provider 文件权限。
+Meta Profile 没有通用工具、cwd、Workspace filesystem 或 Task transcript capability。Template Design 模式仅获得
+一个 Host 注入、`MetaTurn`-scoped 的 `template_draft` MCP：它按稳定 `agentCardId` / `executionProfileId` 与 Draft
+revision 读取目标，并构造 typed create/read/update/delete/reorder、唯一子串 Prompt edit 及 Host-issued Profile revision
+选择操作。工具调用不写 Draft；最终只形成 Pending Proposal，仍须用户显式 Apply。Task Setup 模式保持零工具。
 
 每条用户 Meta message 与一个 configuration-owned `MetaTurn` 原子持久化。`MetaTurn` 冻结 Meta Profile、mode、
 target revision、对象受限 context、system instructions、whole-final output schema 及各自 digest；它不创建 Task
 `Binding`、`ProviderFact`、`SessionTurn`、Task 编排工作单或 `MessageForward`。Host 通过独立 `MetaAgentPort` 调度它，
 `MetaAgentPort` 与 Task SR 复用同一个 ACP Client/launcher 机械层，但必须解析独立 Profile、启动独立 ACP Agent process、
-使用独立 raw-ID map 与 no-tool/no-workspace capability broker；不能把 Task SR 或 Task-shaped `ProviderPort` 伪装成
+使用独立 raw-ID map 与 no-workspace、proposal-only scoped-tool capability broker；不能把 Task SR 或 Task-shaped `ProviderPort` 伪装成
 Meta Session。首次 lease 才可直接 submit；恢复后的 pending、已 accepted
 或 ambiguous Turn 必须先 reconcile。无法证明 native absence/completion 时保留 typed `ambiguous`，绝不自动重发。
 
 Meta Provider 只能返回与该 Turn 精确关联的一个 whole-final JSON。Runtime 拒绝 fenced/substring JSON、未知字段、
-mode 不匹配 operation、工具/文件/native child 活动与多 final；随后用目标 Draft 的当前 revision 做 dry-run 校验。
+mode 不匹配 operation、未授权工具/文件/native child 活动与多 final；Template Design 仅允许同一 Turn lease 下已经
+注册的 `template_draft` 工具。模型不能用整段 Prompt replacement 或自由 model 字符串绕过局部 edit/Profile revision
+选择；随后用目标 Draft 的当前 revision 做 dry-run 校验。
 assistant Meta message、可选 pending proposal、MetaSession revision 与 `MetaTurn.returned` 在同一事务提交。Provider
 final 本身永远不会 Apply/Publish/Create/Start；目标已消费、abandon、revision 或冻结的 Profile/model/capability policy 已变化时，迟到结果只保留
 失败/歧义审计，不修改目标。
@@ -441,7 +450,8 @@ workspace tool：
 Publisher、Worker 与 Reviewer 都是普通 Provider Session。它们不注入 Agent Workspace 自定义 MCP 工具；文件、shell、
 搜索等执行能力来自所选 ACP Agent 自身，并受 Provider 原生权限与 Task Workspace 边界约束。只有 Conductor 注入上述
 四个编排工具。Host 的 `Files & Changes` 只在事后以 Task Workspace observation 投影文件变化；它不代理普通 Session
-的文件工具，也不把文件变化转成 Artifact、Message 或 Achieve。Meta 仍不获得 Task Workspace 或任何工具。
+的文件工具，也不把文件变化转成 Artifact、Message 或 Achieve。Meta 仍不获得 Task Workspace、Provider原生工具或
+Task工具；Template Design仅获得上述proposal-only `template_draft` MCP。
 
 因此，“TypeScript 中存在一个 gateway wrapper”不构成产品能力。发布门必须观察到真实 Conductor Provider
 发出四工具之一、Runtime durable 提交、tool result 回到同一 Turn，以及 Host restart 后不重复 side effect。
@@ -822,7 +832,8 @@ cancel、terminal 与 cleanup 在 Binding 间不可串权，且不得改变上�
 `available` 的准入单位是 `profileRevisionId × LocalResolutionSeal × model/config × role policy × Host generation`。
 generic ACP session-core PASS 不得跨 Profile、Provider、model、role 或 process generation 复用。Conductor 必须另证恰好
 四个 scoped orchestration tools；Publisher 必须另证路径受限的 file-effect capability；Worker 不继承 Conductor 权限；
-Meta 必须另证 no-tools/no-cwd/no-Workspace 与 strict whole-final。
+Meta 必须另证无通用/Task/Workspace tools、no-cwd/no-Workspace、Template Design 的精确
+`template_draft` Turn lease 与撤销，以及 strict whole-final；Task Setup 仍须另证零工具。
 
 ### 4.1 ACP Profile、当前安装解析与资格
 
@@ -902,7 +913,8 @@ untrusted project会跳过项目级`.codex/`配置；Host仍不依赖某个Agent
 - 每个 Task Binding 的 ACP process generation接受frozen bootstrap、Host-private session cwd、当前Binding的scoped MCP
   servers与权限broker；不得服务另一个Binding；
 - Meta ACP process 使用独立 Profile/resolution/process/raw-ID map、空的Host-private wire cwd、零 Workspace authority、
-  零 Task transcript、零 tools，只返回 strict whole-final configuration JSON；
+  零 Task transcript；Task Setup 零工具，Template Design 只挂载 proposal-only `template_draft` MCP，并只返回 strict
+  whole-final configuration JSON；
 - 一个 Profile/process/qualification 不能授权另一个，OpenCode PASS 不能授权 Codex，Task PASS 不能授权 Meta。
 
 ### 4.4 Provider-neutral records
@@ -944,7 +956,8 @@ Message/Input正文只来自其唯一owner的durable记录；Adapter不能拼入
 RelayBlock，或自行执行业务路由。
 
 Conductor只在exact active Attempt获得四个role-scoped Runtime工具；Publisher只获得允许的Workspace工具；
-Worker、Reviewer和Meta默认零工具。`invoke_agent`不产生动态assignment；第一条及后续`send_to_session`才创建
+Worker、Reviewer和Task Setup Meta默认零工具，Template Design Meta仅获得proposal-only `template_draft`工具。
+`invoke_agent`不产生动态assignment；第一条及后续`send_to_session`才创建
 不可变`conductor_forward` Message与InputSubmission。portable Profile/Task snapshot从不保存launcher path、raw ACP
 | ACP operation | SR / ACP Client mapping | 必须证明 |
 | --- | --- | --- |
@@ -981,8 +994,9 @@ Provider 原生 tool/stream/terminal/transcript 可以在 Adapter 内产生事�
 
 OpenCode、Codex 与后续 Claude ACP Profile 必须把 ACP `session/update` 映射到同一 `activity_observed` 语义，而不是
 只做相似外观或让 UI 解释 Agent-specific extension。agent message chunk、tool call/update、plan 与 usage 分别产生
-有界 progress/activity facts；reasoning/thought、stdin、完整参数、原始 tool result、raw ID 与私有 transcript 均不
-展示。每个 Profile 还必须独立证明同一 prompt attempt 的 receipt、唯一有效 final candidate 与 prompt terminal；
+有界 progress/activity facts；reasoning/thought channel 产生上述有界、有序且去除 Host-private值的 reasoning
+activity，并允许用户展开查看。stdin、完整参数、原始 tool result、raw ID、wire envelope 与私有 transcript 均不展示。
+每个 Profile 还必须独立证明同一 prompt attempt 的 receipt、唯一有效 final candidate 与 prompt terminal；
 中间 tool activity、旧 replay item 或更早 assistant message不能被当作最终 terminal。
 
 受管 Agent 回信要求一个 Provider-neutral 的事实组合：同一 `sessionTurnId` / `inputSubmissionId` / SR attempt
@@ -1392,7 +1406,8 @@ matrix 是当前唯一可执行计划；旧脚本在 ACP matrix 完成前必须 
    cancel/reconcile 以及其声明的 Conductor/Publisher能力；
 2. 当前安装 `codex-acp` wrapper 与其当前 Codex upstream：独立完成同一 managed ACP baseline；不能用 direct App Server
    或 companion report 代证；
-3. 独立 ACP Meta Profile/process：no-tools/no-cwd/no-Workspace、strict whole-final 与 crash reconcile；
+3. 独立 ACP Meta Profile/process：无通用/Task/Workspace tools、no-cwd/no-Workspace、Template Draft scoped MCP
+   lease/revoke、strict whole-final 与 crash reconcile；
 4. Browser、Electron、cross-surface 与 Host restart 中，OR/SR/Binding/Message/Input/Turn lineage 和 actual
    `LocalResolutionSeal` / `ACPQualification` 一致；
 5. release verifier 明确拒绝 raw ACP ID、direct transport production import、version allowlist、跨 Profile qualification
@@ -1412,7 +1427,7 @@ OpenCode ACP PASS、Codex ACP PASS 与 Meta ACP PASS 是三个独立 required ce
 | `browser_rendered` | 正式 Browser Renderer 中实际可见控件、用户点击/输入、authenticated HTTP/WS loopback bridge 与 DOM 状态 | Electron IPC、真实 Provider |
 | `electron_ipc` | 实际 Electron 窗口、preload IPC、同一 Renderer 与 native shell lifecycle | Browser transport、真实 Provider |
 | `qualified_acp_provider` | 同 cell 当前 ACP resolution + initialize observation + model-bound live qualification 下的 Binding、receipt、final+terminal、MCP tool call、cancel/reconcile | 独立 Meta、另一个 ACP Profile、wrapper 内 direct transport |
-| `qualified_acp_meta` | 独立 Meta ACP resolution/process 下的 no-tool/no-authority policy、whole-final schema、proposal 与恢复 | Task Run 编排或另一个 Profile 的资格 |
+| `qualified_acp_meta` | 独立 Meta ACP resolution/process 下的 no-generic-tool/no-authority policy、Template Draft scoped MCP、whole-final schema、proposal 与恢复 | Task Run 编排或另一个 Profile 的资格 |
 
 Release-required assertion 不能以 optional、skipped、`NOT_EXERCISED` 或截图代替。每条证据至少记录：测试/操作
 命令、schema version、surface、evidenceClass、`bundleCellId`、`scenarioId`、observed artifact/upstream version、
@@ -1475,7 +1490,7 @@ event-handler 产生的 uiIntentId；没有可见动作因果链的 Host command
 | Cross-surface controlled | `browser_rendered + electron_ipc`；J-12 | 同一个 Host、Draft/MetaSession/Task/Run lineage |
 | OpenCode ACP native | `browser_rendered + electron_ipc + qualified_acp_provider`；J-04..J-11 与 J-12 | 同 releaseRunId/Host/OR/SR/Binding/Input/Turn lineage；actual `opencode acp` resolution/qualification；无 REST fallback |
 | Codex ACP native | `browser_rendered + electron_ipc + qualified_acp_provider`；独立 managed Task baseline，role claim按实际 required matrix | 当前 `codex-acp` wrapper/upstream 的独立 resolution/qualification；不能由 OpenCode或direct App Server代证 |
-| ACP Meta native | J-02/J-03 的 `qualified_acp_meta` | 独立 Profile/process/raw-ID map；no-tools/no-cwd/no-Workspace；不能借 Task qualification |
+| ACP Meta native | J-02/J-03 的 `qualified_acp_meta` | 独立 Profile/process/raw-ID map；无通用/Task/Workspace tools、no-cwd/no-Workspace、Template Draft scoped MCP；不能借 Task qualification |
 
 class-specific runner 固定自己的 issuer、surface 与 evidenceClass；RuntimeClient-only、page/electron
 `evaluate`/`request`/`fetch`/preload 直调、FakeProvider 伪 native、headless probe 伪 Browser/Electron、required N/A 和
@@ -1556,7 +1571,7 @@ Full journey 至少需要四类互不借权的 role/profile evidence：
 
 | Role | 允许能力 | 禁止 |
 | --- | --- | --- |
-| Meta | 独立 MetaAgentPort、strict whole-final JSON | tools、cwd、Workspace、Task transcript、用户登录态 fallback |
+| Meta | 独立 MetaAgentPort、strict whole-final JSON；Template Design 仅 proposal-only `template_draft` MCP | 通用/Task/Workspace tools、cwd、Workspace、Task transcript、用户登录态 fallback |
 | Conductor | 四个 scoped Runtime Gateway tools | shell/web/filesystem、generic RuntimeClient、Task lifecycle、Achieve、Provider native control |
 | Worker/Reviewer | Template 冻结的最小工作能力 | Runtime Gateway、sibling transcript |
 | Publisher | 明确 Workspace scope 内最小 write + canonical final | 任意路径、Runtime Store、自动 Achieve |
@@ -1573,8 +1588,9 @@ observation、capability fingerprint 与 behavior probe，证明 bounded close/c
 不得把 raw command path、credential、ACP session/request/tool ID 或 absolute cwd 写入 evidence。
 
 Task attestor 至少证明：actual SR/Binding generation、prompt receipt、latest final candidate + terminal pairing、
-cancel/reconcile、restart 后 load/resume 与 scoped MCP call；Meta attestor至少证明独立 process、no tools/cwd/Workspace、
-strict whole-final、permission拒绝与 cold reconcile。所有 issuer 引用 Workspace opaque IDs 和同一 observed-lineage
+cancel/reconcile、restart 后 load/resume 与 scoped MCP call；Meta attestor至少证明独立 process、无通用/Task/Workspace
+工具、无cwd/Workspace、Template Draft scoped MCP的Turn lease与撤销、strict whole-final、permission拒绝与 cold reconcile。
+所有 issuer 引用 Workspace opaque IDs 和同一 observed-lineage
 seal；任何 raw ACP ID、跨 Profile qualification、direct transport effect 或 fallback 都使 cell fail closed。
 
 ### 9.5 Subagent 与 Workflow

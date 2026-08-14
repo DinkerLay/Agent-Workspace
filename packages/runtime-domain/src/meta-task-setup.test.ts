@@ -80,6 +80,8 @@ describe("Meta and Task Setup domain", () => {
         { kind: "template_profile_model_set", executionProfileId: "profile_default", value: "gpt-5.6" },
         { kind: "template_card_profile_set", agentCardId: "agent_card_worker", executionProfileId: "profile_default" },
         { kind: "template_deliverable_upsert", artifactPath: "reports/result.html", ownerAgentCardId: "agent_card_worker", description: "Verified HTML report" },
+        { kind: "template_deliverable_upsert", artifactPath: "reports/obsolete.md", ownerAgentCardId: "agent_card_worker" },
+        { kind: "template_deliverable_remove", artifactPath: "reports/obsolete.md" },
         { kind: "template_metadata_set", field: "title", value: "Refined runtime audit" },
       ],
       summary: "Refine the selected profile and deliverable.",
@@ -110,6 +112,200 @@ describe("Meta and Task Setup domain", () => {
       expectedTargetRevision: 3,
       now,
     })).toThrow("meta_patch_target_revision_stale");
+  });
+
+  it("atomically creates, updates, removes, and reorders Runtime-owned Agent Cards", () => {
+    const templateDraft = templateDraftFixture();
+    const session = createMetaSession({
+      metaSessionId: "meta_session_template_structure",
+      ownerId: "user_1",
+      target: { kind: "template_draft", templateDraftId: templateDraft.templateDraftId },
+      metaProfileOptionId: "meta_profile_option_deny",
+      metaProfile,
+      now,
+    });
+    const proposal = createMetaPatchProposal({
+      metaPatchProposalId: "meta_patch_proposal_template_structure",
+      session,
+      targetRevision: templateDraft.revision,
+      operations: [
+        {
+          kind: "template_card_create",
+          agentCardId: "agent_card_search-1",
+          cardKind: "researcher",
+          title: "Search Agent 1",
+          role: "Independent source search",
+          executionProfileId: "profile_default",
+          systemPrompt: "Research one evidence branch.",
+          dispatchProfile: { title: "Search branch 1", description: "Use for the first evidence branch." },
+        },
+        {
+          kind: "template_card_create",
+          agentCardId: "agent_card_search-2",
+          cardKind: "researcher",
+          title: "Search Agent 2",
+          executionProfileId: "profile_default",
+          systemPrompt: "Research another evidence branch.",
+          dispatchProfile: { title: "Search branch 2", description: "Use for the second evidence branch." },
+        },
+        {
+          kind: "template_card_update",
+          agentCardId: "agent_card_search-2",
+          title: "Search Agent B",
+          role: "Contradiction search",
+        },
+        { kind: "template_card_remove", agentCardId: "agent_card_worker" },
+        { kind: "template_card_reorder", agentCardIds: ["agent_card_search-2", "agent_card_search-1"] },
+      ],
+      summary: "Create two independent search cards.",
+      rationale: "Separate evidence branches remain independently reviewable.",
+      validationIssues: [],
+      now,
+    });
+
+    const applied = applyMetaPatchProposalToTemplateDraft({
+      draft: templateDraft,
+      session,
+      proposal,
+      expectedTargetRevision: templateDraft.revision,
+      now,
+    });
+
+    expect(applied.draft.revision).toBe(templateDraft.revision + 1);
+    expect(applied.draft.definition.agentCards).toEqual([
+      {
+        agentCardId: "agent_card_search-2",
+        kind: "researcher",
+        title: "Search Agent B",
+        role: "Contradiction search",
+        executionProfileId: "profile_default",
+        systemPrompt: "Research another evidence branch.",
+        capabilityRefs: [],
+        dispatchProfile: { title: "Search branch 2", description: "Use for the second evidence branch." },
+      },
+      {
+        agentCardId: "agent_card_search-1",
+        kind: "researcher",
+        title: "Search Agent 1",
+        role: "Independent source search",
+        executionProfileId: "profile_default",
+        systemPrompt: "Research one evidence branch.",
+        capabilityRefs: [],
+        dispatchProfile: { title: "Search branch 1", description: "Use for the first evidence branch." },
+      },
+    ]);
+    expect(applied.proposal).toMatchObject({ state: "applied", appliedTargetRevision: templateDraft.revision + 1 });
+  });
+
+  it("applies a Prompt edit only when its old text occurs exactly once", () => {
+    const base = templateDraftFixture();
+    const session = createMetaSession({
+      metaSessionId: "meta_session_template_precise_edit",
+      ownerId: "user_1",
+      target: { kind: "template_draft", templateDraftId: base.templateDraftId },
+      metaProfileOptionId: "meta_profile_option_deny",
+      metaProfile,
+      now,
+    });
+    const proposalFor = (metaPatchProposalId: string, oldText: string) => createMetaPatchProposal({
+      metaPatchProposalId,
+      session,
+      targetRevision: base.revision,
+      operations: [{
+        kind: "template_card_prompt_edit",
+        agentCardId: "agent_card_worker",
+        oldText,
+        newText: "Review claims and cite every unresolved gap.",
+      }],
+      summary: "Tighten one sentence.",
+      rationale: "No complete Prompt replacement is needed.",
+      validationIssues: [],
+      now,
+    });
+
+    const applied = applyMetaPatchProposalToTemplateDraft({
+      draft: base,
+      session,
+      proposal: proposalFor("meta_patch_proposal_precise", "Review the implementation."),
+      expectedTargetRevision: base.revision,
+      now,
+    });
+    expect(applied.draft.definition.agentCards[0]?.systemPrompt)
+      .toBe("Review claims and cite every unresolved gap.");
+
+    expect(() => applyMetaPatchProposalToTemplateDraft({
+      draft: {
+        ...base,
+        definition: {
+          ...base.definition,
+          agentCards: [{ ...base.definition.agentCards[0]!, systemPrompt: "Review. Review." }],
+        },
+      },
+      session,
+      proposal: proposalFor("meta_patch_proposal_ambiguous", "Review."),
+      expectedTargetRevision: base.revision,
+      now,
+    })).toThrow("meta_patch_text_match_ambiguous");
+  });
+
+  it("rejects removal of a deliverable owner and rejects incomplete Card reorder without mutating the Draft", () => {
+    const base = templateDraftFixture();
+    const templateDraft = {
+      ...base,
+      definition: {
+        ...base.definition,
+        deliverables: [{ artifactPath: "reports/result.md", ownerAgentCardId: "agent_card_worker" }],
+      },
+    };
+    const session = createMetaSession({
+      metaSessionId: "meta_session_template_structure_invalid",
+      ownerId: "user_1",
+      target: { kind: "template_draft", templateDraftId: templateDraft.templateDraftId },
+      metaProfileOptionId: "meta_profile_option_deny",
+      metaProfile,
+      now,
+    });
+    const proposalFor = (metaPatchProposalId: string, operations: Parameters<typeof createMetaPatchProposal>[0]["operations"]) => createMetaPatchProposal({
+      metaPatchProposalId,
+      session,
+      targetRevision: templateDraft.revision,
+      operations,
+      summary: "Invalid structural edit.",
+      rationale: "This must fail atomically.",
+      validationIssues: [],
+      now,
+    });
+
+    expect(() => applyMetaPatchProposalToTemplateDraft({
+      draft: templateDraft,
+      session,
+      proposal: proposalFor("meta_patch_proposal_remove_owner", [
+        { kind: "template_card_remove", agentCardId: "agent_card_worker" },
+      ]),
+      expectedTargetRevision: templateDraft.revision,
+      now,
+    })).toThrow("meta_patch_agent_card_in_use");
+
+    expect(() => applyMetaPatchProposalToTemplateDraft({
+      draft: base,
+      session,
+      proposal: proposalFor("meta_patch_proposal_bad_reorder", [
+        {
+          kind: "template_card_create",
+          agentCardId: "agent_card_search-1",
+          cardKind: "researcher",
+          title: "Search Agent 1",
+          executionProfileId: "profile_default",
+          systemPrompt: "Research one evidence branch.",
+          dispatchProfile: { title: "Search branch", description: "Use for one evidence branch." },
+        },
+        { kind: "template_card_reorder", agentCardIds: ["agent_card_search-1"] },
+      ]),
+      expectedTargetRevision: base.revision,
+      now,
+    })).toThrow("meta_patch_agent_card_reorder_invalid");
+
+    expect(templateDraft).toEqual({ ...base, definition: { ...base.definition, deliverables: [{ artifactPath: "reports/result.md", ownerAgentCardId: "agent_card_worker" }] } });
   });
 
   it("keeps Template Design and Task Setup sessions isolated and rejects a whole proposal without changing its target", () => {

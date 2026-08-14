@@ -471,10 +471,22 @@ describe("managed ACP v1 client", () => {
     const raw = {
       sessionId: "raw-session-secret",
       messageId: "raw-message-secret",
+      thoughtMessageId: "raw-thought-secret",
       toolCallId: "raw-tool-secret",
     };
     const agent = new FakeAcpV1Agent({ rawSessionId: raw.sessionId });
     agent.queuePrompt(async ({ handlers, request }) => {
+      await handlers.sessionUpdate({
+        sessionId: request.sessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          messageId: raw.thoughtMessageId,
+          content: {
+            type: "text",
+            text: "Compare the evidence before returning the answer.",
+          },
+        },
+      });
       await handlers.sessionUpdate({
         sessionId: request.sessionId,
         update: {
@@ -531,6 +543,7 @@ describe("managed ACP v1 client", () => {
     expect(settlement.finalCandidateGroupCount).toBe(1);
     expect(observations.map((entry) => entry.kind)).toEqual([
       "delivery_receipt",
+      "agent_thought_chunk",
       "agent_message_chunk",
       "tool_status",
       "final_candidate",
@@ -539,6 +552,10 @@ describe("managed ACP v1 client", () => {
     expect(observations.at(-2)).toMatchObject({
       kind: "final_candidate",
       text: "done in <workspace> and <workspace>",
+    });
+    expect(observations.find((entry) => entry.kind === "agent_thought_chunk")).toMatchObject({
+      kind: "agent_thought_chunk",
+      text: "Compare the evidence before returning the answer.",
     });
     expect(observations.at(-1)).toMatchObject({
       kind: "prompt_terminal",

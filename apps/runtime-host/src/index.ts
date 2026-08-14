@@ -203,7 +203,11 @@ export async function startSessionIdProductionRuntimeHost(
 }
 
 async function main(): Promise<void> {
-  const runtime = await startSessionIdProductionRuntimeHost();
+  const runtime = await startSessionIdProductionRuntimeHost(process.env, {
+    onDiagnostic(diagnostic) {
+      process.stderr.write(`${JSON.stringify({ type: "runtime_host_diagnostic", ...diagnostic })}\n`);
+    },
+  });
   process.stdout.write(`${JSON.stringify({ type: "runtime_host_ready", url: runtime.url, port: runtime.port })}\n`);
   let closing: Promise<void> | undefined;
   const close = () => closing ??= runtime.close();

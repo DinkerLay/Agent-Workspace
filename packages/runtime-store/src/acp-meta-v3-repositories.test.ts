@@ -137,6 +137,29 @@ describe("durable ACP Meta v3 repositories", () => {
       "2026-08-12T01:03:00.000Z",
       "2026-08-12T01:04:00.000Z",
     )).toMatchObject({ metaTurnId: turn.metaTurnId, status: "leased", attempts: 1 });
+    const toolOperation: JsonValue = {
+      kind: "template_metadata_set",
+      field: "description",
+      value: "Durably recorded by the Template MCP tool owner.",
+    };
+    expect(repositories.configuration.recordMetaTurnToolOperation({
+      metaTurnId: turn.metaTurnId,
+      targetRevision: turn.targetRevision,
+      providerCallId: "provider_call_store-tool",
+      operation: toolOperation,
+    })).toEqual([toolOperation]);
+    expect(repositories.configuration.recordMetaTurnToolOperation({
+      metaTurnId: turn.metaTurnId,
+      targetRevision: turn.targetRevision,
+      providerCallId: "provider_call_store-tool",
+      operation: toolOperation,
+    })).toEqual([toolOperation]);
+    expect(() => repositories.configuration.recordMetaTurnToolOperation({
+      metaTurnId: turn.metaTurnId,
+      targetRevision: turn.targetRevision,
+      providerCallId: "provider_call_store-tool",
+      operation: { ...toolOperation, value: "conflict" },
+    })).toThrow("meta_turn_tool_call_conflict");
     expect(rawText(store, "meta_turns", "status", "meta_turn_id", oldTurn.metaTurnId)).toBe("pending");
     store.close();
 
@@ -144,6 +167,7 @@ describe("durable ACP Meta v3 repositories", () => {
     repositories = createRuntimeRepositories(store);
     expect(repositories.configuration.getMetaSession(legacy.metaSessionId)).toEqual(legacy);
     expect(repositories.configuration.getMetaSession(session.metaSessionId)).toEqual(appendedSession);
+    expect(repositories.configuration.listMetaTurnToolOperations(turn.metaTurnId)).toEqual([toolOperation]);
     expect(repositories.configuration.getMetaTurn(oldTurn.metaTurnId)).toEqual(oldTurn);
     expect(repositories.configuration.getMetaTurn(turn.metaTurnId)).toEqual({
       ...turn,

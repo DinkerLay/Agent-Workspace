@@ -145,11 +145,13 @@ describe("ACP production Meta owner", () => {
       await expect(port.openMetaSession({
         metaSessionId: "meta_session_production_create",
         metaProfileOptionId: "meta_profile_option_opencode-production",
+        sessionMode: "template_design",
         disposition: "create",
       })).resolves.toMatchObject({ available: true });
       await expect(port.openMetaSession({
         metaSessionId: "meta_session_production_resume",
         metaProfileOptionId: "meta_profile_option_opencode-production",
+        sessionMode: "template_design",
         disposition: "resume",
       })).resolves.toMatchObject({ available: true });
       expect(provider.openedDispositions).toEqual(["create", "resume"]);

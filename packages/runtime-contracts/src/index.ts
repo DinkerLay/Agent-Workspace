@@ -13,3 +13,5 @@ export * from "./acp-profile-readiness";
 export * from "./acp-binding-retirement";
 export * from "./acp-task-read-model";
 export * from "./provider-settings";
+export * from "./provider-activity";
+export * from "./template-draft-tools";

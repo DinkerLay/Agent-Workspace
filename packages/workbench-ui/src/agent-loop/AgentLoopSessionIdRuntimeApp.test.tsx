@@ -98,6 +98,70 @@ describe("AgentLoopSessionIdRuntimeApp", () => {
     expect(screen.getByText(/路径和登录文件只由本机 Runtime Host 保存/u)).toBeTruthy();
   });
 
+  it("selects a valid default when the first enabled OpenCode or Claude model is not the catalog's first item", async () => {
+    const settings = {
+      generatedAt: NOW,
+      providers: [
+        {
+          ...providerSettingsEntry("opencode", true),
+          configurationSource: "local" as const,
+          models: [
+            { modelId: "deepseek/chat", label: "DeepSeek Chat" },
+            { modelId: "opencode-go/gpt-5.6-luna", label: "GPT-5.6 Luna" },
+          ],
+        },
+        { ...providerSettingsEntry("codex", true), configurationSource: "local" as const },
+        {
+          ...providerSettingsEntry("claude-code", true),
+          configurationSource: "local" as const,
+          models: [
+            { modelId: "default", label: "Default" },
+            { modelId: "opus", label: "Claude Opus" },
+          ],
+        },
+      ],
+    };
+    const configureChatModels = vi.fn(async () => settings);
+    const load = vi.fn(async () => settings);
+    const controller = rootController({
+      runtime: taskRuntime(),
+      workspace: () => workspace(false),
+      providerSettings: {
+        load,
+        discoverInstallation: load,
+        configureInstallation: load,
+        refreshModels: load,
+        configureChatModels,
+      },
+    });
+
+    render(<AgentLoopSessionIdRuntimeApp controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("heading", { name: "ACP Provider 设置" });
+
+    fireEvent.click(screen.getByRole("button", { name: /OpenCode/u }));
+    fireEvent.click(within(screen.getByTestId("provider-model-opencode-go/gpt-5.6-luna")).getByRole("checkbox"));
+    const saveOpenCode = screen.getByRole("button", { name: "保存到 Chat (1)" }) as HTMLButtonElement;
+    expect(saveOpenCode.disabled).toBe(false);
+    fireEvent.click(saveOpenCode);
+    await waitFor(() => expect(configureChatModels).toHaveBeenCalledWith(
+      "opencode",
+      ["opencode-go/gpt-5.6-luna"],
+      "opencode-go/gpt-5.6-luna",
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/u }));
+    fireEvent.click(within(screen.getByTestId("provider-model-opus")).getByRole("checkbox"));
+    const saveClaude = screen.getByRole("button", { name: "保存到 Chat (1)" }) as HTMLButtonElement;
+    expect(saveClaude.disabled).toBe(false);
+    fireEvent.click(saveClaude);
+    await waitFor(() => expect(configureChatModels).toHaveBeenCalledWith(
+      "claude-code",
+      ["opus"],
+      "opus",
+    ));
+  });
+
   it("keeps the managed ACP runtime internal and does not ask the user to restart the Host", async () => {
     const codex = {
       ...providerSettingsEntry("codex", true),
@@ -257,7 +321,8 @@ describe("AgentLoopSessionIdRuntimeApp", () => {
       "ui_intent_2",
     ));
 
-    fireEvent.click(screen.getByTestId("session-interrupt-only"));
+    fireEvent.change(screen.getByTestId("card-composer-researcher"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "停止" }));
     await waitFor(() => expect(runtime.requestHumanInterrupt).toHaveBeenCalledWith("session_researcher", "ui_intent_3"));
 
     fireEvent.click(screen.getByTestId("publisher-file-preview"));

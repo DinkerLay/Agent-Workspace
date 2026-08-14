@@ -10,6 +10,7 @@ export * from "./session-id-acp-task-lifecycle.js";
 export * from "./session-id-acp-card-binding-owner.js";
 export * from "./acp-v3-frozen-profile-resolver.js";
 export * from "./session-id-meta-agent-owner.js";
+export * from "./session-id-meta-template-tool-owner.js";
 export * from "./session-execution-runtime-owner.js";
 export * from "./session-execution-settlement-coordinator.js";
 export * from "./session-id-acp-orchestration-bridge.js";

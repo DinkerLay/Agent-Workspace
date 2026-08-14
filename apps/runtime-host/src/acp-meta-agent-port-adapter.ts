@@ -9,6 +9,7 @@ import {
   type AcpProfileReadinessObservation,
   type MetaProfileOptionId,
   type MetaSessionId,
+  type MetaSessionMode,
 } from "@agent-workspace/runtime-contracts";
 import {
   acpMetaProfileIdentity,
@@ -37,7 +38,10 @@ function createOptionPort(
   composition: AcpMetaProviderComposition,
   option: ReturnType<typeof validateMetaProfileOptionDefinitionV3>,
 ): AcpMetaAgentPort {
-  const sessions = new Map<MetaSessionId, "create" | "resume">();
+  const sessions = new Map<MetaSessionId, Readonly<{
+    disposition: "create" | "resume";
+    sessionMode: MetaSessionMode;
+  }>>();
   const profileIdentity = acpMetaProfileIdentity(option.profile);
 
   const port: AcpMetaAgentPort = {
@@ -53,22 +57,25 @@ function createOptionPort(
       const input = exactOpenInput(value);
       assertOption(input.metaProfileOptionId, option.metaProfileOptionId);
       const existing = sessions.get(input.metaSessionId);
-      if (existing && existing !== input.disposition) {
+      if (existing && (existing.disposition !== input.disposition || existing.sessionMode !== input.sessionMode)) {
         throw new Error("acp_meta_adapter_disposition_conflict");
       }
       const opened = await composition.openMetaSession(input);
       const readiness = validateReadiness(opened.readiness, option);
-      if (opened.available) sessions.set(input.metaSessionId, input.disposition);
+      if (opened.available) sessions.set(input.metaSessionId, Object.freeze({
+        disposition: input.disposition,
+        sessionMode: input.sessionMode,
+      }));
       return Object.freeze({
         available: opened.available,
         readiness,
       });
     },
 
-    async startMetaTurn(value) {
+    async startMetaTurn(value, scopedToolTurnContext) {
       const request = validateAcpMetaAgentTurnRequest(value);
       assertSessionProfile(request.metaSessionId, request.profile);
-      return composition.startMetaTurn(request);
+      return composition.startMetaTurn(request, scopedToolTurnContext);
     },
 
     async reconcileMetaTurn(value) {
@@ -130,21 +137,24 @@ function assertOption(
 function exactOpenInput(value: unknown): Readonly<{
   metaSessionId: MetaSessionId;
   metaProfileOptionId: MetaProfileOptionId;
+  sessionMode: MetaSessionMode;
   disposition: "create" | "resume";
 }> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("acp_meta_adapter_open_input_invalid");
   }
   const input = value as Record<string, unknown>;
-  if (!sameKeys(input, ["disposition", "metaProfileOptionId", "metaSessionId"])
+  if (!sameKeys(input, ["disposition", "metaProfileOptionId", "metaSessionId", "sessionMode"])
     || !isRuntimeId(input.metaSessionId, "meta_session")
     || typeof input.metaProfileOptionId !== "string"
+    || (input.sessionMode !== "template_design" && input.sessionMode !== "task_setup")
     || (input.disposition !== "create" && input.disposition !== "resume")) {
     throw new Error("acp_meta_adapter_open_input_invalid");
   }
   return Object.freeze({
     metaSessionId: input.metaSessionId,
     metaProfileOptionId: input.metaProfileOptionId as MetaProfileOptionId,
+    sessionMode: input.sessionMode,
     disposition: input.disposition,
   });
 }

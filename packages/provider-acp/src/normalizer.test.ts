@@ -44,6 +44,25 @@ describe("ACP safe interaction normalization", () => {
     })).toMatchObject({ kind: "agent_message_chunk", text });
   });
 
+  it("preserves the official ACP reasoning channel as a distinct safe observation", () => {
+    const identities = identityMap("raw-session-thinking");
+    const text = "I should compare the two persisted revisions before editing.";
+
+    expect(normalizeSessionNotification({
+      notification: {
+        sessionId: "raw-session-thinking",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text },
+        },
+      },
+      identities,
+      bindingHandle: "binding_handle_safe",
+      attemptId: "session_execution_attempt_safe",
+      privateDirectories: [],
+    })).toMatchObject({ kind: "agent_thought_chunk", text });
+  });
+
   it.each([
     "unsafe\u0000message",
     "x".repeat(256 * 1024 + 1),

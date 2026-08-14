@@ -109,6 +109,16 @@ export type SessionIdAcpProductionHumanOnlyDiagnostic =
       readonly taskId: string;
       readonly runId: string;
       readonly logicalSessionId: string;
+      readonly sessionExecutionAttemptId: string;
+      readonly role: SessionIdAcpTaskRole;
+      readonly text: string;
+    }>
+  | Readonly<{
+      readonly kind: "agent_thought_chunk";
+      readonly taskId: string;
+      readonly runId: string;
+      readonly logicalSessionId: string;
+      readonly sessionExecutionAttemptId: string;
       readonly role: SessionIdAcpTaskRole;
       readonly text: string;
     }>
@@ -117,6 +127,8 @@ export type SessionIdAcpProductionHumanOnlyDiagnostic =
       readonly taskId: string;
       readonly runId: string;
       readonly logicalSessionId: string;
+      readonly sessionExecutionAttemptId: string;
+      readonly activityKey: string;
       readonly role: SessionIdAcpTaskRole;
       readonly title?: string;
       readonly status?: "pending" | "in_progress" | "completed" | "failed";
@@ -305,12 +317,14 @@ export function createSessionIdAcpProductionPolicyOwner(
         await options.onRuntimeInvalidation(invalidationFor(fence.binding));
         return;
       }
-      if (observation.observation.kind === "agent_message_chunk") {
+      if (observation.observation.kind === "agent_message_chunk"
+        || observation.observation.kind === "agent_thought_chunk") {
         await options.onHumanOnlyDiagnostic(Object.freeze({
-          kind: "agent_message_chunk" as const,
+          kind: observation.observation.kind,
           taskId: fence.binding.taskId,
           runId: fence.binding.runId,
           logicalSessionId: fence.binding.logicalSessionId,
+          sessionExecutionAttemptId: fence.attempt.sessionExecutionAttemptId,
           role: observation.role,
           text: observation.observation.text,
         }));
@@ -323,6 +337,10 @@ export function createSessionIdAcpProductionPolicyOwner(
           taskId: fence.binding.taskId,
           runId: fence.binding.runId,
           logicalSessionId: fence.binding.logicalSessionId,
+          sessionExecutionAttemptId: fence.attempt.sessionExecutionAttemptId,
+          activityKey: `activity_key_${createHash("sha256")
+            .update(observation.observation.toolCallHandle)
+            .digest("hex")}`,
           role: observation.role,
           ...(observation.observation.title === undefined
             ? {}
@@ -684,10 +702,10 @@ function snapshotAcpObservation(value: AcpSessionObservation): AcpSessionObserva
       ),
     });
   }
-  if (value.kind === "agent_message_chunk") {
+  if (value.kind === "agent_message_chunk" || value.kind === "agent_thought_chunk") {
     return Object.freeze({
       ...base,
-      kind: "agent_message_chunk" as const,
+      kind: value.kind,
       text: requiredText(
         value.text,
         65_536,

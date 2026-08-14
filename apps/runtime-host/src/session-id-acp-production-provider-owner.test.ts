@@ -190,6 +190,7 @@ function createFixture(): Readonly<{
     resolveCloseControl: vi.fn(() => undefined),
     authorizeRetiringBindingRecovery,
     onDeliveryReceipt: vi.fn(),
+    onHumanOnlyActivity: vi.fn(),
     now: () => "2026-08-12T00:00:00.000Z",
     createId: (kind: string) => `${kind}_production_owner_test`,
     taskBindingContext: Object.freeze({

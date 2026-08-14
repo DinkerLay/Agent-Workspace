@@ -8,6 +8,10 @@ import type {
   ProviderCapability,
   ProviderFamily,
 } from "./templates";
+import {
+  type ProviderActivityReadModel,
+  validateProviderActivityReadModel,
+} from "./provider-activity";
 
 export type SessionIdAcpTaskDirectoryState =
   | "no_session"
@@ -90,7 +94,7 @@ export type SessionIdAcpTaskMessageReadModel = Readonly<{
   inboxDeliveries: readonly SessionIdAcpTaskInboxDeliveryReadModel[];
 }>;
 
-/** Collaboration execution only. Provider activity/ToolCall rows are deliberately absent. */
+/** Collaboration execution plus a separate human-only Provider activity projection. */
 export type SessionIdAcpTaskExecutionGroupReadModel = Readonly<{
   executionGroupId: string;
   logicalSessionId: string;
@@ -109,7 +113,7 @@ export type SessionIdAcpTaskExecutionGroupReadModel = Readonly<{
     | "cancelled";
   startedAt: string;
   updatedAt: string;
-  activities: readonly [];
+  activities: readonly ProviderActivityReadModel[];
 }>;
 
 export type SessionIdAcpTaskInteractionReadModel = Readonly<{
@@ -250,6 +254,7 @@ const ALLOWED_KEYS = new Set([
   "suggestedAudience", "topic", "format", "inboxItemId", "targetLogicalSessionId", "route", "forwardId",
   "humanInterventionId", "deliveryInputSubmissionId", "updatedAt",
   "executionGroupId", "sessionTurnId", "inputSubmissionId", "finalMessageId", "startedAt", "activities",
+  "activityId", "contentKind", "observedAt",
   "interactionId", "interactionRevision", "choices", "choiceId",
   "sessionControlAuditId", "requestedAt", "settledAt", "reason",
   "mode", "conductorMirrorMessageId", "conductorMirrorSequence", "cardMessageId", "cardSequence",
@@ -509,9 +514,10 @@ function validateExecution(value: unknown): void {
   ], "acp_task_read_model_execution_invalid");
   isoTimestamp(execution.startedAt, "acp_task_read_model_execution_invalid");
   isoTimestamp(execution.updatedAt, "acp_task_read_model_execution_invalid");
-  if (!Array.isArray(execution.activities) || execution.activities.length !== 0) {
-    throw new Error("acp_task_read_model_execution_activity_forbidden");
+  if (!Array.isArray(execution.activities) || execution.activities.length > 256) {
+    throw new Error("acp_task_read_model_execution_activity_invalid");
   }
+  for (const activity of execution.activities) validateProviderActivityReadModel(activity);
 }
 
 function validateControl(value: unknown): void {

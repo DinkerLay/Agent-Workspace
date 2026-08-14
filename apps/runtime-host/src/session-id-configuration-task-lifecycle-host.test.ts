@@ -15,7 +15,7 @@ import type {
   AcpMetaAgentTurnRequest,
 } from "@agent-workspace/provider-port";
 import {
-  BUILT_IN_CODEX_ACP_STARTER_TEMPLATE_VERSION_ID,
+  BUILT_IN_DEEPSEARCH_TEMPLATE_VERSION_ID,
   createAcpV3FrozenProfileTupleResolver,
   type SessionIdAcpOrchestrationCommandTaskScope,
 } from "@agent-workspace/runtime-application";
@@ -87,12 +87,11 @@ describe("Session-ID ACP-only configuration/lifecycle Host", () => {
       }],
     });
     expect(fixture.capturedScopes).toHaveLength(1);
-    expect(fixture.capturedScopes[0]?.agentCards).toEqual([
-      expect.objectContaining({
-        profileRevisionId: expect.stringMatching(/^profile_revision_/u),
-        providerFamily: "codex",
-      }),
-    ]);
+    expect(fixture.capturedScopes[0]?.agentCards).toHaveLength(3);
+    expect(fixture.capturedScopes[0]?.agentCards.every((card) => (
+      card.profileRevisionId.startsWith("profile_revision_")
+        && card.providerFamily === "codex"
+    ))).toBe(true);
 
     const messages = fixture.canonical.message.listMessages(started.run.runId);
     expect(messages).toEqual([
@@ -290,6 +289,7 @@ async function createHarness() {
     acpTaskLifecycle: createSessionIdAcpTaskLifecycleHost({ now: () => NOW, createId: ids }),
     acpTaskOwners: { binding: acp.binding, sessionRuntime: acp.sessionRuntime },
     metaAgentRegistrations: [{ option: META_OPTION, port: meta.port }],
+    listTemplateProfileRevisions: () => Object.freeze([]),
     now: () => NOW,
     createId: ids,
   });
@@ -411,7 +411,10 @@ async function createAndStartTask(fixture: Harness, stem: string) {
     workspaceId: fixture.workspaceId,
     title: `Task ${stem}`,
     goal: `Goal ${stem}`,
-    taskInputValues: [],
+    taskInputValues: [
+      { fieldId: "research-question", value: `Question ${stem}` },
+      { fieldId: "report-language", value: "en" },
+    ],
   })).taskSetupDraft!;
   const created = await fixture.host.lifecycle.execute({
     type: "task.create",
@@ -438,7 +441,7 @@ async function createAndStartTask(fixture: Harness, stem: string) {
 
 function requiredVersion(fixture: Harness) {
   const version = fixture.repositories.templateTask.getTemplateVersion(
-    BUILT_IN_CODEX_ACP_STARTER_TEMPLATE_VERSION_ID,
+    BUILT_IN_DEEPSEARCH_TEMPLATE_VERSION_ID,
   );
   if (!version) throw new Error("controlled_acp_version_missing");
   return version;
@@ -493,7 +496,14 @@ function controlledMetaAgent(): Readonly<{
       }));
       return Object.freeze({ available: true as const, readiness: META_READINESS });
     },
-    async startMetaTurn(request) {
+    async startMetaTurn(request, tools) {
+      if (!tools) throw new Error("test_template_tools_missing");
+      await tools.handleCall({
+        providerCallId: "provider_call_lifecycle-title",
+        name: "template_draft_update_metadata",
+        arguments: { field: "title", value: "Meta revised title" },
+        lease: tools.lease,
+      });
       requests.push(request);
       return "accepted";
     },

@@ -6,6 +6,7 @@ import {
   AgentLoopSessionPresentation,
   type AgentLoopComposerSubmission,
   type AgentLoopInteractionDisplay,
+  type AgentLoopSessionInterruptRequest,
   type AgentLoopStopTaskRequest,
 } from "./AgentLoopSessionPresentation";
 import type { AgentLoopExecutionGroup, AgentLoopSessionMessageItem } from "./agent-loop-session-id-presentation-model";
@@ -79,13 +80,20 @@ const runningExecution: AgentLoopExecutionGroup = {
   status: "running",
   startedAt: "2026-08-06T00:00:30.000Z",
   updatedAt: "2026-08-06T00:00:32.000Z",
-  activities: [],
+  activities: [{
+    activityId: "provider_activity_progress",
+    kind: "assistant_progress",
+    contentKind: "reasoning",
+    content: "正在核对 Provider receipt。",
+    observedAt: "2026-08-06T00:00:32.000Z",
+  }],
 };
 
 function ControlledPresentation({
   onSubmitInput = vi.fn(async () => undefined),
   onStopTask = vi.fn(async () => undefined),
   onRespondInteraction = vi.fn(async () => undefined),
+  onRequestInterrupt,
   interactions,
   executionGroups = [],
   sessionMessages = messages,
@@ -93,6 +101,7 @@ function ControlledPresentation({
   onSubmitInput?: (input: AgentLoopComposerSubmission) => Promise<void> | void;
   onStopTask?: (input: AgentLoopStopTaskRequest) => Promise<void> | void;
   onRespondInteraction?: (input: { taskId: string; logicalSessionId: string; interactionId: string; choiceId: string }) => Promise<void> | void;
+  onRequestInterrupt?: (input: AgentLoopSessionInterruptRequest) => Promise<void> | void;
   interactions?: readonly AgentLoopInteractionDisplay[];
   executionGroups?: readonly AgentLoopExecutionGroup[];
   sessionMessages?: readonly AgentLoopSessionMessageItem[];
@@ -101,9 +110,10 @@ function ControlledPresentation({
   return <AgentLoopSessionPresentation
     interactions={interactions}
     binding={{ label: "Codex", status: "active", detail: "Runtime 已建立受控绑定。" }}
-    composer={{ message, continuity: { state: "connected", message: "已连接；发送会成为一个有回执的 Task 输入。" } }}
+    composer={{ message, running: executionGroups.some((group) => group.status === "running"), continuity: { state: "connected", message: "已连接；发送会成为一个有回执的 Task 输入。" } }}
     onComposerChange={setMessage}
     onRespondInteraction={onRespondInteraction}
+    onRequestInterrupt={onRequestInterrupt}
     onStopTask={onStopTask}
     onSubmitInput={onSubmitInput}
     executionGroups={executionGroups}
@@ -159,10 +169,11 @@ describe("AgentLoopSessionPresentation", () => {
   it("keeps Provider activity out of collaboration projection and collapses after canonical final", () => {
     const { rerender } = render(createElement(ControlledPresentation, { executionGroups: [runningExecution] }));
 
-    const runningSummary = screen.getByLabelText(/执行中，0 步/u);
+    const runningSummary = screen.getByLabelText(/执行中，1 步/u);
     const details = runningSummary.closest("details")!;
     expect(details.open).toBe(true);
-    expect(screen.getByText(/Provider stream、工具调用和诊断不会进入协作消息读模型/u)).toBeTruthy();
+    expect(screen.getByText("正在核对 Provider receipt。")).toBeTruthy();
+    expect(screen.getByText("Thinking").closest("details")?.open).toBe(true);
     expect(screen.queryByText("运行命令")).toBeNull();
 
     const completedExecution: AgentLoopExecutionGroup = {
@@ -174,9 +185,27 @@ describe("AgentLoopSessionPresentation", () => {
 
     expect(details.open).toBe(false);
     expect(screen.getByText("完整 Worker 回信。", { exact: false })).toBeTruthy();
-    fireEvent.click(screen.getByLabelText(/已完成，0 步/u));
+    fireEvent.click(screen.getByLabelText(/已完成，1 步/u));
     expect(details.open).toBe(true);
-    expect(screen.getByText(/Provider stream、工具调用和诊断不会进入协作消息读模型/u)).toBeTruthy();
+    expect(screen.getByText("Thinking").closest("details")?.open).toBe(false);
+    fireEvent.click(screen.getByText("Thinking"));
+    expect(screen.getByText("正在核对 Provider receipt。")).toBeTruthy();
+  });
+
+  it("uses the shared running-state action for a real scoped interrupt", async () => {
+    const onRequestInterrupt = vi.fn(async () => undefined);
+    render(createElement(ControlledPresentation, {
+      executionGroups: [runningExecution],
+      onRequestInterrupt,
+      onStopTask: undefined,
+    }));
+
+    expect((screen.getByLabelText("发送给 Conductor") as HTMLTextAreaElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "停止" }));
+    await waitFor(() => expect(onRequestInterrupt).toHaveBeenCalledWith({
+      taskId: "task_review",
+      logicalSessionId: "logical_session_conductor",
+    }));
   });
 
   it("keeps zero-step completed-without-final, ambiguous, and failed groups open with honest status", () => {

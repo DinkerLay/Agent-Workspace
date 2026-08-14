@@ -47,6 +47,7 @@ const PROVIDER_INPUT_KEYS = Object.freeze([
   "createId",
   "now",
   "onDeliveryReceipt",
+  "onHumanOnlyActivity",
   "repositories",
   "resolveCloseControl",
   "resolveFrozenProfileTuple",
@@ -119,12 +120,12 @@ export async function createSessionIdAcpProductionProviderOwner(
       handleInteractionRequested: options.input.sessionRuntimeOwner.handleInteractionRequested,
       handleFinalCandidate: options.input.sessionRuntimeOwner.handleFinalCandidate,
     }),
-    onHumanOnlyDiagnostic(value) {
-      // Human-only activity currently has no durable/read-model owner. The
-      // executable Host therefore drops it unless an explicit in-process sink
-      // is supplied; model content and tool titles must never reach stderr or
-      // release evidence by default.
-      return options.onHumanOnlyDiagnostic?.(value);
+    async onHumanOnlyDiagnostic(value) {
+      options.input.onHumanOnlyActivity(Object.freeze({
+        ...value,
+        scope: "task" as const,
+      }));
+      await options.onHumanOnlyDiagnostic?.(value);
     },
     onRuntimeInvalidation(value) {
       requiredAttachment().onRuntimeInvalidated("provider_fact", value.taskId);
@@ -170,6 +171,14 @@ export async function createSessionIdAcpProductionProviderOwner(
           configuration: options.configuration,
           hostInputs: options.hostInputs,
           privateAuthority: options.privateAuthority,
+          ...(options.onDiagnostic ? { onDiagnostic: options.onDiagnostic } : {}),
+          onHumanOnlyActivity(value) {
+            options.input.onHumanOnlyActivity(Object.freeze({
+              ...value,
+              scope: "meta" as const,
+            }));
+            requiredAttachment().onRuntimeInvalidated("provider_fact");
+          },
         });
         return Object.freeze({ status: "configured" as const, owner: metaOwner });
       },
@@ -320,6 +329,14 @@ export async function createSessionIdAcpProductionProviderOwner(
         }),
         hostInputs: options.hostInputs,
         privateAuthority: options.privateAuthority,
+        ...(options.onDiagnostic ? { onDiagnostic: options.onDiagnostic } : {}),
+        onHumanOnlyActivity(value) {
+          options.input.onHumanOnlyActivity(Object.freeze({
+            ...value,
+            scope: "meta" as const,
+          }));
+          requiredAttachment().onRuntimeInvalidated("provider_fact");
+        },
       });
       additionalMetaOwners.push(dynamicOwner);
       for (const registration of dynamicOwner.registrations) {
@@ -364,6 +381,7 @@ function validateOptions(options: SessionIdAcpProductionProviderOwnerOptions): v
     || typeof options.input.resolveCloseControl !== "function"
     || typeof options.input.authorizeRetiringBindingRecovery !== "function"
     || typeof options.input.onDeliveryReceipt !== "function"
+    || typeof options.input.onHumanOnlyActivity !== "function"
     || !options.privateAuthority
     || typeof options.privateAuthority !== "object"
     || Array.isArray(options.privateAuthority)

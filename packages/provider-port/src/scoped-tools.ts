@@ -1,4 +1,4 @@
-export type ProviderScopedToolCapabilityClass = "runtime_orchestration";
+export type ProviderScopedToolCapabilityClass = "runtime_orchestration" | "template_draft";
 
 /** Provider-neutral schema carried to a native dynamic-tool registration. */
 export interface ProviderScopedToolDefinition {
@@ -59,7 +59,8 @@ export function createProviderScopedToolCall(input: {
 export function normalizeProviderScopedToolRegistration(
   value: ProviderScopedToolRegistration,
 ): ProviderScopedToolRegistration {
-  if (!value || value.capabilityClass !== "runtime_orchestration") {
+  if (!value || (value.capabilityClass !== "runtime_orchestration"
+    && value.capabilityClass !== "template_draft")) {
     throw new Error("provider_scoped_tool_capability_invalid");
   }
   if (!Array.isArray(value.tools) || value.tools.length === 0) throw new Error("provider_scoped_tools_required");

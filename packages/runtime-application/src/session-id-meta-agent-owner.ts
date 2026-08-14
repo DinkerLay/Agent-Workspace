@@ -2,6 +2,7 @@ import {
   hashDefinition,
   isMetaProfileDefinitionV3,
   validateMetaProfileOptionDefinitionV3,
+  type ExecutionProfileDefinitionV3,
   type MetaPatchProposalRecord,
   type MetaPatchProposalRecordV3,
   type MetaPatchValidationIssue,
@@ -9,6 +10,7 @@ import {
   type MetaProfileOptionSnapshot,
   type MetaSessionRecord,
   type MetaSessionRecordV3,
+  type TemplateDraftRecord,
 } from "@agent-workspace/runtime-contracts";
 import {
   appendMetaMessage,
@@ -16,7 +18,9 @@ import {
   applyMetaPatchProposalToTemplateDraft,
   createMetaPatchProposal,
   parseMetaAgentOutput,
+  type MetaPatchIntentOperation,
 } from "@agent-workspace/runtime-domain";
+import type { MetaPatchOperation } from "@agent-workspace/runtime-contracts";
 import {
   validateAcpMetaAgentTurnRequest,
   type AcpMetaAgentPort,
@@ -32,15 +36,23 @@ import {
   type AcpMetaAgentRegistry,
 } from "./meta-agent.js";
 import { sessionIdMetaTargetContext } from "./session-id-configuration-task-lifecycle.js";
+import type { SessionIdMetaTemplateToolOwner } from "./session-id-meta-template-tool-owner.js";
 
 export type SessionIdMetaAgentOwnerOptions = Readonly<{
   now: () => string;
+  createId: (kind: "agent_card") => string;
   configuration: Pick<ConfigurationStore,
     | "claimMetaTurn" | "releaseMetaTurn" | "settleMetaTurn" | "completeMetaTurn"
     | "getMetaTurn" | "getMetaSession" | "getMetaMessage" | "listMetaMessages" | "getTaskSetupDraft">;
   templates: Pick<TemplateTaskStore, "getDraft" | "getTemplate" | "getTemplateVersion">;
   metaAgents: AcpMetaAgentRegistry;
   resolveMetaProfileOption: (metaProfileOptionId: string) => MetaProfileOptionSnapshot;
+  resolveTemplateProfileRevision?: (input: Readonly<{
+    draft: TemplateDraftRecord;
+    executionProfileId: string;
+    profileRevisionId: string;
+  }>) => ExecutionProfileDefinitionV3;
+  templateDraftTools?: SessionIdMetaTemplateToolOwner;
   leaseMs?: number;
 }>;
 
@@ -123,6 +135,7 @@ export function createSessionIdMetaAgentOwner(options: SessionIdMetaAgentOwnerOp
         metaSessionId: session.metaSessionId,
         metaProfileOptionId: option.metaProfileOptionId,
         profile: turn.profile,
+        sessionMode: session.mode,
         mode: firstNativeSubmit ? "first_submit" : "recovery",
       }), signal);
       if (ensured === CANCELLED) {
@@ -164,7 +177,17 @@ export function createSessionIdMetaAgentOwner(options: SessionIdMetaAgentOwnerOp
     }
 
     try {
-      const acceptance = await waitForDispatch(() => provider.startMetaTurn(request), signal);
+      const scopedToolTurnContext = session.mode === "template_design"
+        ? options.templateDraftTools?.createTurnContext({
+            session,
+            metaTurnId: turn.metaTurnId,
+            targetRevision: turn.targetRevision,
+          })
+        : undefined;
+      const acceptance = await waitForDispatch(
+        () => provider.startMetaTurn(request, scopedToolTurnContext),
+        signal,
+      );
       if (acceptance === CANCELLED) {
         releaseIfCancelled(turn, signal);
         return;
@@ -226,6 +249,7 @@ export function createSessionIdMetaAgentOwner(options: SessionIdMetaAgentOwnerOp
       if (session.state !== "active") throw new Error("meta_session_not_active");
       const context = sessionIdMetaTargetContext(session, turn.targetRevision, options.templates, options.configuration);
       if (hashDefinition(context) !== turn.contextDigest) throw new Error("meta_turn_context_mismatch");
+      assertTemplateProposalUsesToolOperations(turn, session, parsed, options.templateDraftTools);
       const completedAt = options.now();
       const appended = appendMetaMessage({
         session,
@@ -257,11 +281,25 @@ export function createSessionIdMetaAgentOwner(options: SessionIdMetaAgentOwnerOp
     parsed: NonNullable<ReturnType<typeof parseMetaAgentOutput>["proposal"]>,
     now: string,
   ): MetaPatchProposalRecordV3 {
+    const templateDraft = session.mode === "template_design" && session.target.kind === "template_draft"
+      ? required(options.templates.getDraft(session.target.templateDraftId), "template_draft_not_found")
+      : undefined;
+    const operations = materializeMetaPatchOperations(
+      parsed.operations,
+      options.createId,
+      templateDraft && options.resolveTemplateProfileRevision
+        ? (executionProfileId, profileRevisionId) => options.resolveTemplateProfileRevision!({
+            draft: templateDraft,
+            executionProfileId,
+            profileRevisionId,
+          })
+        : undefined,
+    );
     const create = (validationIssues: readonly MetaPatchValidationIssue[]) => createMetaPatchProposal({
       metaPatchProposalId: turn.metaPatchProposalId,
       session,
       targetRevision: turn.targetRevision,
-      operations: parsed.operations,
+      operations,
       summary: parsed.summary,
       rationale: parsed.rationale,
       validationIssues,
@@ -297,6 +335,87 @@ export function createSessionIdMetaAgentOwner(options: SessionIdMetaAgentOwnerOp
   }
 
   return Object.freeze({ drain });
+}
+
+function assertTemplateProposalUsesToolOperations(
+  turn: AcpMetaTurnRecordV3,
+  session: MetaSessionRecordV3,
+  parsed: ReturnType<typeof parseMetaAgentOutput>,
+  tools: SessionIdMetaTemplateToolOwner | undefined,
+): void {
+  if (session.mode !== "template_design") return;
+  const proposed = parsed.proposal?.operations ?? [];
+  const recorded = tools?.listTurnOperations(turn.metaTurnId) ?? [];
+  if (proposed.length === 0 && recorded.length === 0) return;
+  if (!tools || proposed.length === 0 || recorded.length === 0) {
+    throw new Error("meta_template_tool_operation_required");
+  }
+  if (hashDefinition(JSON.parse(JSON.stringify(proposed)))
+    !== hashDefinition(JSON.parse(JSON.stringify(recorded)))) {
+    throw new Error("meta_template_tool_operation_mismatch");
+  }
+}
+
+function materializeMetaPatchOperations(
+  operations: readonly MetaPatchIntentOperation[],
+  createId: SessionIdMetaAgentOwnerOptions["createId"],
+  resolveTemplateProfileRevision?: (
+    executionProfileId: string,
+    profileRevisionId: string,
+  ) => ExecutionProfileDefinitionV3,
+): readonly MetaPatchOperation[] {
+  const allocated = new Map<string, string>();
+  for (const operation of operations) {
+    if (operation.kind !== "template_card_create") continue;
+    if (allocated.has(operation.proposalRef)) throw new Error("meta_patch_agent_card_ref_conflict");
+    const agentCardId = createId("agent_card");
+    if (!/^agent_card_[A-Za-z0-9-]+$/u.test(agentCardId)) throw new Error("meta_patch_agent_card_id_invalid");
+    allocated.set(operation.proposalRef, agentCardId);
+  }
+  return Object.freeze(operations.map((operation): MetaPatchOperation => {
+    if (operation.kind === "template_card_create") {
+      return Object.freeze({
+        kind: operation.kind,
+        agentCardId: required(allocated.get(operation.proposalRef), "meta_patch_agent_card_ref_not_found"),
+        cardKind: operation.cardKind,
+        title: operation.title,
+        ...(operation.role === undefined ? {} : { role: operation.role }),
+        executionProfileId: operation.executionProfileId,
+        systemPrompt: operation.systemPrompt,
+        dispatchProfile: Object.freeze({ ...operation.dispatchProfile }),
+      });
+    }
+    if (operation.kind === "template_card_reorder") {
+      return Object.freeze({
+        kind: operation.kind,
+        agentCardIds: Object.freeze(operation.cardRefs.map((reference) => reference.startsWith("agent_card_")
+          ? reference
+          : required(allocated.get(reference), "meta_patch_agent_card_ref_not_found"))),
+      });
+    }
+    if (operation.kind === "template_profile_revision_select") {
+      if (!resolveTemplateProfileRevision) throw new Error("meta_patch_profile_revision_resolver_required");
+      const profile = resolveTemplateProfileRevision(
+        operation.executionProfileId,
+        operation.profileRevisionId,
+      );
+      if (profile.executionProfileId !== operation.executionProfileId
+        || profile.profileRevisionId !== operation.profileRevisionId) {
+        throw new Error("meta_patch_profile_revision_identity_mismatch");
+      }
+      return Object.freeze({
+        kind: "template_profile_revision_set" as const,
+        executionProfileId: operation.executionProfileId,
+        profile,
+      });
+    }
+    return Object.freeze({
+      ...operation,
+      ...(operation.kind === "template_card_update" && operation.dispatchProfile
+        ? { dispatchProfile: Object.freeze({ ...operation.dispatchProfile }) }
+        : {}),
+    }) as MetaPatchOperation;
+  }));
 }
 
 function safeFailure(value: unknown, fallback: string): string {

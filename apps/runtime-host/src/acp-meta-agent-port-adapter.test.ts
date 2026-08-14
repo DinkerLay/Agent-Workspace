@@ -3,6 +3,7 @@ import type {
   AcpMetaAgentTurnRequest,
   MetaAgentTurnAcceptance,
   MetaAgentTurnReconciliation,
+  ProviderScopedToolTurnContext,
 } from "@agent-workspace/provider-port";
 import type {
   AcpProfileReadinessObservation,
@@ -69,22 +70,29 @@ describe("ACP Meta option-scoped Port adapter", () => {
     await expect(port.openMetaSession({
       metaSessionId: "meta_session_adapter_create" as MetaSessionId,
       metaProfileOptionId: option.metaProfileOptionId,
+      sessionMode: "template_design",
       disposition: "create",
     })).resolves.toEqual({ available: true, readiness });
     await expect(port.openMetaSession({
       metaSessionId: "meta_session_adapter_resume" as MetaSessionId,
       metaProfileOptionId: option.metaProfileOptionId,
+      sessionMode: "template_design",
       disposition: "resume",
     })).resolves.toEqual({ available: true, readiness });
 
     const request = turnRequest("meta_session_adapter_create" as MetaSessionId, profile);
-    await expect(port.startMetaTurn(request)).resolves.toBe("accepted");
+    const scopedToolTurnContext = Object.freeze({
+      capabilityClass: "template_draft" as const,
+      lease: Object.freeze(Object.create(null)),
+      async handleCall() { throw new Error("not_called"); },
+    });
+    await expect(port.startMetaTurn(request, scopedToolTurnContext)).resolves.toBe("accepted");
     await expect(port.reconcileMetaTurn(request)).resolves.toMatchObject({ state: "returned" });
     expect(calls).toEqual([
       ["readiness", option.metaProfileOptionId],
       ["open", "meta_session_adapter_create", option.metaProfileOptionId, "create"],
       ["open", "meta_session_adapter_resume", option.metaProfileOptionId, "resume"],
-      ["start", request],
+      ["start", request, scopedToolTurnContext],
       ["reconcile", request],
     ]);
   });
@@ -99,11 +107,13 @@ describe("ACP Meta option-scoped Port adapter", () => {
     await port.openMetaSession({
       metaSessionId,
       metaProfileOptionId: option.metaProfileOptionId,
+      sessionMode: "template_design",
       disposition: "create",
     });
     await expect(port.openMetaSession({
       metaSessionId,
       metaProfileOptionId: option.metaProfileOptionId,
+      sessionMode: "template_design",
       disposition: "resume",
     })).rejects.toThrow("acp_meta_adapter_disposition_conflict");
     await expect(port.startMetaTurn(turnRequest(metaSessionId, {
@@ -145,8 +155,11 @@ function controlledComposition(calls: unknown[]): AcpMetaProviderComposition {
         readiness,
       });
     },
-    async startMetaTurn(request): Promise<MetaAgentTurnAcceptance> {
-      calls.push(["start", request]);
+    async startMetaTurn(
+      request,
+      scopedToolTurnContext?: ProviderScopedToolTurnContext,
+    ): Promise<MetaAgentTurnAcceptance> {
+      calls.push(["start", request, scopedToolTurnContext]);
       return "accepted";
     },
     async reconcileMetaTurn(request): Promise<MetaAgentTurnReconciliation> {

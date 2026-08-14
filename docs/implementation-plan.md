@@ -51,7 +51,8 @@ OpenCode/Codex/Meta 尚未启动真实 Provider/model，因而尚无 fresh 28-ce
    `LocalResolutionSeal` + process-local `ACPQualification`。没有版本 allowlist。
 5. OpenCode ACP 与 Codex ACP 都以真实 Task Profile 独立通过 initialize、Binding、prompt receipt、final+terminal、
    resume/reconcile、cancel 及各自宣称的 role capability；一个不能替另一个出证。
-6. Meta 使用独立 ACP Profile/process/raw-ID map，证明 no-tools/no-cwd/no-Workspace、strict whole-final 与恢复。
+6. Meta 使用独立 ACP Profile/process/raw-ID map；Task Setup证明零工具，Template Design只证明proposal-only
+   `template_draft` scoped MCP、no-cwd/no-Workspace、strict whole-final 与恢复。
 7. Browser、Electron、cross-surface、restart 与 fresh release matrix 同 bundle PASS；旧 direct evidence 不可代证。
 
 退出码保持：`0 = fresh ACP bundle all required PASS`、`1 = assertion/safety failure`、
@@ -258,13 +259,16 @@ fallback、OpenCode qualification复用均明确失败。
 `metaSessionId`-scoped Port、独立Meta ACP process/owner、Host lifecycle adapter、Template v3 built-ins与typed UI均已通过
 controlled tests，并已接入Unified Host/Browser。标准 Deepsearch built-in、首次新建即持久化 Draft、Meta/Conductor/
 Session 共用 Agent Chat Shell 已落地；真实 Browser 已完成 Codex Meta open/send/reply/proposal/apply。独立release-native
-Meta evidence 仍归Phase 8 fresh cell，尚未执行。
+Meta evidence 仍归Phase 8 fresh cell，尚未执行。2026-08-14起Template Design已切到proposal-only `template_draft`
+scoped MCP与局部Prompt edit/Profile revision选择合同；controlled ACP HTTP discovery/call/revoke已通过，真实Browser/Provider
+交互证据仍须在本Phase focused journey补齐。
 
 **Goal：** 把 Meta和配置/运行UI改为Host-observed ACP Profile，而非品牌自由输入/direct port。
 
 **Planned behavior：**
 
-- Meta复用ACP Client/launcher，使用独立 Profile/process/raw-ID map；no tools/cwd/workspace/task transcript；
+- Meta复用ACP Client/launcher，使用独立 Profile/process/raw-ID map；无通用/Task/Workspace工具、cwd/workspace/task transcript；
+  Template Design只注入Turn-scoped `template_draft` proposal MCP，Task Setup保持零工具；
 - opener/open/send/apply/publish/create边界不变；whole-final与cold reconcile由ACP证据证明；
 - Template Studio选择Host提供的 portable Profile revision；不编辑/展示本机 version/path/hash；
 - Task Setup/Session Header显示actual Provider family、ACP Agent kind、artifact/upstream version和capability摘要，仅作观察；
@@ -272,6 +276,13 @@ Meta evidence 仍归Phase 8 fresh cell，尚未执行。
 - 产品 Library 只安装一个可用的 Deepsearch v3 Template；全部 Session Profile 默认 Codex `gpt-5.6-luna`，
   Provider-specific starters仅保留为合约fixture，不进入产品索引；
 - Meta、Conductor 与 Session Agent 共用 Renderer Chat Shell，但消息/proposal/interaction继续走各自typed owner边界。
+- 统一 Chat 把正式 ACP thinking/reasoning channel 投影为可展开的 Thinking block：运行中流式展示原始 reasoning
+  文本（只精确移除Host-private值），任一 settled terminal 前flush，settled后自动收起；不得只显示无内容的“思考中”，
+  也不得把reasoning变成`SessionMessage`、MetaMessage或Provider final。
+- Template Design Meta patch支持新增、更新、删除和重排Session Agent Card：Provider只提交proposal-local引用并复用已有
+  Execution Profile，Runtime在持久化Proposal前分配Workspace opaque `agentCardId`；小型Prompt变更必须按稳定target和
+  唯一oldText形成局部edit，Provider/model/effort只选择Host-issued Profile revision；新Card默认零`capabilityRefs`，
+  用户Apply后才由Template owner原子校验并更新Draft，既有Version/Task Architecture不回写。
 - Provider / Model 选择读取 Host 从真实 ACP session config 投影的安全模型目录，不再把 built-in Template 的固定
   model 当作 Provider catalog；目录项与 role qualification 分开展示，选择模型生成新的 portable Profile revision，
   raw ACP config id 不进入 Runtime contract 或 Renderer。
@@ -466,10 +477,12 @@ ACP fallback。
 - **Renderer入口：** `packages/workbench-ui/src/agent-loop/{AgentLoopChatUI,AgentLoopTemplateStudio,AgentLoopTaskSetupSurface,
   AgentLoopSessionIdTaskSurface,AgentLoopSessionPresentation,AgentLoopMetaPanel}.tsx`及controllers/tests。UI选择`profileRevisionId`并只显示Host
   observation，不编辑path/version/hash或按Provider品牌决定能力。
-- **首个RED：** config available但live probe unavailable、Meta获得tool/cwd/Workspace/Task transcript、Task
+- **首个RED：** config available但live probe unavailable、Meta获得未注册tool/cwd/Workspace/Task transcript、
+  小改动仍可整段替换Prompt、Template MCP在Turn外仍可调用、Task
   qualification复用、whole-final不唯一、cold reconcile重发、Renderer从品牌/版本猜availability。
 - **退出条件：** Template v3/Profile options、Meta opener/open/send/apply及Task Setup/Session Header均使用同一Host
-  typed readiness；独立native ACP Meta通过no-authority、whole-final与recovery。
+  typed readiness；Template Draft CRUD仅创建Pending Proposal且Turn后撤销；独立native ACP Meta通过no-authority、
+  scoped Template Draft tool、whole-final与recovery。
 
 ### Ledger Phase 6 — Persistence migration 与 direct Binding drain
 

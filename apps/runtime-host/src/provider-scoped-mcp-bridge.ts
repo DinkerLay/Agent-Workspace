@@ -22,11 +22,28 @@ export type ProviderScopedMcpRoute = Readonly<{
   close(): void;
 }>;
 
+export type ProviderScopedMcpToolActivity = Readonly<{
+  readonly activityKey: string;
+  readonly name: string;
+  readonly status: "in_progress" | "completed" | "failed";
+  readonly inputSummary?: string;
+  readonly outputSummary?: string;
+}>;
+
+export type ProviderScopedMcpToolActivityProjector = (input: Readonly<{
+  readonly name: string;
+  readonly status: ProviderScopedMcpToolActivity["status"];
+  readonly arguments: unknown;
+  readonly result?: unknown;
+}>) => Readonly<{ inputSummary?: string; outputSummary?: string }>;
+
 export type ProviderScopedMcpBridge = Readonly<{
   listen(port?: number): Promise<Readonly<{ host: typeof LOOPBACK_HOST; port: number; url: string }>>;
   registerRoute(input: Readonly<{
     bindingId: string;
     registration: ProviderScopedToolRegistration;
+    onToolActivity?: (activity: ProviderScopedMcpToolActivity) => void | Promise<void>;
+    projectToolActivity?: ProviderScopedMcpToolActivityProjector;
   }>): ProviderScopedMcpRoute;
   close(): Promise<void>;
 }>;
@@ -35,6 +52,8 @@ type RouteState = {
   readonly bindingId: string;
   readonly token: string;
   readonly registration: ProviderScopedToolRegistration;
+  readonly onToolActivity?: (activity: ProviderScopedMcpToolActivity) => void | Promise<void>;
+  readonly projectToolActivity?: ProviderScopedMcpToolActivityProjector;
   readonly calls: Map<string, Readonly<{
     fingerprint: string;
     response: Promise<Readonly<Record<string, unknown>>>;
@@ -97,6 +116,12 @@ export function createProviderScopedMcpBridge(options: Readonly<{
       if (!address) throw new Error("provider_scoped_mcp_not_listening");
       const bindingId = requiredText(input.bindingId, "provider_scoped_mcp_binding_id_required");
       const registration = normalizeProviderScopedToolRegistration(input.registration);
+      if (input.onToolActivity !== undefined && typeof input.onToolActivity !== "function") {
+        throw new Error("provider_scoped_mcp_activity_observer_invalid");
+      }
+      if (input.projectToolActivity !== undefined && typeof input.projectToolActivity !== "function") {
+        throw new Error("provider_scoped_mcp_activity_projector_invalid");
+      }
       const token = createToken();
       if (!ROUTE_TOKEN.test(token) || routes.has(token)) throw new Error("provider_scoped_mcp_route_token_invalid");
       let resolveToolDiscovery!: () => void;
@@ -110,6 +135,8 @@ export function createProviderScopedMcpBridge(options: Readonly<{
         bindingId,
         token,
         registration,
+        ...(input.onToolActivity ? { onToolActivity: input.onToolActivity } : {}),
+        ...(input.projectToolActivity ? { projectToolActivity: input.projectToolActivity } : {}),
         calls: new Map(),
         toolDiscovery,
         resolveToolDiscovery,
@@ -300,25 +327,93 @@ async function dispatchToolCall(
   name: string,
   argumentsValue: unknown,
 ): Promise<Readonly<Record<string, unknown>>> {
+  const callId = providerCallId(route, id, name);
+  const activityKey = `activity_key_${createHash("sha256").update(callId).digest("hex")}`;
+  await publishToolActivity(route, {
+    activityKey,
+    name,
+    status: "in_progress",
+    ...projectToolActivity(route, { name, status: "in_progress", arguments: argumentsValue }),
+  });
   try {
     const result = await dispatchProviderScopedToolCall({
       registration: route.registration,
       turnContext: context,
       nativeCall: {
-        providerCallId: providerCallId(route, id, name),
+        providerCallId: callId,
         name,
         arguments: argumentsValue,
       },
     });
     const text = JSON.stringify(result.result) ?? "null";
     const structuredContent = isRecord(result.result) ? result.result : { value: result.result ?? null };
+    await publishToolActivity(route, {
+      activityKey,
+      name,
+      status: "completed",
+      ...projectToolActivity(route, {
+        name,
+        status: "completed",
+        arguments: argumentsValue,
+        result: result.result,
+      }),
+    });
     return rpcResult(id, {
       content: [{ type: "text", text }],
       structuredContent,
       isError: false,
     });
   } catch {
+    await publishToolActivity(route, {
+      activityKey,
+      name,
+      status: "failed",
+      ...projectToolActivity(route, { name, status: "failed", arguments: argumentsValue }),
+    });
     return rpcError(id, -32002, "tool_dispatch_rejected");
+  }
+}
+
+function projectToolActivity(
+  route: RouteState,
+  input: Parameters<ProviderScopedMcpToolActivityProjector>[0],
+): Readonly<{ inputSummary?: string; outputSummary?: string }> {
+  if (!route.projectToolActivity) return Object.freeze({});
+  try {
+    const projected = route.projectToolActivity(Object.freeze(input));
+    if (!projected || typeof projected !== "object" || Array.isArray(projected)
+      || Object.keys(projected).some((key) => key !== "inputSummary" && key !== "outputSummary")) {
+      return Object.freeze({});
+    }
+    const inputSummary = safeActivitySummary(projected.inputSummary);
+    const outputSummary = safeActivitySummary(projected.outputSummary);
+    return Object.freeze({
+      ...(inputSummary ? { inputSummary } : {}),
+      ...(outputSummary ? { outputSummary } : {}),
+    });
+  } catch {
+    // A presentation-only projector cannot affect the scoped tool call.
+    return Object.freeze({});
+  }
+}
+
+function safeActivitySummary(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim() || value.length > 16 * 1024 || value.includes("\0")) {
+    return undefined;
+  }
+  return value;
+}
+
+async function publishToolActivity(
+  route: RouteState,
+  activity: ProviderScopedMcpToolActivity,
+): Promise<void> {
+  if (!route.onToolActivity) return;
+  try {
+    await route.onToolActivity(Object.freeze(activity));
+  } catch {
+    // Human-only presentation may never change the scoped tool result.
   }
 }
 

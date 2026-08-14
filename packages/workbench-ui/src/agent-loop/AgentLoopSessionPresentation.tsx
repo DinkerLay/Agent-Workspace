@@ -15,6 +15,7 @@ import type {
 import {
   AgentLoopChatComposer,
   AgentLoopChatMessage,
+  AgentLoopProviderActivityList,
   AgentLoopChatTranscript,
 } from "./AgentLoopChatUI";
 
@@ -38,6 +39,7 @@ export type AgentLoopSessionPresentationProps = Readonly<{
   composer: AgentLoopComposerDisplay;
   onComposerChange: (message: string) => void;
   onSubmitInput: (input: AgentLoopComposerSubmission) => Promise<void> | void;
+  onRequestInterrupt?: (input: AgentLoopSessionInterruptRequest) => Promise<void> | void;
   onStopTask?: (input: AgentLoopStopTaskRequest) => Promise<void> | void;
   onRespondInteraction: (input: AgentLoopInteractionResponse) => Promise<void> | void;
   /** TaskSurface supplies a separate fixed Conductor composer. */
@@ -69,6 +71,7 @@ export type AgentLoopComposerContinuity = Readonly<{
 export type AgentLoopComposerDisplay = Readonly<{
   message: string;
   disabled?: boolean;
+  running?: boolean;
   stopDisabled?: boolean;
   continuity?: AgentLoopComposerContinuity;
   /** Stable locator names are supplied by the owning formal Surface. */
@@ -83,6 +86,11 @@ export type AgentLoopComposerSubmission = Readonly<{
 }>;
 
 export type AgentLoopStopTaskRequest = Readonly<{
+  taskId: string;
+  logicalSessionId: string;
+}>;
+
+export type AgentLoopSessionInterruptRequest = Readonly<{
   taskId: string;
   logicalSessionId: string;
 }>;
@@ -118,15 +126,17 @@ export function AgentLoopSessionPresentation({
   composer,
   onComposerChange,
   onSubmitInput,
+  onRequestInterrupt,
   onStopTask,
   onRespondInteraction,
   showComposer = true,
 }: AgentLoopSessionPresentationProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [isInterrupting, setIsInterrupting] = useState(false);
   const [composerError, setComposerError] = useState<string>();
   const sessionTitle = session.title?.trim() || session.agentCardId;
-  const composerDisabled = Boolean(composer.disabled || isSubmitting);
+  const composerDisabled = Boolean(composer.disabled);
   const stopDisabled = Boolean(composer.disabled || composer.stopDisabled || isStopping);
   const composerLabel = session.kind === "card"
     ? `human → Card ${sessionTitle} / 全文同步 Conductor`
@@ -135,7 +145,7 @@ export function AgentLoopSessionPresentation({
 
   const submitComposer = async () => {
     const content = composer.message.trim();
-    if (composerDisabled || !content) return;
+    if (composerDisabled || isSubmitting || !content) return;
     setComposerError(undefined);
     setIsSubmitting(true);
     try {
@@ -157,6 +167,19 @@ export function AgentLoopSessionPresentation({
       setComposerError(messageFor(error));
     } finally {
       setIsStopping(false);
+    }
+  };
+
+  const interruptSession = async () => {
+    if (!onRequestInterrupt || isInterrupting) return;
+    setComposerError(undefined);
+    setIsInterrupting(true);
+    try {
+      await onRequestInterrupt({ taskId, logicalSessionId: session.logicalSessionId });
+    } catch (error) {
+      setComposerError(messageFor(error));
+    } finally {
+      setIsInterrupting(false);
     }
   };
 
@@ -206,10 +229,13 @@ export function AgentLoopSessionPresentation({
           onComposerChange(content);
         }}
         onSubmit={submitComposer}
+        onStop={composer.running && onRequestInterrupt ? interruptSession : undefined}
         placeholder={session.kind === "card"
           ? "直接介入此 Card；若它正在运行，将先请求中断，确认安全结束后才发送。"
           : "补充目标、纠正结论，或要求再次核实；由 Conductor 决定是否重新派发。"}
         secondaryActions={onStopTask ? <button className="awb-button awb-button-secondary" disabled={stopDisabled} type="button" onClick={() => void stopTask()}>{isStopping ? "正在停止…" : "停止任务"}</button> : undefined}
+        running={Boolean(composer.running)}
+        stopping={isInterrupting}
         sendTestId={composer.sendTestId}
         testId={composer.testId}
         value={composer.message}
@@ -262,7 +288,14 @@ function SessionExecutionGroup({ group }: Readonly<{ group: AgentLoopExecutionGr
           <ExecutionStatusIcon status={displayStatus} />
         </summary>
         <div aria-live={isRunning ? "polite" : "off"} className="awb-execution-activity-list">
-          <p>Provider stream、工具调用和诊断不会进入协作消息读模型。</p>
+          <AgentLoopProviderActivityList
+            activities={group.activities}
+            turnState={isRunning
+              ? "running"
+              : displayStatus === "completed" || displayStatus === "failed" || displayStatus === "cancelled"
+                ? "settled"
+                : "unsettled"}
+          />
         </div>
       </details>
     </li>

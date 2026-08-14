@@ -26,12 +26,14 @@ describe("exact ACP Meta registry", () => {
       metaSessionId: "meta_session_exact-one",
       metaProfileOptionId: first.option.metaProfileOptionId,
       profile: first.option.profile,
+      sessionMode: "template_design" as const,
       mode: "first_submit",
     });
     await registry.ensureSession({
       metaSessionId: "meta_session_exact-two",
       metaProfileOptionId: second.option.metaProfileOptionId,
       profile: second.option.profile,
+      sessionMode: "template_design",
       mode: "first_submit",
     });
     expect(first.probes).toBe(1);
@@ -45,25 +47,28 @@ describe("exact ACP Meta registry", () => {
       metaSessionId: "meta_session_cross-option",
       metaProfileOptionId: first.option.metaProfileOptionId,
       profile: second.option.profile,
+      sessionMode: "template_design",
       mode: "first_submit",
     })).rejects.toThrow("meta_profile_option_snapshot_mismatch");
     await expect(registry.ensureSession({
       metaSessionId: "meta_session_exact-one",
       metaProfileOptionId: second.option.metaProfileOptionId,
       profile: second.option.profile,
+      sessionMode: "template_design",
       mode: "recovery",
     })).rejects.toThrow("meta_session_profile_binding_conflict");
     expect(first.opens).toBe(1);
     expect(second.opens).toBe(1);
   });
 
-  it("single-flights one MetaSession, forces a fresh first-send probe, and skips probing on recovery", async () => {
+  it("single-flights one MetaSession, reuses the owner-verified first-send probe, and skips repeat probes", async () => {
     const port = new ControlledAcpMetaPort(option("single", "profile_revision_meta-single", "medium"));
     const registry = createAcpMetaAgentRegistry([{ option: port.option, port }]);
     const input = {
       metaSessionId: "meta_session_single-flight",
       metaProfileOptionId: port.option.metaProfileOptionId,
       profile: port.option.profile,
+      sessionMode: "template_design" as const,
       mode: "first_submit" as const,
     };
     const [left, right] = await Promise.all([
@@ -76,15 +81,37 @@ describe("exact ACP Meta registry", () => {
     expect(port.opens).toBe(1);
 
     await registry.ensureSession(input);
-    expect(port.probes).toBe(2);
+    expect(port.probes).toBe(1);
     expect(port.opens).toBe(1);
 
     const recoveredPort = new ControlledAcpMetaPort(port.option);
     const recoveredRegistry = createAcpMetaAgentRegistry([{ option: recoveredPort.option, port: recoveredPort }]);
-    await recoveredRegistry.ensureSession({ ...input, mode: "recovery" });
+    await recoveredRegistry.ensureSession({ ...input, sessionMode: "template_design", mode: "recovery" });
     expect(recoveredPort.probes).toBe(0);
     expect(recoveredPort.opens).toBe(1);
     expect(recoveredPort.dispositions).toEqual(["resume"]);
+  });
+
+  it("does not run the same expensive readiness probe again after the session owner verified it", async () => {
+    const port = new ControlledAcpMetaPort(option("verified", "profile_revision_meta-verified", "high"));
+    const registry = createAcpMetaAgentRegistry([{ option: port.option, port }]);
+
+    await registry.probe(
+      port.option.metaProfileOptionId,
+      port.option.profile,
+      { force: true },
+    );
+    expect(port.probes).toBe(1);
+
+    await registry.ensureSession({
+      metaSessionId: "meta_session_owner-verified",
+      metaProfileOptionId: port.option.metaProfileOptionId,
+      profile: port.option.profile,
+      sessionMode: "template_design",
+      mode: "first_submit",
+    });
+    expect(port.probes).toBe(1);
+    expect(port.opens).toBe(1);
   });
 
   it("registers newly enabled Chat profiles without retargeting an existing MetaSession", async () => {
@@ -96,6 +123,7 @@ describe("exact ACP Meta registry", () => {
       metaSessionId: "meta_session_existing",
       metaProfileOptionId: original.option.metaProfileOptionId,
       profile: original.option.profile,
+      sessionMode: "template_design",
       mode: "first_submit",
     });
     registry.register([{ option: added.option, port: added }]);
@@ -105,6 +133,7 @@ describe("exact ACP Meta registry", () => {
       metaSessionId: "meta_session_new",
       metaProfileOptionId: added.option.metaProfileOptionId,
       profile: added.option.profile,
+      sessionMode: "template_design",
       mode: "first_submit",
     });
     expect(added.opens).toBe(1);
@@ -112,6 +141,7 @@ describe("exact ACP Meta registry", () => {
       metaSessionId: "meta_session_existing",
       metaProfileOptionId: added.option.metaProfileOptionId,
       profile: added.option.profile,
+      sessionMode: "template_design",
       mode: "recovery",
     })).rejects.toThrow("meta_session_profile_binding_conflict");
 

@@ -658,15 +658,20 @@ function TemplateDraftWorkspace({
   const providerFamilies = selectedProfile
     ? [...new Set([selectedProfile.providerFamily, ...compatibleProfileOptions.map((option) => option.providerFamily)])]
     : [];
-  const modelOptions = selectedProviderFamily
+  const profileOptionsForProvider = selectedProviderFamily
     ? compatibleProfileOptions.filter((option) => (
         option.providerFamily === selectedProviderFamily && option.catalogObserved === true
       ))
     : [];
+  const modelOptions = uniqueTemplateModelOptions(profileOptionsForProvider, selectedProfile?.configIntent);
   const selectedProfileOption = selectedProfile && selectedProviderFamily === selectedProfile.providerFamily
-    ? modelOptions.find((option) => option.profileRevisionId === selectedProfile.profileRevisionId)
+    ? profileOptionsForProvider.find((option) => option.profileRevisionId === selectedProfile.profileRevisionId)
     : undefined;
   const modelSelectionPending = Boolean(selectedProfile && selectedProviderFamily !== selectedProfile.providerFamily);
+  const selectedModel = modelSelectionPending ? "" : selectedProfile?.model ?? "";
+  const effortProfileOptions = selectedProfile && !modelSelectionPending
+    ? profileOptionsForProvider.filter((option) => option.model === selectedProfile.model)
+    : [];
   const selectedTarget = metaTargetForCard(selectedCard);
   const selectedIsTarget = metaTargets.some((target) => metaTargetKey(target) === metaTargetKey(selectedTarget));
   const updateDefinition = (next: TemplateDefinitionV3) => onChange({ definitionText: JSON.stringify(validateTemplateDefinitionV3(next), null, 2) });
@@ -800,22 +805,37 @@ function TemplateDraftWorkspace({
             aria-label={`${selectedCard.title} Model`}
             disabled={busy || readOnly}
             onChange={(event) => {
-              const option = modelOptions.find((candidate) => candidate.profileRevisionId === event.target.value);
+              const candidates = profileOptionsForProvider.filter((candidate) => candidate.model === event.target.value);
+              const currentEffort = selectedProfile ? templateProfileEffort(selectedProfile.configIntent) : "default";
+              const option = candidates.find((candidate) => templateProfileEffort(candidate.configIntent) === currentEffort)
+                ?? preferredTemplateProfile(candidates);
               if (!option?.catalogObserved) return;
               onChange({ definitionText: replaceProfileRevision(definition, selectedProfile.executionProfileId, option) });
               setPendingProviderByProfile((current) => withoutPendingProvider(current, selectedProfile.executionProfileId));
             }}
-            value={modelSelectionPending ? "" : selectedProfile.profileRevisionId}
+            value={selectedModel}
           >
             {modelSelectionPending ? <option value="">选择 {providerFamilyLabel(selectedProviderFamily)} 模型</option> : null}
-            {!modelSelectionPending && !selectedProfileOption ? <option value={selectedProfile.profileRevisionId}>{selectedProfile.model} · 当前组合未由 Host 提供</option> : null}
+            {!modelSelectionPending && !selectedProfileOption ? <option value={selectedProfile.model}>{selectedProfile.model} · 当前组合未由 Host 提供</option> : null}
             {modelOptions.length
-              ? modelOptions.map(modelOptionElement)
+              ? modelOptions.map((option) => <option key={option.model} value={option.model}>{option.model}</option>)
               : <option disabled value="">ACP 尚未返回模型目录</option>}
           </select></label>
+          {effortProfileOptions.length > 1 ? <label>Effort<select
+            aria-label={`${selectedCard.title} Effort`}
+            disabled={busy || readOnly}
+            onChange={(event) => {
+              const option = effortProfileOptions.find((candidate) => candidate.profileRevisionId === event.target.value);
+              if (!option?.catalogObserved) return;
+              onChange({ definitionText: replaceProfileRevision(definition, selectedProfile.executionProfileId, option) });
+            }}
+            value={selectedProfile.profileRevisionId}
+          >{effortProfileOptions.map((option) => <option key={option.profileRevisionId} value={option.profileRevisionId}>
+            {effortLabel(templateProfileEffort(option.configIntent))}{option.readiness.status === "available" ? " · 已验证" : " · 待验证"}
+          </option>)}</select></label> : null}
           <small>{modelSelectionPending
             ? "选择模型后才会将新的 Provider / Model 组合写入 Draft。"
-            : "每个 Agent 独立使用一个 Host 已提供并验证的 Provider / Model 组合。"}</small>
+            : "每个 Agent 独立选择 Host 提供的 Provider、Model 与可用 Effort；只影响未来新 Session。"}</small>
         </fieldset> : null}
         {metaAvailable ? <button className={`awb-button ${selectedIsTarget ? "awb-button-secondary" : "awb-button-primary"}`} onClick={() => {
           setSelectedAsMetaTarget();
@@ -1029,15 +1049,39 @@ function profileOptionElement(option: AgentLoopTemplateProfileRevisionOption) {
   >{option.title} · {option.profileRevisionId} · {option.readiness.status}</option>;
 }
 
-function modelOptionElement(option: AgentLoopTemplateProfileRevisionOption) {
-  const readiness = option.readiness.status === "available"
-    ? " · 已验证"
-    : " · ACP 可选，待验证";
-  return <option
-    key={option.profileRevisionId}
-    title={`${providerFamilyLabel(option.providerFamily)} · ${option.model}${readiness}`}
-    value={option.profileRevisionId}
-  >{option.model}{readiness}</option>;
+function uniqueTemplateModelOptions(
+  options: readonly AgentLoopTemplateProfileRevisionOption[],
+  currentConfigIntent?: ExecutionProfileDefinitionV3["configIntent"],
+): readonly AgentLoopTemplateProfileRevisionOption[] {
+  const currentEffort = currentConfigIntent ? templateProfileEffort(currentConfigIntent) : "default";
+  const byModel = new Map<string, AgentLoopTemplateProfileRevisionOption>();
+  for (const option of options) {
+    const existing = byModel.get(option.model);
+    if (!existing
+      || templateProfileEffort(option.configIntent) === currentEffort
+      || (option.readiness.status === "available" && existing.readiness.status !== "available")) {
+      byModel.set(option.model, option);
+    }
+  }
+  return Object.freeze([...byModel.values()]);
+}
+
+function preferredTemplateProfile(
+  options: readonly AgentLoopTemplateProfileRevisionOption[],
+): AgentLoopTemplateProfileRevisionOption | undefined {
+  return options.find((option) => templateProfileEffort(option.configIntent) === "high")
+    ?? options.find((option) => templateProfileEffort(option.configIntent) === "default")
+    ?? options.find((option) => option.readiness.status === "available")
+    ?? options[0];
+}
+
+function templateProfileEffort(configIntent: ExecutionProfileDefinitionV3["configIntent"]): string {
+  const effort = configIntent.reasoningEffort;
+  return typeof effort === "string" && effort.trim() ? effort : "default";
+}
+
+function effortLabel(value: string): string {
+  return value === "default" ? "Default" : value;
 }
 
 function withoutPendingProvider(
