@@ -41,7 +41,7 @@
     "verify:release": "tsx tests/journeys/run-release.ts",
     "verify:session-id-cutover": "node scripts/verify-session-id-cutover.mjs",
     "runtime:dev": "tsx apps/runtime-host/src/index.ts",
-    "test:formal-dev-launcher": "node --test scripts/formal-dev.test.mjs",
+    "test:formal-dev-launcher": "node --test scripts/formal-dev.test.mjs scripts/start.test.mjs",
     "desktop:runtime": "tsc --noEmit && vite build --config vite.runtime.config.ts && electron apps/desktop/main.cjs",
     "reference:claudian:update": "bash scripts/sync-claudian-reference.sh",
     "verify": "npm run typecheck && npm test && npm run build"

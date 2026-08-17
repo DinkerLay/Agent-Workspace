@@ -1980,10 +1980,13 @@ function mergeProbeResults(
 ): AcpProviderProbeResult {
   const initialCatalog = initial.modelCatalog;
   const recoveryCatalog = recovery.modelCatalog;
-  if (initialCatalog && recoveryCatalog
-    && JSON.stringify(initialCatalog) !== JSON.stringify(recoveryCatalog)) {
-    throw compositionError("acp_model_catalog_recovery_drift");
-  }
+  // A successful recovery proves the selected model can be configured again on
+  // a fresh process generation. ACP catalogs are discovery observations, not a
+  // stability seal: providers can add, remove, or relabel unrelated choices
+  // between session/new and session/load. Keep the recovery catalog as the
+  // current observation instead of rejecting the already-proven Profile.
+  const modelCatalogChangedDuringRecovery = Boolean(initialCatalog && recoveryCatalog
+    && JSON.stringify(initialCatalog) !== JSON.stringify(recoveryCatalog));
   return Object.freeze({
     passedBehaviors: Object.freeze([
       ...new Set([...initial.passedBehaviors, ...recovery.passedBehaviors]),
@@ -1994,6 +1997,7 @@ function mergeProbeResults(
     safeObservations: Object.freeze({
       ...(initial.safeObservations ?? {}),
       ...(recovery.safeObservations ?? {}),
+      ...(modelCatalogChangedDuringRecovery ? { modelCatalogChangedDuringRecovery: true } : {}),
     }),
     bindingEstablished: recovery.bindingEstablished,
   });

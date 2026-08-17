@@ -32,7 +32,9 @@ pnpm start       # Runtime Host + formal AgentLoop + Electron
 pnpm start:web   # 同一 Runtime Host + formal AgentLoop browser surface
 ```
 
-`./start.sh`和`npm start`与`pnpm start`相同。切换完成前，正式入口仍可能在Host内发现旧direct composition；这不代表
+`./start.sh`、`npm start`和`pnpm start`在启动前都会按对应锁文件同步依赖：优先使用
+`pnpm-lock.yaml`，没有 pnpm 时使用 `package-lock.json`。首次启动或拉取更新后的首次启动需要网络下载依赖；同步失败时不会启动
+旧的 Runtime Host 代码。切换完成前，正式入口仍可能在Host内发现旧direct composition；这不代表
 ACP Provider已接通。不得为绕过ACP capability缺失恢复fallback或第二套UI。
 
 ## Provider与版本原则

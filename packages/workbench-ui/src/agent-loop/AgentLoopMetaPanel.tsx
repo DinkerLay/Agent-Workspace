@@ -573,7 +573,7 @@ export function AgentLoopMetaPanel({
             ? "上次连接失败；发送新消息会重新连接当前 Meta Session。"
             : "例如：@Researcher 强化来源交叉验证，并给出可审阅 Patch。"
           : profile
-            ? "当前配置未通过 ACP 验证；请选择其他配置或到设置中重新检测。"
+            ? "当前配置未通过 ACP 验证；请选择其他 Provider、Model 或 Effort。"
             : "先配置可用的 Meta ACP Profile。"}
         rows={4}
         running={turnGenerating}
@@ -722,11 +722,11 @@ function metaSessionRuntimeStatusLabel(
 
 function metaProfileBlockingMessage(option: AgentLoopMetaProfileOptionV3): string {
   if (option.readiness.status === "capability_missing" || option.readiness.missingCapabilities.length) {
-    return "当前 ACP Agent 缺少此 Profile 所需能力。请选择其他配置，或到设置中重新检测。";
+    return "当前 ACP Agent 缺少此 Profile 所需能力。请选择其他 Provider、Model 或 Effort。";
   }
   const reason = option.readiness.reasons[0];
   if (reason === "acp_profile_probe_failed") {
-    return "最近一次 ACP 资格探测失败。请选择其他 Provider / Model / Effort，或到设置刷新模型目录。";
+    return "最近一次 ACP 资格探测失败。模型目录仅表示已发现；请检查此 Provider、Model 与 Effort 后重试。";
   }
   if (reason === "provider_not_configured" || reason === "acp_task_provider_not_configured") {
     return "此 Provider 尚未完成设备配置。请先到设置确认 CLI 与登录源。";
@@ -735,8 +735,8 @@ function metaProfileBlockingMessage(option: AgentLoopMetaProfileOptionV3): strin
     return "当前 ACP 模型目录中没有这个模型。请在设置中刷新目录并重新选择。";
   }
   return reason
-    ? `当前配置未通过 ACP readiness（${reason}）。请选择其他配置，或到设置中重新检测。`
-    : "当前配置未通过 ACP readiness。请选择其他配置，或到设置中重新检测。";
+    ? `当前配置未通过 ACP readiness（${reason}）。设置中的模型目录仅表示已发现；请选择其他配置后重试。`
+    : "当前配置未通过 ACP readiness。设置中的模型目录仅表示已发现；请选择其他配置后重试。";
 }
 
 function metaConversationStatus(status: "creating" | "active" | "idle" | "ambiguous" | "failed" | undefined): string {

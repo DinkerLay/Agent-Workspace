@@ -135,7 +135,7 @@ export function AgentLoopProviderSettings({
 
     <div className="awb-provider-settings-callout">
       <strong>设备连接和 Chat 模型分开管理</strong>
-      <p>扫描只检查本机文件；刷新目录是显式的有边界探测。你勾选的模型会出现在新 Chat，已有 Session 保持原选择。</p>
+      <p>扫描只检查本机文件；刷新目录只读取 ACP 声明的模型。你勾选的模型会出现在新 Chat，已有 Session 保持原选择。</p>
     </div>
 
     {error ? <p className="awb-notice is-error" role="alert">{humanError(error)}</p> : null}
@@ -255,7 +255,7 @@ function ProviderSetupDetail({
       <div className="awb-provider-settings-step-heading">
         <div>
           <h3 id={`${provider.providerFamily}-models-heading`}>Chat 模型</h3>
-          <p>只显示当前 ACP Agent 返回的真实目录；勾选后才会出现在新 Chat。</p>
+          <p>这里是 ACP Agent 声明的模型目录；勾选后才会出现在新 Chat。</p>
         </div>
         {canProbeModels ? <button className="awb-button awb-button-secondary" disabled={busy !== undefined} onClick={onRefreshModels} type="button">
           {busy === "models" ? "正在连接…" : "刷新模型目录"}
@@ -267,7 +267,7 @@ function ProviderSetupDetail({
           ? <div className="awb-provider-empty-action">尚未读取模型。点击“刷新模型目录”发起一次显式探测。</div>
           : <>
             <section className="awb-provider-model-catalog" aria-labelledby={`${provider.providerFamily}-catalog-heading`}>
-              <h4 id={`${provider.providerFamily}-catalog-heading`}>可用模型 ({provider.models.length})</h4>
+              <h4 id={`${provider.providerFamily}-catalog-heading`}>已发现模型 ({provider.models.length})</h4>
               <ul>
                 {provider.models.map((model) => <li data-testid={`provider-model-${model.modelId}`} key={model.modelId}>
                   <label className="awb-provider-model-choice">
@@ -297,6 +297,7 @@ function ProviderSetupDetail({
               </button>
               <span>新 Chat 首次发送前仍可选择 Provider、Model 与 Effort。</span>
             </div>
+            <p className="awb-provider-model-catalog-note">目录发现或勾选不等于运行可用。每个新 Session 仍会按 Provider、Model、角色与 Effort 执行 ACP readiness 验证。</p>
           </>}
       {provider.defaultModelId ? <p className="awb-provider-current-default">新 Chat 默认：<code>{provider.defaultModelId}</code></p> : null}
     </section>
@@ -366,7 +367,7 @@ function installationInput(providerFamily: ProviderFamily, paths: ProviderPathFo
 }
 
 function setupLabel(provider: AcpProviderSettingsEntry): string {
-  if (provider.models.length > 0) return `已获取 ${provider.models.length} 个模型`;
+  if (provider.models.length > 0) return `已发现 ${provider.models.length} 个模型`;
   if (provider.configured) return statusLabel(provider);
   if (provider.installation.status === "ready") return "安装已确认";
   if (provider.installation.status === "incomplete") return "安装不完整";
@@ -374,7 +375,7 @@ function setupLabel(provider: AcpProviderSettingsEntry): string {
 }
 
 function statusLabel(provider: AcpProviderSettingsEntry): string {
-  if (provider.models.length > 0 && provider.status === "not_checked") return "模型已获取";
+  if (provider.models.length > 0 && provider.status === "not_checked") return "模型目录已发现";
   if (provider.status === "not_configured") return "未配置";
   if (provider.status === "not_checked") return "未检测";
   if (provider.status === "checking") return "检测中";

@@ -390,8 +390,8 @@ describe("AgentLoopMetaPanel", () => {
 
     const composer = await screen.findByLabelText("发送给 Meta Agent") as HTMLTextAreaElement;
     expect(composer.disabled).toBe(true);
-    expect(composer.placeholder).toBe("当前配置未通过 ACP 验证；请选择其他配置或到设置中重新检测。");
-    expect(screen.getByText("最近一次 ACP 资格探测失败。请选择其他 Provider / Model / Effort，或到设置刷新模型目录。")).toBeTruthy();
+    expect(composer.placeholder).toBe("当前配置未通过 ACP 验证；请选择其他 Provider、Model 或 Effort。");
+    expect(screen.getByText("最近一次 ACP 资格探测失败。模型目录仅表示已发现；请检查此 Provider、Model 与 Effort 后重试。")).toBeTruthy();
   });
 
   it("shows an incomplete turn as retryable instead of pretending recovery is still generating", async () => {

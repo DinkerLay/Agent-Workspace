@@ -15,6 +15,8 @@ const CONFIGURATION_COMMAND_TYPES = new Set([
   "template.archive", "template.import", "template.export",
   "task_setup.create_draft", "task_setup.save_draft", "task_setup.abandon_draft",
   "meta.create_session", "meta.send_message", "meta.abandon_session", "meta.apply_patch", "meta.reject_patch",
+  "provider.probe_models", "provider.discover_installation",
+  "provider.configure_installation", "provider.configure_chat_models",
   "task.create",
 ]);
 const TASK_COMMAND_TYPES = new Set([
@@ -170,6 +172,9 @@ function configurationReadRequest(value) {
     const request = exactRecord(value, ["kind", "taskSetupDraftId"], "session_id_root_configuration_read_invalid");
     requiredText(request.taskSetupDraftId, "session_id_root_configuration_read_invalid");
     return request;
+  }
+  if (value.kind === "provider_settings") {
+    return exactRecord(value, ["kind"], "session_id_root_configuration_read_invalid");
   }
   if (value.kind === "meta") {
     const request = exactRecord(value, ["kind", "scope"], "session_id_root_configuration_read_invalid");
